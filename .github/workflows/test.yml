@@ -22,13 +22,48 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo sysctl -w kernel.core_pattern=core
       - run: bun install --frozen-lockfile
+      # The runner image's Chrome is not pinned; record what this run actually tested.
+      - name: Record versions
+        shell: bash
+        run: |
+          mkdir -p test-results
+          bun -e '
+          import { Browser, findExecutable } from "./src/index.ts";
+          const path = await findExecutable();
+          const browser = await Browser.launch({ headless: true });
+          try {
+            console.log([
+              `os: ${process.platform} ${process.arch}`,
+              `bun: ${Bun.version}`,
+              `chrome: ${browser.version.product} (${path})`,
+              `protocol: ${browser.version.protocolVersion}`,
+            ].join("\n"));
+          } finally {
+            await browser.close();
+          }
+          ' | tee test-results/versions.txt
+          { echo '### Versions'; echo '```'; cat test-results/versions.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - run: bun run check
       - run: bun run format:check
       - run: bun run test
-      # Real-browser tests depend on runner timing; retry once before failing the job.
+      # Real-browser tests depend on runner timing; retry once before failing the job. The first
+      # attempt's log is kept and its failures are reported, so a passing retry does not hide them.
       - name: Integration tests
         shell: bash
-        run: bun run test:integration || (echo "::warning::integration retry" && bun run test:integration)
+        run: |
+          if bun run test:integration 2>&1 | tee test-results/integration-1.log; then exit 0; fi
+          sed 's/\x1b\[[0-9;]*m//g' test-results/integration-1.log | grep '^(fail)' > test-results/integration-1-failures.txt || true
+          while IFS= read -r line; do echo "::warning title=Integration first attempt::${line//%/%25}"; done < test-results/integration-1-failures.txt
+          { echo '### Integration first attempt failed'; echo '```'; cat test-results/integration-1-failures.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          bun run test:integration 2>&1 | tee test-results/integration-2.log
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs-${{ matrix.os }}
+          path: test-results/
+          if-no-files-found: ignore
+          retention-days: 30
       - run: bun run build
 
   node:
@@ -42,4 +77,8 @@ jobs:
         with:
           node-version: '22'
       - run: bun install --frozen-lockfile
+      - name: Record versions
+        run: |
+          echo "bun $(bun --version), node $(node --version)"
+          google-chrome --version
       - run: bun run test:node
