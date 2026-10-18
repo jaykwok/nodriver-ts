@@ -1,0 +1,88 @@
+name: Platform matrix
+# Platforms and browsers outside the per-push regression. Run on demand: macOS minutes are billed
+# at a higher rate. Each suite runs once without retry so the logs show first-attempt behaviour.
+on: workflow_dispatch
+permissions:
+  contents: read
+jobs:
+  platform:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macos-arm64-chrome
+            os: macos-latest
+          - name: linux-arm64-chrome
+            os: ubuntu-24.04-arm
+            chrome: stable
+          - name: windows-edge
+            os: windows-latest
+            edge: true
+          - name: linux-chrome-154
+            os: ubuntu-latest
+            chrome: '154.0.8037.92'
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    env:
+      NODRIVER_HEADFUL: '0'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.4.3'
+      # See test.yml: systemd-coredump delays renderer-crash reports.
+      - name: Disable piped core dumps
+        if: runner.os == 'Linux'
+        run: sudo sysctl -w kernel.core_pattern=core
+      - name: Chrome for Testing
+        if: matrix.chrome
+        id: chrome
+        uses: browser-actions/setup-chrome@v2
+        with:
+          chrome-version: ${{ matrix.chrome }}
+          install-dependencies: true
+      # Ubuntu restricts unprivileged user namespaces through AppArmor, which leaves an unpackaged
+      # Chrome without a usable sandbox. Lift the restriction instead of passing --no-sandbox.
+      - name: Use Chrome for Testing
+        if: matrix.chrome
+        shell: bash
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          echo "CHROME_PATH=${{ steps.chrome.outputs.chrome-path }}" >> "$GITHUB_ENV"
+      - name: Use Edge
+        if: matrix.edge
+        shell: bash
+        run: echo 'CHROME_PATH=C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe' >> "$GITHUB_ENV"
+      - run: bun install --frozen-lockfile
+      - name: Record versions
+        shell: bash
+        run: |
+          mkdir -p test-results
+          bun test/ci-versions.ts | tee test-results/versions.txt
+          { echo '### Versions'; echo '```'; cat test-results/versions.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Unit tests
+        shell: bash
+        run: bun run test 2>&1 | tee test-results/unit.log
+      - name: Integration tests
+        if: success() || failure()
+        shell: bash
+        run: bun run test:integration 2>&1 | tee test-results/integration.log
+      - name: Compatibility tests
+        if: success() || failure()
+        shell: bash
+        run: bun run test:compat 2>&1 | tee test-results/compat.log
+      - name: Failure summary
+        if: failure()
+        shell: bash
+        run: |
+          { echo '### Failed tests'; echo '```'
+            sed 's/\x1b\[[0-9;]*m//g' test-results/*.log | grep '^(fail)' || true
+            echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: platform-logs-${{ matrix.name }}
+          path: test-results/
+          if-no-files-found: ignore
+          retention-days: 30
