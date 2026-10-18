@@ -130,9 +130,11 @@ describe('navigation and lifecycle failures', () => {
       controller.abort();
       await expect(waiting).rejects.toThrow();
       expect(b.connection.listenerCount).toBe(before);
+      // The promise never settles, so the deadline always expires; it must only be long enough
+      // for the expression to reach the page on a slow runner.
       await expect(
         t.evaluate('globalThis.once=(globalThis.once||0)+1;new Promise(()=>{})', undefined, {
-          timeout: 30,
+          timeout: 1000,
         }),
       ).rejects.toBeInstanceOf(TimeoutError);
       expect(await t.evaluate('once')).toBe(1);

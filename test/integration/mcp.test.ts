@@ -1,4 +1,4 @@
-import { removeTree } from '../../src/utils.js';
+import { poll, removeTree } from '../../src/utils.js';
 import { test, expect, spyOn } from 'bun:test';
 import { Client, type CallToolResult } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
@@ -169,14 +169,17 @@ for (const mode of ['websocket', 'pipe'] as const) {
         name: 'browser_click',
         arguments: { tabId, ref: dialogRef },
       });
-      await Bun.sleep(200);
+      // Human-mode clicks take a variable time to reach the page; poll for the dialog.
       expect(
-        (
-          await call<{ tabs: Array<{ tabId: string; dialog: { type: string } | null }> }>(
-            client,
-            'browser_tabs',
-          )
-        ).tabs.find((t) => t.tabId === tabId)?.dialog?.type,
+        await poll(
+          async () =>
+            (
+              await call<{ tabs: Array<{ tabId: string; dialog: { type: string } | null }> }>(
+                client,
+                'browser_tabs',
+              )
+            ).tabs.find((t) => t.tabId === tabId)?.dialog?.type,
+        ),
       ).toBe('alert');
       await call(client, 'browser_dialog', { tabId, accept: true });
       expect((await click).isError).not.toBeTrue();
