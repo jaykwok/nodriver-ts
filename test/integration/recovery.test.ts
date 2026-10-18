@@ -152,7 +152,7 @@ describe('navigation and lifecycle failures', () => {
       const t = await b.newTab(f.base + '/page');
       const handle = await t.waitForSelector('#button');
       const wait = t.waitForNavigation();
-      // Linux runners can take seconds to report a crash (crash handler dump).
+      // Piped core dumps (systemd-coredump, apport) can delay the crash report by many seconds.
       const crashed = t.cdp.waitFor('Inspector.targetCrashed', undefined, { timeout: 30_000 });
       const command = t.cdp.sendWith('Page.crash', { timeout: 300 }).catch(() => {});
       await crashed;

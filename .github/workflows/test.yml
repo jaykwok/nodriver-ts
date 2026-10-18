@@ -16,24 +16,11 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: '1.4.3'
-      # Linux runs a pinned Chrome for Testing (the version verified under WSL) instead of the
-      # runner image's google-chrome, whose renderer-crash reporting differs.
-      - name: Chrome for Testing
+      # Ubuntu pipes core dumps to systemd-coredump, which holds a crashed renderer for tens of
+      # seconds before Chrome sees it exit. Plain core files are skipped (the core size limit is 0).
+      - name: Disable piped core dumps
         if: runner.os == 'Linux'
-        id: chrome
-        uses: browser-actions/setup-chrome@v1
-        with:
-          chrome-version: '155.0.8059.79'
-          install-dependencies: true
-      - name: Use Chrome for Testing
-        if: runner.os == 'Linux'
-        shell: bash
-        run: echo "CHROME_PATH=${{ steps.chrome.outputs.chrome-path }}" >> "$GITHUB_ENV"
-      # Ubuntu 23.10+ restricts unprivileged user namespaces through AppArmor, which leaves an
-      # unpackaged Chrome with no usable sandbox. Lift the restriction instead of --no-sandbox.
-      - name: Allow Chrome's user-namespace sandbox
-        if: runner.os == 'Linux'
-        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+        run: sudo sysctl -w kernel.core_pattern=core
       - run: bun install --frozen-lockfile
       - run: bun run check
       - run: bun run format:check
@@ -43,12 +30,6 @@ jobs:
         shell: bash
         run: bun run test:integration || (echo "::warning::integration retry" && bun run test:integration)
       - run: bun run build
-      # Informational only: does the runner image's own google-chrome report renderer crashes?
-      - name: Renderer crash with system google-chrome (informational)
-        if: runner.os == 'Linux'
-        continue-on-error: true
-        shell: bash
-        run: CHROME_PATH="$(command -v google-chrome)" bun test --timeout 60000 ./test/integration/recovery.test.ts -t "renderer crash"
 
   node:
     runs-on: ubuntu-latest
