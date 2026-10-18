@@ -4,9 +4,11 @@ import { checkException } from '../page/frames.js';
 import type { Session } from '../protocol/connection.js';
 import { Element } from './element.js';
 import { StaleElementError } from '../errors.js';
+import { budget, type WaitOptions } from '../utils.js';
 export type Selector =
   string | { css: string } | { xpath: string } | { text: string; exact?: boolean };
-export interface QueryOptions {
+/** `timeout` and `signal` bound the whole query, including every CDP request it makes. */
+export interface QueryOptions extends WaitOptions {
   pierce?: boolean;
   visible?: boolean;
   limit?: number;
@@ -94,7 +96,11 @@ const SEARCH = `function(spec, visible, limit, walk, useDocument, ...extra) {
  * True when the frame document may contain closed shadow roots, which only a CDP DOM scan can
  * reach. DOM.getDocument is costly on large pages, so a negative result is cached briefly.
  */
-async function closedShadows(frame: Frame, session: Session): Promise<boolean> {
+async function closedShadows(
+  frame: Frame,
+  session: Session,
+  step: () => WaitOptions,
+): Promise<boolean> {
   const revision = domRevision(session).value;
   const cached = scans.get(frame);
   if (
@@ -106,7 +112,7 @@ async function closedShadows(frame: Frame, session: Session): Promise<boolean> {
   )
     return cached.closed;
   const generation = frame.generation;
-  const { root } = await session.send('DOM.getDocument', { depth: -1, pierce: true });
+  const { root } = await session.sendWith('DOM.getDocument', step(), { depth: -1, pierce: true });
   const document =
     documentFor(root, frame.id) ??
     (frame === frame.manager.mainFrame || frame.parent?.session !== session ? root : undefined);
@@ -126,7 +132,8 @@ export async function query(
     throw new RangeError('limit must be a positive integer');
   const session = frame.session;
   const generation = frame.generation;
-  const context = await frame.context('isolated');
+  const step = budget(options, 'query');
+  const context = await frame.context('isolated', step());
   const normalized = typeof selector === 'string' ? { css: selector } : selector;
   const pierce = options.pierce !== false && !('xpath' in normalized);
   const group = `nodriver-query-${++queryId}`;
@@ -139,18 +146,18 @@ export async function query(
   ];
   try {
     let result: Protocol.Runtime.CallFunctionOnResponse;
-    if (!pierce || !(await closedShadows(frame, session))) {
+    if (!pierce || !(await closedShadows(frame, session, step))) {
       // Fast path: one call in the isolated world over the document and its open shadow roots.
       let objectId: string | undefined;
       if (scope)
         objectId = (
-          await session.send('DOM.resolveNode', {
+          await session.sendWith('DOM.resolveNode', step(), {
             backendNodeId: scope,
             executionContextId: context,
             objectGroup: group,
           })
         ).object.objectId;
-      result = await session.send('Runtime.callFunctionOn', {
+      result = await session.sendWith('Runtime.callFunctionOn', step(), {
         ...(objectId ? { objectId } : { executionContextId: context }),
         objectGroup: group,
         functionDeclaration: SEARCH,
@@ -160,13 +167,13 @@ export async function query(
       // Closed shadow roots exist: resolve every root CDP reports and search them in one call.
       const root = scope
         ? (
-            await session.send('DOM.describeNode', {
+            await session.sendWith('DOM.describeNode', step(), {
               backendNodeId: scope,
               depth: -1,
               pierce: true,
             })
           ).node
-        : (await session.send('DOM.getDocument', { depth: -1, pierce: true })).root;
+        : (await session.sendWith('DOM.getDocument', step(), { depth: -1, pierce: true })).root;
       const document = scope
         ? root
         : (documentFor(root, frame.id) ??
@@ -187,7 +194,7 @@ export async function query(
         roots.map(
           async (node) =>
             (
-              await session.send('DOM.resolveNode', {
+              await session.sendWith('DOM.resolveNode', step(), {
                 backendNodeId: node.backendNodeId,
                 executionContextId: context,
                 objectGroup: group,
@@ -195,7 +202,7 @@ export async function query(
             ).object.objectId!,
         ),
       );
-      result = await session.send('Runtime.callFunctionOn', {
+      result = await session.sendWith('Runtime.callFunctionOn', step(), {
         objectId: objects[0]!,
         objectGroup: group,
         functionDeclaration: SEARCH,
@@ -205,7 +212,7 @@ export async function query(
     checkException(result);
     const matches: Element[] = [];
     if (result.result.objectId) {
-      const { result: properties } = await session.send('Runtime.getProperties', {
+      const { result: properties } = await session.sendWith('Runtime.getProperties', step(), {
         objectId: result.result.objectId,
         ownProperties: true,
       });
@@ -213,7 +220,9 @@ export async function query(
         .filter((p) => /^\d+$/.test(p.name) && p.value?.objectId)
         .sort((a, b) => Number(a.name) - Number(b.name));
       const nodes = await Promise.all(
-        items.map((p) => session.send('DOM.describeNode', { objectId: p.value!.objectId! })),
+        items.map((p) =>
+          session.sendWith('DOM.describeNode', step(), { objectId: p.value!.objectId! }),
+        ),
       );
       for (const { node } of nodes)
         matches.push(new Element(frame, node.backendNodeId, generation, session));
@@ -222,6 +231,9 @@ export async function query(
       throw new StaleElementError('Document changed during query');
     return options.limit ? matches.slice(0, options.limit) : matches;
   } finally {
-    await session.send('Runtime.releaseObjectGroup', { objectGroup: group }).catch(() => {});
+    // Cleanup has its own short deadline and never delays the caller's timeout or abort.
+    void session
+      .sendWith('Runtime.releaseObjectGroup', { timeout: 1000 }, { objectGroup: group })
+      .catch(() => {});
   }
 }

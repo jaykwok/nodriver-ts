@@ -112,7 +112,8 @@ export class Network {
         if (match) await match.handler(route);
         if (!route.done) await route.continue();
       } catch (e) {
-        this.tab.reportError(e);
+        // A request paused while its tab closes cannot be answered; that is not an error.
+        if (!session.closed) this.tab.reportError(e);
         if (!route.done) await route.abort().catch(() => {});
       }
     });

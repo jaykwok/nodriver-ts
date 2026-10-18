@@ -78,6 +78,9 @@ export class Tab {
   ) {
     this.environment = structuredClone(browser.baseEnvironment);
     this.framesManager = new FrameManager(this, session);
+    this.framesManager.changes.on(({ frame, sameDocument }) => {
+      if (!sameDocument) context.noteOrigin(frame.url);
+    });
     this.network = new Network(this);
     this.inputBehavior = new InputBehavior(
       (task) => this.browser.input.run(task),

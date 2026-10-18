@@ -33,15 +33,70 @@ export function delay(ms: number, signal?: AbortSignal): Promise<void> {
     signal?.addEventListener('abort', abort, { once: true });
   });
 }
+/**
+ * One budget for a multi-step operation. Each call returns the options for the next step: the
+ * caller's signal and only the time that remains, or throws once either is exhausted.
+ */
+export function budget(options: WaitOptions = {}, label = 'operation'): () => WaitOptions {
+  const end =
+    options.timeout === undefined ? undefined : Date.now() + timeoutValue(options.timeout);
+  return () => {
+    if (options.signal?.aborted) throw abortReason(options.signal);
+    if (end === undefined) return { signal: options.signal };
+    const timeout = end - Date.now();
+    if (timeout <= 0) throw new TimeoutError(`${label} timed out`);
+    return { timeout, signal: options.signal };
+  };
+}
+/** Settles with `promise`, or rejects on the caller's timeout/abort while `promise` continues. */
+export function bounded<T>(
+  promise: Promise<T>,
+  options: WaitOptions = {},
+  label = 'operation',
+): Promise<T> {
+  const { signal } = options;
+  if (options.timeout === undefined && !signal) return promise;
+  if (signal?.aborted) return Promise.reject(abortReason(signal));
+  return new Promise((resolve, reject) => {
+    const timer =
+      options.timeout === undefined
+        ? undefined
+        : setTimeout(
+            () => settle(() => reject(new TimeoutError(`${label} timed out`))),
+            timeoutValue(options.timeout),
+          );
+    const abort = () => settle(() => reject(abortReason(signal!)));
+    const settle = (fn: () => void) => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', abort);
+      fn();
+    };
+    signal?.addEventListener('abort', abort, { once: true });
+    promise.then(
+      (value) => settle(() => resolve(value)),
+      (error: unknown) => settle(() => reject(error)),
+    );
+  });
+}
+/** Calls `fn` until it returns a value; each attempt receives the remaining time and signal. */
 export async function poll<T>(
-  fn: () => Promise<T | undefined>,
+  fn: (step: WaitOptions) => Promise<T | undefined>,
   options: WaitOptions = {},
   label = 'condition',
 ): Promise<T> {
-  const end = Date.now() + timeoutValue(options.timeout ?? 10_000);
+  const timeout = timeoutValue(options.timeout ?? 10_000);
+  const end = Date.now() + timeout;
+  const step = budget({ ...options, timeout }, label);
   do {
-    if (options.signal?.aborted) throw abortReason(options.signal);
-    const value = await fn();
+    let value: T | undefined;
+    try {
+      value = await fn(step());
+    } catch (error) {
+      // A step that ran out of the shared budget is this wait timing out.
+      if (error instanceof TimeoutError && Date.now() >= end)
+        throw new TimeoutError(`Timed out waiting for ${label}`);
+      throw error;
+    }
     if (value !== undefined) return value;
     if (Date.now() >= end) throw new TimeoutError(`Timed out waiting for ${label}`);
     await delay(Math.min(50, Math.max(0, end - Date.now())), options.signal);

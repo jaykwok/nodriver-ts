@@ -72,6 +72,8 @@ export interface SnapshotNode {
 }
 export interface DownloadEntry {
   guid: string;
+  /** Increases with each download this session observes; see waitForDownload(). */
+  sequence: number;
   tabId: string;
   url: string;
   suggestedFilename: string;
@@ -144,6 +146,8 @@ export class BrowserMcpSession {
   private events: Array<{ sequence: number; type: string; tabId?: string; time: number }> = [];
   private handoffs = new Map<string, { tabId: string; expires: number; completed: boolean }>();
   private downloads: DownloadEntry[] = [];
+  private downloadSequence = 0;
+  private downloadCursors = new Map<string, number>();
   private downloadContexts = new WeakSet<BrowserContext>();
   private captures = new Map<string, { entries: NetworkEntry[]; off: () => void }>();
   constructor(readonly options: SessionOptions) {
@@ -252,6 +256,7 @@ export class BrowserMcpSession {
         tab.downloads.on((download) => {
           const entry: DownloadEntry = {
             guid: download.guid,
+            sequence: ++this.downloadSequence,
             tabId: tab.id,
             url: download.url.slice(0, 2000),
             suggestedFilename: download.suggestedFilename.slice(0, 500),
@@ -260,13 +265,12 @@ export class BrowserMcpSession {
           };
           this.downloads.push(entry);
           if (this.downloads.length > 100) this.downloads.shift();
-          void download
-            .path({ timeout: 3_600_000 })
-            .then(
-              () => (entry.state = 'completed'),
-              () => (entry.state = 'canceled'),
-            )
-            .finally(() => this.changed('download', tab.id));
+          const off = download.updates.on(() => {
+            if (download.status === 'inProgress') return;
+            off();
+            entry.state = download.status;
+            this.changed('download', tab.id);
+          });
           this.changed('download', tab.id);
         });
         if (this.options.inputPolicy) tab.setInputPolicy(this.options.inputPolicy);
@@ -654,12 +658,45 @@ export class BrowserMcpSession {
     const tabs = new Set(this.tabs().map((t) => t.id));
     return this.downloads.filter((d) => tabs.has(d.tabId) || d.state !== 'inProgress');
   }
-  async waitForDownload(tabId: string, wait: WaitOptions): Promise<DownloadEntry> {
-    const tab = this.tab(tabId);
+  get latestDownload(): number {
+    return this.downloadSequence;
+  }
+  /**
+   * Waits until the first download of the tab with a sequence above `after` has completed or been
+   * canceled. `after` defaults to the last download a wait returned for this tab, so a download
+   * that began before the wait is still found. Takes no operation-queue slot: the action that
+   * triggers the download may run concurrently.
+   */
+  async waitForDownload(
+    tabId: string,
+    after: number | undefined,
+    wait: WaitOptions,
+  ): Promise<DownloadEntry> {
+    const { browser } = this.tab(tabId);
     this.downloadList();
-    const download = await tab.waitForDownload(wait);
-    await download.path(wait).catch(() => {});
-    return this.downloads.find((d) => d.guid === download.guid)!;
+    const cursor = after ?? this.downloadCursors.get(tabId) ?? 0;
+    const next = () => this.downloads.find((d) => d.tabId === tabId && d.sequence > cursor);
+    const settled = () => {
+      const entry = next();
+      return entry && entry.state !== 'inProgress' ? entry : undefined;
+    };
+    let entry = settled();
+    if (!entry)
+      try {
+        await browser.waitEvent(this.changes, () => !!(entry = settled()), wait, 'download');
+      } catch (error) {
+        const pending = next();
+        if (error instanceof TimeoutError && pending)
+          throw new TimeoutError(
+            `Download ${pending.sequence} (${pending.guid}) is still in progress; wait again to continue`,
+          );
+        throw error;
+      }
+    this.downloadCursors.set(
+      tabId,
+      Math.max(entry!.sequence, this.downloadCursors.get(tabId) ?? 0),
+    );
+    return entry!;
   }
   /** Opt-in per-tab ring buffer of recent responses (enables the Network domain). */
   async capture(tabId: string, action: 'start' | 'stop' | 'clear'): Promise<void> {

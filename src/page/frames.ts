@@ -2,7 +2,7 @@ import type { Protocol } from 'devtools-protocol';
 import { randomUUID } from 'node:crypto';
 import type { Session, CdpEvent } from '../protocol/connection.js';
 import { EvaluationError, StaleElementError, DisconnectedError } from '../errors.js';
-import { EventHub, poll, type WaitOptions } from '../utils.js';
+import { bounded, EventHub, poll, type WaitOptions } from '../utils.js';
 import { query, type Selector, type QueryOptions } from '../dom/query.js';
 import type { Element } from '../dom/element.js';
 import type { Tab } from './tab.js';
@@ -127,16 +127,23 @@ export class Frame {
     this.main = undefined;
     this.isolated = undefined;
   }
+  /**
+   * Execution context id for the current document. The lookup is shared by concurrent callers,
+   * so it runs on the connection deadline; each caller stops waiting at its own timeout/signal.
+   */
   async context(world: World, options: WaitOptions = {}): Promise<number> {
     if (this.detached || this.session.closed) throw new DisconnectedError('Frame is detached');
+    return bounded(this.sharedContext(world), options, `${world} world lookup`);
+  }
+  private sharedContext(world: World): Promise<number> {
     if (world === 'main') {
       if (!this.main || this.main.generation !== this.generation) {
         const generation = this.generation;
         const session = this.session;
-        const promise = this.context('isolated', options)
+        const promise = this.sharedContext('isolated')
           .then((id) => {
             this.assertDocument(generation, session);
-            return resolveMainContext(session, id, options);
+            return resolveMainContext(session, id, {});
           })
           .then((id) => {
             this.assertDocument(generation, session);
@@ -156,7 +163,7 @@ export class Frame {
       const generation = this.generation;
       const session = this.session;
       const promise = session
-        .sendWith('Page.createIsolatedWorld', options, {
+        .send('Page.createIsolatedWorld', {
           frameId: this.id,
           worldName: this.manager.worldName,
         })
@@ -262,9 +269,9 @@ export class Frame {
     options: QueryOptions & WaitOptions = {},
   ): Promise<Element> {
     return poll(
-      async () => {
+      async (step) => {
         try {
-          return await this.query(selector, options);
+          return await this.query(selector, { ...options, ...step });
         } catch (e) {
           if (e instanceof StaleElementError && !this.detached) return undefined;
           throw e;
@@ -280,8 +287,8 @@ export class Frame {
     options: EvaluateOptions = {},
   ): Promise<T> {
     return poll(
-      async () => {
-        const result = await this.evaluate(fn, arg, options);
+      async (step) => {
+        const result = await this.evaluate(fn, arg, { ...options, ...step });
         return result ? result : undefined;
       },
       options,
@@ -291,10 +298,16 @@ export class Frame {
   async content(): Promise<string> {
     return this.evaluate('document.documentElement.outerHTML');
   }
-  async storage(kind: 'local' | 'session' = 'local'): Promise<Record<string, string>> {
+  /** With `origin`, throws instead of reading when the document belongs to another origin. */
+  async storage(
+    kind: 'local' | 'session' = 'local',
+    origin?: string,
+  ): Promise<Record<string, string>> {
     return this.evaluate(
-      (k) => {
-        const s = k === 'local' ? localStorage : sessionStorage;
+      ({ kind, origin }) => {
+        if (origin !== undefined && location.origin !== origin)
+          throw new Error(`Storage belongs to ${location.origin}, expected ${origin}`);
+        const s = kind === 'local' ? localStorage : sessionStorage;
         return Object.fromEntries(
           Array.from({ length: s.length }, (_, i) => {
             const key = s.key(i)!;
@@ -302,22 +315,29 @@ export class Frame {
           }),
         );
       },
-      kind,
+      { kind, origin },
       { world: 'isolated' },
     );
   }
+  /**
+   * With `origin`, the check runs in the same synchronous script as the writes, so a navigation
+   * or redirect to another origin can never receive (or have cleared) this storage.
+   */
   async setStorage(
     values: Record<string, string>,
     kind: 'local' | 'session' = 'local',
     clear = false,
+    origin?: string,
   ): Promise<void> {
     await this.evaluate(
-      ({ values, kind, clear }) => {
+      ({ values, kind, clear, origin }) => {
+        if (origin !== undefined && location.origin !== origin)
+          throw new Error(`Storage belongs to ${location.origin}, expected ${origin}`);
         const s = kind === 'local' ? localStorage : sessionStorage;
         if (clear) s.clear();
         for (const [key, value] of Object.entries(values)) s.setItem(key, value);
       },
-      { values, kind, clear },
+      { values, kind, clear, origin },
       { world: 'isolated' },
     );
   }

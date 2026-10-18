@@ -5,7 +5,8 @@ import { NodriverError } from '../errors.js';
 import type { BrowserContext } from './context.js';
 export class Download {
   private state: 'inProgress' | 'completed' | 'canceled' = 'inProgress';
-  private updates = new EventHub<void>();
+  /** Emits on every state report from the browser; read `status` for the new state. */
+  readonly updates = new EventHub<void>();
   constructor(
     readonly context: BrowserContext,
     readonly guid: string,

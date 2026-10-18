@@ -194,6 +194,90 @@ describe('browser and page', () => {
       await b.close();
     }
   });
+  test('storage restore never follows a cross-origin redirect or writes another origin', async () => {
+    const html = (body: string) => new Response(body, { headers: { 'content-type': 'text/html' } });
+    const destination = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: () => html('<p>B') });
+    const dest = `http://127.0.0.1:${destination.port}`;
+    let rootHits = 0;
+    const source = Bun.serve({
+      hostname: '127.0.0.1',
+      port: 0,
+      fetch(request) {
+        if (new URL(request.url).pathname !== '/') return html('<p>A');
+        rootHits++;
+        return Response.redirect(dest, 302);
+      },
+    });
+    const origin = `http://127.0.0.1:${source.port}`;
+    const context = await browser.newContext();
+    try {
+      const b = await context.newTab(dest + '/page');
+      await b.mainFrame.setStorage({ existing: 'b' });
+      await context.restoreStorage({
+        cookies: [],
+        origins: [{ origin, localStorage: { token: 'synthetic' } }],
+      });
+      expect(rootHits).toBe(0);
+      expect(await b.mainFrame.storage()).toEqual({ existing: 'b' });
+      const a = await context.newTab(origin + '/page');
+      expect(await a.mainFrame.storage()).toEqual({ token: 'synthetic' });
+      // The origin check and the writes share one script: a mismatched document is untouched.
+      await expect(b.mainFrame.setStorage({ token: 'x' }, 'local', true, origin)).rejects.toThrow(
+        EvaluationError,
+      );
+      await expect(b.mainFrame.storage('local', origin)).rejects.toThrow(EvaluationError);
+      expect(await b.mainFrame.storage()).toEqual({ existing: 'b' });
+    } finally {
+      await context.close();
+      source.stop(true);
+      destination.stop(true);
+    }
+  });
+  test('storageState covers iframes and closed tabs, but not partitioned storage', async () => {
+    const html = (body: string) => new Response(body, { headers: { 'content-type': 'text/html' } });
+    const child = Bun.serve({ hostname: '0.0.0.0', port: 0, fetch: () => html('<p>child') });
+    const same = `http://127.0.0.1:${child.port}`;
+    const cross = `http://localhost:${child.port}`;
+    const top = Bun.serve({
+      hostname: '127.0.0.1',
+      port: 0,
+      fetch: () =>
+        html(`<iframe src="${same}/frame"></iframe><iframe src="${cross}/frame"></iframe>`),
+    });
+    const origin = `http://127.0.0.1:${top.port}`;
+    const context = await browser.newContext();
+    const target = await browser.newContext();
+    try {
+      const tab = await context.newTab(origin + '/page');
+      await tab.mainFrame.setStorage({ top: '1' });
+      const frame = (url: string) => tab.frames.find((f) => f.url === url)!;
+      // Same-site (port differs): the iframe sees its origin's first-party storage.
+      await frame(same + '/frame').setStorage({ child: '1' });
+      // Cross-site: Chrome partitions this under the top-level site.
+      await frame(cross + '/frame').setStorage({ partitioned: '1' });
+      const expected = [
+        { origin, localStorage: { top: '1' } },
+        { origin: same, localStorage: { child: '1' } },
+      ];
+      const sorted = (state: { origins: Array<{ origin: string }> }) =>
+        [...state.origins].sort((x, y) => x.origin.localeCompare(y.origin));
+      const before = await context.storageState();
+      expect(sorted(before)).toEqual(sorted({ origins: expected }));
+      await tab.close();
+      const after = await context.storageState();
+      expect(sorted(after)).toEqual(sorted({ origins: expected }));
+      await target.restoreStorage(after);
+      const check = await target.newTab(same + '/frame');
+      expect(await check.mainFrame.storage()).toEqual({ child: '1' });
+      await check.goto(origin + '/page');
+      expect(await check.mainFrame.storage()).toEqual({ top: '1' });
+    } finally {
+      await context.close();
+      await target.close();
+      top.stop(true);
+      child.stop(true);
+    }
+  });
   test('screenshot, PDF, upload, download and popup', async () =>
     page(async (tab) => {
       const directory = await mkdtemp(join(tmpdir(), 'nodriver-test-'));

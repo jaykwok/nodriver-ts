@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import type { Browser } from './browser.js';
 import type { Tab } from '../page/tab.js';
+import type { Frame } from '../page/frames.js';
 import { ProxyForwarder } from '../optional/proxy.js';
 import { NodriverError } from '../errors.js';
 export interface ContextOptions {
@@ -15,8 +16,14 @@ export interface StorageState {
   cookies: Protocol.Network.CookieParam[];
   origins: Array<{ origin: string; localStorage: Record<string, string> }>;
 }
+function httpOrigin(url: string): string | undefined {
+  if (!URL.canParse(url)) return undefined;
+  const parsed = new URL(url);
+  return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.origin : undefined;
+}
 export class BrowserContext {
   downloadDirectory?: string;
+  private readonly usedOrigins = new Set<string>();
   private closing?: Promise<void>;
   private disposed = false;
   constructor(
@@ -77,13 +84,68 @@ export class BrowserContext {
     });
     this.downloadDirectory = directory;
   }
+  /** Records an HTTP(S) origin committed by any frame, so storageState() covers it later. */
+  noteOrigin(url: string): void {
+    const origin = httpOrigin(url);
+    if (origin) this.usedOrigins.add(origin);
+  }
+  /**
+   * Visits each origin in one owned temporary tab whose document requests are fulfilled with an
+   * empty page: the site is never contacted, cannot redirect, and runs no script.
+   */
+  private async atOrigins(
+    origins: Iterable<string>,
+    fn: (frame: Frame, origin: string) => Promise<void>,
+  ): Promise<void> {
+    const list = [...origins];
+    if (!list.length) return;
+    const tab = await this.newTab();
+    try {
+      // A registered service worker would otherwise answer the navigation with site code.
+      await tab.cdp.send('Network.setBypassServiceWorker', { bypass: true });
+      let target = '';
+      await tab.network.route(/.*/, (route) =>
+        route.request.request.url === target && route.request.resourceType === 'Document'
+          ? route.fulfill({ headers: { 'content-type': 'text/html' }, body: '<!doctype html>' })
+          : route.abort('BlockedByClient'),
+      );
+      for (const origin of list) {
+        target = `${origin}/`;
+        await tab.goto(target);
+        await fn(tab.mainFrame, origin);
+      }
+    } finally {
+      await tab.close();
+    }
+  }
+  /**
+   * Cookies plus first-party localStorage of every HTTP(S) origin any frame of this context has
+   * committed, including iframes and tabs closed since. Origins with empty storage are omitted.
+   * Storage partitioned under another top-level site (third-party iframes) is not included.
+   */
   async storageState(path?: string): Promise<StorageState> {
     const origins = new Map<string, Record<string, string>>();
+    const pending = new Set(this.usedOrigins);
+    for (const tab of this.tabs)
+      for (const frame of tab.frames) {
+        const origin = httpOrigin(frame.url);
+        if (origin) pending.add(origin);
+      }
+    // Live top-level documents hold their origin's first-party storage; read them in place.
     for (const tab of this.tabs) {
-      const origin = new URL(tab.url).origin;
-      if (origin !== 'null' && !origins.has(origin))
-        origins.set(origin, await tab.mainFrame.storage());
+      const origin = httpOrigin(tab.url);
+      if (!origin || origins.has(origin) || tab.crashed) continue;
+      try {
+        origins.set(origin, await tab.mainFrame.storage('local', origin));
+        pending.delete(origin);
+      } catch {
+        // Navigated, sandboxed or closed meanwhile: read it from the temporary tab instead.
+      }
     }
+    await this.atOrigins(pending, async (frame, origin) => {
+      origins.set(origin, await frame.storage('local', origin));
+    });
+    for (const [origin, values] of origins) if (!Object.keys(values).length) origins.delete(origin);
     const cookies = (await this.cookies()).map((c) => ({
       name: c.name,
       value: c.value,
@@ -102,21 +164,18 @@ export class BrowserContext {
     if (path) await writeFile(path, JSON.stringify(state, null, 2));
     return state;
   }
+  /** Sets the cookies, then replaces the localStorage of each listed origin. */
   async restoreStorage(state: StorageState): Promise<void> {
-    await this.setCookies(state.cookies);
-    // Explicitly navigates only to the origins supplied by the caller, using an owned temporary tab.
+    const entries = new Map<string, Record<string, string>>();
     for (const entry of state.origins) {
-      const url = new URL(entry.origin);
-      if (!['http:', 'https:'].includes(url.protocol))
-        throw new TypeError('Storage restore requires HTTP(S) origins');
-      const tab = await this.newTab();
-      try {
-        await tab.goto(url.origin);
-        await tab.mainFrame.setStorage(entry.localStorage, 'local', true);
-      } finally {
-        await tab.close();
-      }
+      const origin = httpOrigin(entry.origin);
+      if (!origin) throw new TypeError('Storage restore requires HTTP(S) origins');
+      entries.set(origin, entry.localStorage);
     }
+    await this.setCookies(state.cookies);
+    await this.atOrigins(entries.keys(), (frame, origin) =>
+      frame.setStorage(entries.get(origin)!, 'local', true, origin),
+    );
   }
   close(): Promise<void> {
     if (!this.id)

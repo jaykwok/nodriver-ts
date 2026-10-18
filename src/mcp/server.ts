@@ -227,7 +227,8 @@ export function createBrowserMcpServer(
       try {
         // Dialogs may be blocking a prior action's CDP response. They must be
         // answerable while that action is still holding the operation queue.
-        const run = ['browser_dialog', 'browser_tabs'].includes(name)
+        // A download wait must not hold the queue the triggering click needs.
+        const run = ['browser_dialog', 'browser_tabs', 'browser_downloads'].includes(name)
           ? session.interrupt.bind(session)
           : session.run.bind(session);
         const token = context.mcpReq._meta?.progressToken;
@@ -415,7 +416,7 @@ export function createBrowserMcpServer(
     async (args, signal) => {
       const elements = await session
         .frame(args.tabId, args.frameId)
-        .queryAll(args.selector, { limit: args.limit });
+        .queryAll(args.selector, { limit: args.limit, signal });
       signal.throwIfAborted();
       return result({
         tabId: args.tabId,
@@ -790,12 +791,10 @@ export function createBrowserMcpServer(
     read,
     async (args, signal) => {
       const element = await poll(
-        async () => {
-          signal.throwIfAborted();
-          return session
+        async (step) =>
+          session
             .frame(args.tabId, args.frameId)
-            .query(args.selector, args.visible ? { visible: true } : undefined);
-        },
+            .query(args.selector, { ...step, ...(args.visible ? { visible: true } : {}) }),
         { timeout: args.timeout, signal },
         'MCP selector',
       );
@@ -851,23 +850,39 @@ export function createBrowserMcpServer(
   if (config.downloadDir)
     tool(
       'browser_downloads',
-      'List downloads, or wait for the next download in a tab. Files are saved in the host-configured download directory under the reported file name.',
-      { tabId: tabId.optional(), action: z.enum(['list', 'wait']).default('list'), timeout },
+      'List downloads, or wait until a download in a tab completes or is canceled. wait does not block other tools, so it may be called before or after the click that starts the download; it returns the first download with a sequence above `after` (default: the last one wait returned for this tab). Files are saved in the host-configured download directory under the reported file name.',
+      {
+        tabId: tabId.optional(),
+        action: z.enum(['list', 'wait']).default('list'),
+        after: z
+          .number()
+          .int()
+          .min(0)
+          .optional()
+          .describe('wait only: sequence to wait beyond, e.g. latestSequence from list'),
+        timeout,
+      },
       read,
       async (args, signal) => {
         if (args.action === 'wait') {
           if (!args.tabId) throw new TypeError('wait requires tabId');
           return result({
-            download: await session.waitForDownload(args.tabId, { timeout: args.timeout, signal }),
+            download: await session.waitForDownload(args.tabId, args.after, {
+              timeout: args.timeout,
+              signal,
+            }),
           });
         }
-        return result({ downloads: session.downloadList() });
+        return result({
+          downloads: session.downloadList(),
+          latestSequence: session.latestDownload,
+        });
       },
     );
   if (config.stateDir)
     tool(
       'browser_storage_state',
-      'Save or load cookies and localStorage under a name in the host-configured state directory. Contents never enter the conversation; load visits each saved origin in a temporary tab.',
+      'Save or load cookies and localStorage under a name in the host-configured state directory. Contents never enter the conversation. Covers first-party localStorage of every origin used by frames of the context, including closed tabs; a temporary tab reads and writes it on an empty intercepted page, so sites are not contacted.',
       {
         action: z.enum(['save', 'load']),
         name: z.string().regex(/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$/),
