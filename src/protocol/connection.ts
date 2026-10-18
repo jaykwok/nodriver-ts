@@ -206,14 +206,19 @@ export class Connection {
       if (m.id !== undefined) {
         const p = this.pending.get(m.id);
         if (!p) return;
-        if (p.sessionId !== m.sessionId) {
+        // Chrome answers a command for an already-detached session at browser level (no
+        // sessionId, "Session with given id not found"); fail that command, not the connection.
+        const detached = p.sessionId !== undefined && m.sessionId === undefined && !!m.error;
+        if (p.sessionId !== m.sessionId && !detached) {
           this.finish(new DisconnectedError('CDP response session mismatch'));
           void this.transport.close();
           return;
         }
         this.pending.delete(m.id);
         p.cleanup();
-        if (m.error)
+        if (detached)
+          p.reject(new DisconnectedError(`Session detached: ${p.sessionId} (${m.error!.message})`));
+        else if (m.error)
           p.reject(new ProtocolError(p.method, m.error.code, m.error.message, m.error.data));
         else p.resolve(m.result ?? {});
       } else if (typeof m.method === 'string') {

@@ -160,6 +160,21 @@ describe('CDP connection', () => {
       expect(c.pendingCount).toBe(0);
     }
   });
+  test('a browser-level error for a detached session fails only that command', async () => {
+    const t = new FakeTransport();
+    const c = new Connection(t);
+    const p = c.session('gone').send('Page.getFrameTree');
+    t.onmessage?.(
+      JSON.stringify({
+        id: t.messages[0]!.id,
+        error: { code: -32001, message: 'Session with given id not found.' },
+      }),
+    );
+    await expect(p).rejects.toBeInstanceOf(DisconnectedError);
+    expect(c.closed).toBeFalse();
+    expect(c.pendingCount).toBe(0);
+    await c.close();
+  });
   test('transport failure cannot leave pending requests', async () => {
     const t = new FakeTransport();
     t.send = () => {

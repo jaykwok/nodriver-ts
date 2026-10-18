@@ -61,6 +61,7 @@ First public release under the name **nodriver-ts** (the development name was `n
 - Action `waitFor: 'load'` reports navigation timeouts instead of returning success, and handles same-document navigation without waiting for a new load event.
 - MCP storage state rejects symbolic and hard links, and saves through an atomic replacement to avoid following links or truncating a previous state on write failure.
 - Temporary profile removal retries while Windows still reports files as busy. Bun ignores `fs.rm`'s `maxRetries`, so a Chrome helper process outliving the browser made `close()` fail with `EBUSY`.
+- A browser-level error reply for a command whose session had already detached (Chrome omits the `sessionId`) fails only that command with `DisconnectedError` instead of closing the whole connection as a session mismatch.
 - A page or frame session that detaches while it is still being set up (short-lived popups, lazy `Network.enable`) is no longer reported as an asynchronous error.
 - `keyUp` for Space and other keys now mirrors the `keyDown` key value.
 - Shift+letter chords send the shifted key, and modifier keys use `rawKeyDown`.
