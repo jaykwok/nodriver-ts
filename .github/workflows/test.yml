@@ -29,6 +29,11 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: echo "CHROME_PATH=${{ steps.chrome.outputs.chrome-path }}" >> "$GITHUB_ENV"
+      # Ubuntu 23.10+ restricts unprivileged user namespaces through AppArmor, which leaves an
+      # unpackaged Chrome with no usable sandbox. Lift the restriction instead of --no-sandbox.
+      - name: Allow Chrome's user-namespace sandbox
+        if: runner.os == 'Linux'
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: bun install --frozen-lockfile
       - run: bun run check
       - run: bun run format:check
