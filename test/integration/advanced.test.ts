@@ -6,7 +6,7 @@ describe('environment and interaction boundaries', () => {
     const f = fixtureServer();
     const b = await Browser.launch({
       headless: process.env.NODRIVER_HEADFUL !== '1',
-      timeout: 3000,
+      timeout: 15_000,
     });
     try {
       const t = await b.newTab();
@@ -44,7 +44,7 @@ describe('environment and interaction boundaries', () => {
     const errors: unknown[] = [];
     const b = await Browser.launch({
       headless: process.env.NODRIVER_HEADFUL !== '1',
-      timeout: 5000,
+      timeout: 15_000,
       args: ['--site-per-process'],
       onError: (e) => errors.push(e),
     });

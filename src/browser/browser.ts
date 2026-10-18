@@ -194,7 +194,8 @@ export class Browser {
       if (e.targetInfo.type === 'page') this.frontTab = undefined;
       if (e.targetInfo.type === 'page' && this.shouldAttach(e.targetInfo))
         void this.attach(e.targetInfo).catch((error) => {
-          if (!this.closed) this.reportError(error);
+          // A page that closes while it is being set up (short-lived popups) is not an error.
+          if (!this.closed && !(error instanceof DisconnectedError)) this.reportError(error);
         });
     });
     this.cdp.on('Target.targetInfoChanged', (e) => {

@@ -145,7 +145,12 @@ export class Network {
   /** Enables the Network domain on every tab session, now and for later OOPIFs. */
   async enable(): Promise<void> {
     this.wanted = true;
-    for (const session of this.configured) if (!session.closed) await this.enableSession(session);
+    for (const session of this.configured)
+      if (!session.closed)
+        // A frame session that detaches mid-setup needs no Network domain.
+        await this.enableSession(session).catch((error: unknown) => {
+          if (!session.closed) throw error;
+        });
   }
   private enableSession(session: Session): Promise<void> {
     const existing = this.enabled.get(session);

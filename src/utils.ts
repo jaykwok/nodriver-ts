@@ -1,3 +1,4 @@
+import { rm } from 'node:fs/promises';
 import { TimeoutError } from './errors.js';
 export interface WaitOptions {
   timeout?: number;
@@ -76,5 +77,23 @@ export class EventHub<T> {
   }
   get size(): number {
     return this.listeners.size;
+  }
+}
+
+const BUSY = new Set(['EBUSY', 'EPERM', 'EACCES', 'ENOTEMPTY', 'EMFILE', 'ENFILE']);
+/**
+ * Recursively removes a directory, retrying while Windows reports files as busy (Chrome's
+ * helper processes can outlive the browser process briefly). Bun ignores rm's own maxRetries.
+ */
+export async function removeTree(path: string, timeout = 10_000): Promise<void> {
+  const end = Date.now() + timeout;
+  for (let wait = 50; ; wait = Math.min(wait * 2, 500)) {
+    try {
+      await rm(path, { recursive: true, force: true });
+      return;
+    } catch (e) {
+      if (!BUSY.has((e as NodeJS.ErrnoException).code ?? '') || Date.now() + wait > end) throw e;
+      await delay(wait);
+    }
   }
 }

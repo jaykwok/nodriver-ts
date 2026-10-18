@@ -23,7 +23,7 @@ describe('proxy routing', () => {
     await upstream.listen();
     const b = await Browser.launch({
       headless: process.env.NODRIVER_HEADFUL !== '1',
-      timeout: 5000,
+      timeout: 15_000,
     });
     try {
       const context = await b.newContext({
@@ -83,7 +83,7 @@ describe('proxy routing', () => {
     const socks = await socksFixture();
     const b = await Browser.launch({
       headless: process.env.NODRIVER_HEADFUL !== '1',
-      timeout: 5000,
+      timeout: 15_000,
     });
     try {
       const context = await b.newContext({

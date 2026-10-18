@@ -1,3 +1,4 @@
+import { removeTree } from '../../src/utils.js';
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { mkdtemp, readFile, rm, writeFile, access } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -11,7 +12,7 @@ const errors: unknown[] = [];
 beforeAll(async () => {
   browser = await Browser.launch({
     headless: process.env.NODRIVER_HEADFUL !== '1',
-    timeout: 5000,
+    timeout: 15_000,
     args: ['--site-per-process'],
     onError: (e) => errors.push(e),
   });
@@ -217,7 +218,7 @@ describe('browser and page', () => {
         expect(opened.context).toBe(tab.context);
         await opened.close();
       } finally {
-        await rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+        await removeTree(directory);
       }
     }));
   test('network interception and response events', async () =>

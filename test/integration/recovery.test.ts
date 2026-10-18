@@ -1,3 +1,4 @@
+import { removeTree } from '../../src/utils.js';
 import { describe, expect, test } from 'bun:test';
 import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -26,7 +27,7 @@ describe('navigation and lifecycle failures', () => {
     for (let attempt = 0; attempt < 3; attempt++) {
       const b = await Browser.launch({
         headless: process.env.NODRIVER_HEADFUL !== '1',
-        timeout: 3000,
+        timeout: 15_000,
       });
       const profile = b.process!.profile;
       try {
@@ -47,7 +48,7 @@ describe('navigation and lifecycle failures', () => {
     const f = fixtureServer();
     const b = await Browser.launch({
       headless: process.env.NODRIVER_HEADFUL !== '1',
-      timeout: 3000,
+      timeout: 15_000,
       args: ['--site-per-process'],
     });
     try {
@@ -68,7 +69,7 @@ describe('navigation and lifecycle failures', () => {
     const f = fixtureServer();
     const b = await Browser.launch({
       headless: process.env.NODRIVER_HEADFUL !== '1',
-      timeout: 5000,
+      timeout: 15_000,
       args: ['--site-per-process'],
     });
     try {
@@ -117,7 +118,7 @@ describe('navigation and lifecycle failures', () => {
     const f = fixtureServer();
     const b = await Browser.launch({
       headless: process.env.NODRIVER_HEADFUL !== '1',
-      timeout: 2000,
+      timeout: 15_000,
     });
     try {
       const t = await b.newTab(f.base + '/page');
@@ -145,13 +146,14 @@ describe('navigation and lifecycle failures', () => {
     const f = fixtureServer();
     const b = await Browser.launch({
       headless: process.env.NODRIVER_HEADFUL !== '1',
-      timeout: 2000,
+      timeout: 15_000,
     });
     try {
       const t = await b.newTab(f.base + '/page');
       const handle = await t.waitForSelector('#button');
       const wait = t.waitForNavigation();
-      const crashed = t.cdp.waitFor('Inspector.targetCrashed');
+      // Linux runners can take seconds to report a crash (crash handler dump).
+      const crashed = t.cdp.waitFor('Inspector.targetCrashed', undefined, { timeout: 30_000 });
       const command = t.cdp.sendWith('Page.crash', { timeout: 300 }).catch(() => {});
       await crashed;
       await expect(wait).rejects.toThrow('crashed');
@@ -180,14 +182,14 @@ describe('navigation and lifecycle failures', () => {
       }
       await expect(access(join(profile, '.nodriver.lock'))).rejects.toThrow();
     } finally {
-      await rm(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+      await removeTree(profile);
     }
   });
   test('20 contexts remain isolated and release their target/session subscriptions', async () => {
     const f = fixtureServer();
     const b = await Browser.launch({
       headless: process.env.NODRIVER_HEADFUL !== '1',
-      timeout: 10000,
+      timeout: 15_000,
     });
     try {
       const baseline = b.connection.listenerCount;

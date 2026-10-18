@@ -1,3 +1,4 @@
+import { removeTree } from '../../src/utils.js';
 import { test, expect, spyOn } from 'bun:test';
 import { Client, type CallToolResult } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
@@ -325,6 +326,6 @@ test('MCP stdio EOF closes Chrome and releases persistent profile lock', async (
     expect(endpointAlive).toBeFalse();
   } finally {
     await client.close();
-    await rm(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    await removeTree(profile);
   }
 });

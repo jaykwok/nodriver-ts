@@ -17,7 +17,7 @@ import { WebSocketTransport } from '../transport/websocket.js';
 import { PipeTransport } from '../transport/pipe.js';
 import type { Transport } from '../transport/transport.js';
 import { DisconnectedError, NodriverError } from '../errors.js';
-import { abortReason, delay, poll, timeoutValue, type WaitOptions } from '../utils.js';
+import { abortReason, delay, poll, removeTree, timeoutValue, type WaitOptions } from '../utils.js';
 export interface LaunchOptions extends WaitOptions {
   executablePath?: string;
   /** False by default. Set true when running without a graphical desktop. */
@@ -310,7 +310,7 @@ export class BrowserProcess {
           await lock.close();
           await rm(join(profile, '.nodriver.lock'), { force: true });
         }
-        if (temporary) await rm(profile, { recursive: true, force: true, maxRetries: 10 });
+        if (temporary) await removeTree(profile);
       }
       throw e;
     }
@@ -394,8 +394,7 @@ export class BrowserProcess {
       await this.lock.close();
       await rm(join(this.profile, '.nodriver.lock'), { force: true });
     }
-    if (this.temporary)
-      await rm(this.profile, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+    if (this.temporary) await removeTree(this.profile);
     else await rm(join(this.profile, 'DevToolsActivePort'), { force: true });
   }
 }

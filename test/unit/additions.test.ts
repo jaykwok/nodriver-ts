@@ -1,5 +1,6 @@
 import { expect, test } from 'bun:test';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
 import { tmpdir, hostname } from 'node:os';
 import { join } from 'node:path';
 import { Connection } from '../../src/protocol/connection.js';
@@ -10,6 +11,7 @@ import { Keyboard, keyDefinition, parseChord } from '../../src/input/input.js';
 import { acquireProfileLock } from '../../src/browser/launcher.js';
 import { BrowserSessionManager, LeaseError } from '../../src/mcp/manager.js';
 import { BrowserMcpSession } from '../../src/mcp/session.js';
+import { removeTree } from '../../src/utils.js';
 
 function fakeSession() {
   const messages: any[] = [];
@@ -198,4 +200,16 @@ test('snapshot text renders an indented tree with refs, states and pagination hi
     'Other frames (snapshot with frameId): f2 https://ads.example/',
     '[3 of 9 nodes; continue with offset=3]',
   ]);
+});
+
+test('removeTree retries while another process keeps the directory busy', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'nodriver-rm-'));
+  const busy = join(root, 'a', 'b');
+  await mkdir(busy, { recursive: true });
+  await writeFile(join(busy, 'f'), 'x');
+  // On Windows a process whose cwd is inside the tree makes rm fail with EBUSY until it exits.
+  const child = spawn('node', ['-e', 'setTimeout(()=>{},700)'], { cwd: busy, stdio: 'ignore' });
+  await new Promise((resolve) => child.once('spawn', resolve));
+  await removeTree(root, 10_000);
+  await expect(access(root)).rejects.toMatchObject({ code: 'ENOENT' });
 });

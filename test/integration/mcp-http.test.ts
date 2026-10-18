@@ -1,3 +1,4 @@
+import { removeTree } from '../../src/utils.js';
 import { expect, test, spyOn } from 'bun:test';
 import {
   Client,
@@ -338,7 +339,7 @@ test('HTTP queue cancellation, operation deadlines, bounded requests and active 
   const manager = new BrowserSessionManager({
     launch: { headless: process.env.NODRIVER_HEADFUL !== '1', transport: 'pipe' },
     queueLimit: 1,
-    operationTimeout: 2000,
+    operationTimeout: 8000, // includes a cold Chrome launch on slow CI runners
     leaseIdleMs: 100,
     sweepIntervalMs: 60000,
   });
@@ -533,7 +534,7 @@ test('manager persistent/external ownership and crash invalidation', async () =>
     await access(profile);
   } finally {
     await persistent.close();
-    await rm(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    await removeTree(profile);
   }
   const owner = await Browser.launch({ headless: process.env.NODRIVER_HEADFUL !== '1' });
   const external = new BrowserSessionManager({ connect: { endpoint: owner.endpoint! } });
