@@ -1,10 +1,10 @@
-# 上游核心 API 对应表
+# 上游 API 对应表
 
-来源固定为 nodriver `219a60d65d82fb3d137d0c2c5b1fb285a9f837d0` 的 core/browser.py、tab.py、element.py、connection.py、config.py；逐项提取 public 成员，去重同名重载。不是未经核查的全功能等价声明。Python 魔术方法、私有实现、生成的 CDP 模块由 Promise/标准集合/官方类型映射替代。util 中代理使用 proxy-chain，其余屏幕/媒体/交互式调试辅助不纳入首版。
+对照 nodriver 提交 `219a60d65d82fb3d137d0c2c5b1fb285a9f837d0` 的 `core/browser.py`、`tab.py`、`element.py`、`connection.py`、`config.py`，列出全部 163 个 public 成员（同名重载合并）。Python 魔术方法、私有实现和生成的 CDP 模块由 Promise、标准集合和官方协议类型替代；代理由 proxy-chain 处理，屏幕、媒体和交互式调试辅助不在范围内。
 
-映射到高层 API 的核心行为由 integration 测试验证；映射到 cdp/evaluate 的行是显式扩展方式，不代表另有已实现同名封装。特定边界见 support.md 和 api.md。
+对应项为高层 API 时，行为由集成测试覆盖；为 `cdp` 命令或 `evaluate` 时，表示通过协议或页面脚本自行实现，没有同名封装。行为边界见 [API](api.md) 与 [支持范围](support.md)。
 
-| 上游成员                                     | TS 行为与取舍                                                     |
+| 上游成员                                     | TS 对应                                                           |
 | -------------------------------------------- | ----------------------------------------------------------------- |
 | `browser.Browser.create`                     | Browser.launch / Browser.connect                                  |
 | `browser.Browser.main_tab`                   | Browser.tabs[0]                                                   |
@@ -169,5 +169,3 @@
 | `element.Element.record_video`               | 有意不含编码器；CDP Page.startScreencast 可扩展                   |
 | `element.Element.is_recording`               | 不提供高层录制会话                                                |
 | `element.Position.to_viewport`               | 协议扩展或标准 TypeScript 数据结构；不提供同名封装                |
-
-共核查 163 个 public 成员。支持状态以实际测试与支持矩阵为准。

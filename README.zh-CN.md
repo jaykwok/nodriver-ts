@@ -1,10 +1,10 @@
 # nodriver-ts
 
-[nodriver](https://github.com/ultrafunkamsterdam/nodriver) 的非官方 TypeScript 重新设计实现，与 nodriver 作者无隶属或背书关系。
+基于 [nodriver](https://github.com/ultrafunkamsterdam/nodriver) 重新设计的 TypeScript 实现。
 
 [English](README.md)
 
-直接使用 Chrome DevTools Protocol 驱动 Chrome/Chromium/Edge。默认不发送 `Runtime.enable`，保留 Chrome sandbox 和站点隔离，支持 WebSocket 与 Pipe。它借鉴 nodriver 的使用范式并重新设计实现，不是 Python API 的逐行翻译，也不宣称 clean-room 或不可检测。内置 MCP 服务（Streamable HTTP、stdio、本地 socket），供 agent 使用同一内核。
+直接使用 Chrome DevTools Protocol 驱动 Chrome/Chromium/Edge。默认不发送 `Runtime.enable`，保留 Chrome sandbox 和站点隔离，支持 WebSocket 与 Pipe。内置 MCP 服务（Streamable HTTP、stdio、本地 socket），供 agent 使用同一内核。
 
 ## 运行
 
@@ -48,7 +48,7 @@ const xpath = await tab.query({ xpath: '//main/h1' });
 await tab.screenshot({ path: 'page.png', fullPage: true });
 ```
 
-CSS 和文本查询默认进入 open/closed shadow root；`pierce: false` 可关闭。常见查询在 isolated world 中一次完成，不调用 `DOM.getDocument`；只有页面存在 closed shadow root 时才走 DOM 扫描（结果按文档代次缓存）。XPath 遵循标准语义，不穿越 shadow root。文本会折叠空白，默认只选可见且不包含同样匹配子元素的最小元素。查询只针对所选 frame。
+CSS 和文本查询默认进入 open/closed shadow root；`pierce: false` 可关闭。查询在 isolated world 中执行；识别 closed shadow root 所需的 DOM 扫描会缓存，无 closed shadow root 的结果最多复用 1 秒。XPath 遵循标准语义，不穿越 shadow root。文本会折叠空白，默认只选可见且不包含同样匹配子元素的最小元素。查询只针对所选 frame。
 
 ```ts
 for (const frame of tab.frames) {
@@ -98,7 +98,7 @@ const unroute = await tab.network.route(/\/api\/item$/, (route) =>
 );
 await unroute();
 await tab.network.authenticate({ username: 'user', password: 'pass' });
-tab.network.responses.on((response) => console.log(response.status, response.url));
+tab.network.responses.on(({ event }) => console.log(event.response.status, event.response.url));
 
 await context.setDownloadDirectory('./downloads');
 const pending = tab.waitForDownload();
@@ -124,8 +124,6 @@ await using external = await Browser.connect({ endpoint: 'http://127.0.0.1:9222'
 
 外部连接的 `close()` 只断开连接，不关闭 Chrome。`attach: 'created'` 只附加本客户端打开的标签页及其弹出页，不触碰用户已有标签页；默认 `'all'`。远程调试端点拥有浏览器控制权限，应由部署方限制访问。
 
-完整 API 见 [API 说明](docs/api.md)、[支持范围](docs/support.md)、[上游映射](docs/upstream-api-map.md)。
-
 ## MCP / agent 调用
 
 ```sh
@@ -143,8 +141,24 @@ node dist/mcp/cli.js --mcp-transport http --port 3100
 - HTTP 仅监听 loopback；省略 `Browser-Lease-Id` 使用该 token 的 `default` 租约，任意合法名称（字母、数字、`. _ -`）首次使用即创建独立租约。
 - `--read-only`、`--disable-tool` 限制工具面；`--proxy`、`--lang`、`--window-size`、`--input-policy human` 等见 `nodriver-mcp --help`。
 
-详细说明见 [MCP](docs/mcp.md)、[HTTP 接入](docs/mcp-http.md)、[socket 接入](docs/mcp-socket.md)、[输入策略](docs/input.md)、[性能测量](docs/performance.md)、[长稳测试](docs/soak.md)。
+## 文档
+
+| 文档                                       | 内容                                       |
+| ------------------------------------------ | ------------------------------------------ |
+| [API](docs/api.md)                         | 对象、期限与取消、查询、求值、存储         |
+| [输入](docs/input.md)                      | human 输入策略、文本与按键、点击检查、取消 |
+| [环境](docs/environment.md)                | 环境采样、诊断、显式对齐、代理与 WebRTC    |
+| [自动化痕迹审计](docs/automation-audit.md) | 默认协议行为、回归证据、检测结果           |
+| [MCP](docs/mcp.md)                         | CLI、工具、引用、页面 JavaScript、嵌入     |
+| [HTTP 接入](docs/mcp-http.md)              | 租约、认证、限额、资源、人工交互           |
+| [socket 接入](docs/mcp-socket.md)          | Unix socket / 命名管道服务与客户端         |
+| [支持范围](docs/support.md)                | 已验证平台、能力、限制                     |
+| [性能](docs/performance.md)                | 基准方法与基线                             |
+| [长稳测试](docs/soak.md)                   | 长时间资源回收测试                         |
+| [上游映射](docs/upstream-api-map.md)       | nodriver 成员与 TypeScript 对应项          |
+
+变更记录见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 许可
 
-AGPL-3.0-or-later，见 [LICENSE](LICENSE)；来源与上游署名见 [NOTICE](NOTICE.md)。安全问题见 [SECURITY.md](SECURITY.md)，贡献说明见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+AGPL-3.0-or-later，见 [LICENSE](LICENSE)。

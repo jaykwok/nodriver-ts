@@ -1,10 +1,10 @@
 # nodriver-ts
 
-Unofficial TypeScript redesign of [nodriver](https://github.com/ultrafunkamsterdam/nodriver). It is not affiliated with or endorsed by the nodriver authors.
+TypeScript redesign of [nodriver](https://github.com/ultrafunkamsterdam/nodriver).
 
 [简体中文](README.zh-CN.md)
 
-nodriver-ts drives Chrome, Chromium and Edge directly over the Chrome DevTools Protocol (CDP), with no WebDriver and no Runtime.enable. It follows nodriver's approach but is a redesign rather than a line-by-line port of the Python API, and makes no clean-room claim. A built-in [Model Context Protocol](https://modelcontextprotocol.io/specification/2026-07-28) server lets agents use the same engine over Streamable HTTP, stdio or a local socket.
+nodriver-ts drives Chrome, Chromium and Edge directly over the Chrome DevTools Protocol (CDP), with no WebDriver and no Runtime.enable. A built-in [Model Context Protocol](https://modelcontextprotocol.io/specification/2026-07-28) server lets agents use the same engine over Streamable HTTP, stdio or a local socket.
 
 - **Quiet by default.** The library never sends `Runtime.enable`, `Runtime.addBinding`, `Console.enable` or `Debugger.enable`, and never falls back to them. It finds the main world through the frame's document and `DOM.resolveNode`. It does not inject getters, init scripts or a bridge. Chrome's sandbox and site isolation stay on.
 - **Frames.** Same-process iframes, out-of-process iframes (OOPIF) and nested OOPIFs each run in their own CDP session. Queries pierce open and closed shadow roots.
@@ -130,10 +130,26 @@ bun run test:node        # build, then a Node.js smoke test of the package and M
 bun run format:check
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Report security issues as described in [SECURITY.md](SECURITY.md). Changes are recorded in [CHANGELOG.md](CHANGELOG.md).
+## Documentation
 
-Most documents under `docs/` are currently written in Chinese.
+The documents under `docs/` are written in Chinese.
+
+| Document                                     | Contents                                                          |
+| -------------------------------------------- | ----------------------------------------------------------------- |
+| [API](docs/api.md)                           | Objects, deadlines and cancellation, queries, evaluation, storage |
+| [Input](docs/input.md)                       | The human input policy, typing, pointer checks, cancellation      |
+| [Environment](docs/environment.md)           | Environment sampling, diagnostics, explicit alignment, WebRTC     |
+| [Automation audit](docs/automation-audit.md) | Default protocol behaviour, regression evidence, detector results |
+| [MCP](docs/mcp.md)                           | CLI, tools, refs, page JavaScript, embedding                      |
+| [MCP over HTTP](docs/mcp-http.md)            | Leases, authentication, limits, resources, hand-off               |
+| [MCP over socket](docs/mcp-socket.md)        | Unix socket / named pipe service and client                       |
+| [Support](docs/support.md)                   | Verified platforms, capabilities, limitations                     |
+| [Performance](docs/performance.md)           | Benchmark method and baseline                                     |
+| [Soak test](docs/soak.md)                    | Long-running resource test                                        |
+| [Upstream API map](docs/upstream-api-map.md) | nodriver members and their TypeScript counterparts                |
+
+Changes are recorded in [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
-AGPL-3.0-or-later. See [LICENSE](LICENSE) and [NOTICE.md](NOTICE.md) for provenance and upstream attribution.
+AGPL-3.0-or-later. See [LICENSE](LICENSE).

@@ -56,9 +56,7 @@
     "README.md",
     "README.zh-CN.md",
     "CHANGELOG.md",
-    "SECURITY.md",
     "LICENSE",
-    "NOTICE.md",
     "docs/*.md"
   ],
   "scripts": {
