@@ -27,7 +27,7 @@ The verified platforms and versions are listed in [docs/support.md](docs/support
 The package is not published to npm yet. To build from source:
 
 ```sh
-git clone <this repository> nodriver-ts
+git clone https://github.com/jaykwok/nodriver-ts.git
 cd nodriver-ts
 bun install --frozen-lockfile
 bun run build

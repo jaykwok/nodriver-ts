@@ -15,6 +15,14 @@
     "typescript",
     "bun"
   ],
+  "homepage": "https://github.com/jaykwok/nodriver-ts#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jaykwok/nodriver-ts.git"
+  },
+  "bugs": {
+    "url": "https://github.com/jaykwok/nodriver-ts/issues"
+  },
   "type": "module",
   "license": "AGPL-3.0-or-later",
   "engines": {
