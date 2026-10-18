@@ -1,0 +1,90 @@
+{
+  "name": "nodriver-ts",
+  "version": "0.1.0",
+  "description": "Unofficial TypeScript redesign of nodriver: Chrome automation over CDP without Runtime.enable, with a native MCP server (Streamable HTTP and stdio)",
+  "keywords": [
+    "nodriver",
+    "cdp",
+    "chrome-devtools-protocol",
+    "chrome",
+    "chromium",
+    "browser-automation",
+    "mcp",
+    "model-context-protocol",
+    "ai-agent",
+    "typescript",
+    "bun"
+  ],
+  "type": "module",
+  "license": "AGPL-3.0-or-later",
+  "engines": {
+    "node": ">=22",
+    "bun": ">=1.4.3"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./mcp": {
+      "types": "./dist/mcp/server.d.ts",
+      "import": "./dist/mcp/server.js"
+    },
+    "./mcp/http": {
+      "types": "./dist/mcp/http.d.ts",
+      "import": "./dist/mcp/http.js"
+    },
+    "./mcp/socket": {
+      "types": "./dist/mcp/socket.d.ts",
+      "import": "./dist/mcp/socket.js"
+    }
+  },
+  "bin": {
+    "nodriver-mcp": "./dist/mcp/cli.js"
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "README.zh-CN.md",
+    "CHANGELOG.md",
+    "SECURITY.md",
+    "LICENSE",
+    "NOTICE.md",
+    "docs/*.md"
+  ],
+  "scripts": {
+    "mcp": "bun src/mcp/cli.ts",
+    "check": "tsc --noEmit && tsc -p tsconfig.test.json",
+    "build": "tsc",
+    "test": "bun test ./test/unit",
+    "test:integration": "bun test --timeout 60000 ./test/integration",
+    "test:audit": "bun test --timeout 60000 ./test/unit/execution-context.test.ts ./test/integration/runtime.test.ts",
+    "test:mcp": "bun test --timeout 60000 ./test/unit/mcp-manager.test.ts ./test/unit/mcp-socket.test.ts ./test/integration/mcp.test.ts ./test/integration/mcp-http.test.ts ./test/integration/mcp-socket.test.ts ./test/integration/mcp-contract.test.ts ./test/integration/mcp-evaluate.test.ts",
+    "test:compat": "bun test --timeout 120000 ./test/integration/runtime.test.ts ./test/integration/environment.test.ts ./test/integration/churn.test.ts",
+    "test:signals": "bun test --timeout 60000 ./test/integration/native-signals.test.ts",
+    "test:soak": "bun benchmarks/soak.ts",
+    "test:all": "bun run check && bun test --timeout 60000 ./test",
+    "example": "bun examples/basic.ts",
+    "bench:mcp": "bun benchmarks/mcp.ts",
+    "format": "prettier --write src test examples benchmarks \"*.md\" \"docs/*.md\"",
+    "format:check": "prettier --check src test examples benchmarks \"*.md\" \"docs/*.md\"",
+    "prepack": "bun run check && bun run build",
+    "test:node": "bun run build && node --test test/node-http.mjs && node test/node-smoke.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "2.3.1",
+    "@types/node": "26.6.5",
+    "@types/ws": "8.18.2",
+    "devtools-protocol": "0.0.1718299",
+    "proxy-chain": "3.0.1",
+    "ws": "8.22.0",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/client": "2.3.1",
+    "@types/bun": "1.4.3",
+    "prettier": "3.9.10",
+    "typescript": "7.0.2"
+  }
+}

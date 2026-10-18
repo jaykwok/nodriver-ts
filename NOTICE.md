@@ -1,0 +1,7 @@
+# Implementation and license provenance
+
+This TypeScript/Bun implementation was created on 2026-10-15, informed by the behavior and architecture of [ultrafunkamsterdam/nodriver](https://github.com/ultrafunkamsterdam/nodriver) at commit `219a60d65d82fb3d137d0c2c5b1fb285a9f837d0` and the official Chrome DevTools Protocol. It is a redesign, not a line-by-line translation. We make no clean-room claim. The project is distributed under AGPL-3.0-or-later; see LICENSE. The upstream nodriver contributors retain their rights in upstream material.
+
+Official protocol declarations: devtools-protocol (BSD-3-Clause), pinned in bun.lock and shipped as a dependency so exported types resolve for consumers. Proxy forwarding: proxy-chain (Apache-2.0), with transitive licenses retained by the package manager. No Patchright/rebrowser code is incorporated. As of 2026-10-16, main-world context discovery includes a validated Chromium/V8 object-ID adapter; this internal format is not a CDP guarantee and the verified browser range is documented in docs/automation-audit.md. The framework does not automatically enable Runtime, including as a fallback. No claim of undetectability is made.
+
+WebSocket framing uses the pinned npm ws 8.22.0 implementation (MIT). Public type resolution includes @types/node and @types/ws (MIT). Dependencies retain their own license files; the source package does not relicense those separate dependencies. Transitive runtime dependencies include MIT and 0BSD packages, as reported by `bun pm licenses --prod`.

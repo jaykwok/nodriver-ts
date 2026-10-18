@@ -1,0 +1,139 @@
+# nodriver-ts
+
+Unofficial TypeScript redesign of [nodriver](https://github.com/ultrafunkamsterdam/nodriver). It is not affiliated with or endorsed by the nodriver authors.
+
+[简体中文](README.zh-CN.md)
+
+nodriver-ts drives Chrome, Chromium and Edge directly over the Chrome DevTools Protocol (CDP), with no WebDriver and no Runtime.enable. It follows nodriver's approach but is a redesign rather than a line-by-line port of the Python API, and makes no clean-room claim. A built-in [Model Context Protocol](https://modelcontextprotocol.io/specification/2026-07-28) server lets agents use the same engine over Streamable HTTP, stdio or a local socket.
+
+- **Quiet by default.** The library never sends `Runtime.enable`, `Runtime.addBinding`, `Console.enable` or `Debugger.enable`, and never falls back to them. It finds the main world through the frame's document and `DOM.resolveNode`. It does not inject getters, init scripts or a bridge. Chrome's sandbox and site isolation stay on.
+- **Frames.** Same-process iframes, out-of-process iframes (OOPIF) and nested OOPIFs each run in their own CDP session. Queries pierce open and closed shadow roots.
+- **Input.** Clicks wait for the target to be visible, stable and unobscured before dispatching, and actions are never replayed. An optional seeded "human" policy adds pointer paths, key-event typing and wheel scrolling.
+- **Agent-ready MCP.** Tools take short stable element refs (`e12`) from an indented accessibility snapshot. An action returns a summary of what happened: navigation, new tabs, dialogs. HTTP clients get application-level leases, so browser state survives across requests and reconnects. Only MCP **2026-07-28** is accepted.
+- **Runtimes.** The library is built and tested on Bun 1.4.3 and also runs on Node.js 22 or newer. The MCP HTTP server uses `Bun.serve` on Bun and `node:http` on Node.
+
+> No automation framework is undetectable. nodriver-ts removes the common CDP and WebDriver tells; it does not promise that any site will let you through. Read [the automation audit](docs/automation-audit.md) for what has and has not been measured.
+
+## Requirements
+
+- Bun ≥ 1.4.3, or Node.js ≥ 22. The CLI and package entry points run on both.
+- A locally installed Chrome, Chromium or Edge. It is auto-detected on Windows, macOS and Linux, including on `PATH`; otherwise set `CHROME_PATH` or `executablePath`.
+- Chrome opens with a window by default (`headless: false`). Servers and CI without a display should pass `headless: true` / `--headless`. Run Linux as a normal user with Chrome's shared libraries installed; the library never adds `--no-sandbox`.
+
+The verified platforms and versions are listed in [docs/support.md](docs/support.md).
+
+## Install
+
+The package is not published to npm yet. To build from source:
+
+```sh
+git clone <this repository> nodriver-ts
+cd nodriver-ts
+bun install --frozen-lockfile
+bun run build
+```
+
+## Library quick start
+
+```ts
+import { Browser } from 'nodriver-ts';
+
+await using browser = await Browser.launch({ transport: 'pipe' }); // headful by default; WebSocket if omitted
+const tab = await browser.newTab('https://example.com');
+console.log(await (await tab.waitForSelector('h1')).text());
+
+await (await tab.waitForSelector('#name')).fill('Unicode works: 中文 😀');
+await Promise.all([
+  tab.waitForNavigation({ waitUntil: 'networkidle' }),
+  (await tab.query({ text: 'Submit', exact: true }))!.click(),
+]);
+await tab.screenshot({ path: 'page.png', fullPage: true });
+```
+
+- **Main world.** `evaluate` runs there by default (`{ world: 'isolated' }` is also available); functions are serialized into the page.
+- **Frames.** `tab.frames` lists every frame, including OOPIFs, and queries never cross frames silently.
+- **Browser contexts.** `browser.newContext({ proxy })` isolates cookies and storage per context, and supports authenticated HTTP(S) and SOCKS upstream proxies.
+- **Network.** `tab.network.route()` intercepts and fulfils requests, `authenticate()` answers auth challenges, and `responses` subscribes to responses. `Network.enable` is only sent when you subscribe to responses or set headers/cache/offline.
+- **Input policy.** `tab.setInputPolicy({ mode: 'human', seed })` switches on reproducible trajectories, key-event typing for US-layout characters, and wheel scrolling. Other text, such as CJK or emoji, goes through `insertText`.
+- **Existing browsers.** `Browser.connect({ endpoint, attach: 'created' })` attaches only to tabs that this client opens or that they open (the default, `'all'`, attaches to every tab). `close()` only disconnects.
+- **CDP tracing.** Set `NODRIVER_TRACE=1` to log one line per CDP command (method, session, duration, error code) to stderr; parameters and results are never logged.
+
+See [docs/api.md](docs/api.md) and the [examples](examples/).
+
+## MCP server
+
+Point a stdio MCP client at the CLI:
+
+```json
+{
+  "mcpServers": {
+    "browser": {
+      "command": "node",
+      "args": ["/path/to/nodriver-ts/dist/mcp/cli.js"]
+    }
+  }
+}
+```
+
+Once the package is installed, the binary is `nodriver-mcp`. To run it as a long-lived local HTTP service:
+
+```sh
+export NODRIVER_MCP_TOKEN="$(openssl rand -hex 32)"   # at least 32 characters
+nodriver-mcp --mcp-transport http --port 3100
+# clients connect to http://127.0.0.1:3100/mcp with "Authorization: Bearer $NODRIVER_MCP_TOKEN"
+```
+
+- **HTTP leases.** HTTP listens on loopback only. A client that omits `Browser-Lease-Id` uses the token's `default` lease. Any lease name made of letters, digits and `. _ -` creates a separate lease on first use, which lets several agents keep independent browser state. The lease id is echoed in the `Browser-Lease-Id` response header.
+- **Client requirements.** Clients must speak MCP 2026-07-28 (`server/discover` with per-request metadata). With the official TypeScript client 2.3.1, pin `versionNegotiation: { mode: { pin: '2026-07-28' } }`. Legacy `initialize` is rejected before any browser work.
+- **Browser launch.** Chrome starts lazily on the first `browser_open`, using the `agent` launch preset, which suppresses first-run and search-engine-choice UI and background throttling.
+
+Run `nodriver-mcp --help` for every flag. Some useful ones:
+
+- `--headless`, `--user-data-dir`, `--endpoint http://127.0.0.1:9222`, `--proxy URL`
+- `--lang`, `--window-size 1280x800`, `--user-agent`
+- `--input-policy human`, `--read-only`, `--disable-tool NAME`
+- `--upload-dir`, `--download-dir`, `--state-dir`: each enables the matching file tool, restricted to that directory.
+
+### Tools
+
+The 26 default tools are:
+
+- **Tabs and navigation:** `browser_tabs`, `browser_open`, `browser_navigate`, `browser_history`, `browser_close_tab`, `browser_close`
+- **Observation:** `browser_snapshot` (indented accessibility tree with refs, `interactiveOnly`, `root` and `offset` paging), `browser_find` (CSS, XPath or text), `browser_wait`, `browser_screenshot` (PNG/JPEG/WebP, element or full page, scale), `browser_network` (opt-in response log)
+- **Actions:** `browser_click`, `browser_click_at`, `browser_hover`, `browser_drag`, `browser_fill`, `browser_type`, `browser_press_key`, `browser_select`, `browser_check`, `browser_scroll`, `browser_dialog`
+- **Other:** `browser_evaluate` (async function body in the main or isolated world), `browser_input_policy`, `browser_environment` (diagnostics and explicit alignment), `browser_handoff` (asks the user to finish a manual step through elicitation)
+
+Three tools are optional and appear only when their directory flag is set: `browser_upload`, `browser_downloads` and `browser_storage_state`.
+
+Action tools accept `waitFor: "auto" | "load" | "none"` and `snapshot: true`. They return what happened (`navigated`, `newTabs`, `dialog`, `tabClosed`), so the agent does not need an extra round-trip after each step.
+
+The stdio, HTTP, socket and in-memory entry points share one tool implementation, lease manager and browser pool. More detail is in [docs/mcp.md](docs/mcp.md), [docs/mcp-http.md](docs/mcp-http.md) and [docs/mcp-socket.md](docs/mcp-socket.md).
+
+## Automation traces
+
+What the defaults do:
+
+- No automatic `Runtime`, `Console` or `Debugger` domains, no bindings and no init scripts in the main world.
+- Chromium's `AutomationControlled` feature is disabled, so `navigator.webdriver` is natively `false`. No getter is patched.
+- In headless mode, "HeadlessChrome" is removed from the UA string and the UA client hints by a per-target override (`maskHeadless`, on by default for headless). Dedicated workers inherit the override; shared and service workers may not. Headful remains the recommended mode.
+- Human-mode input dispatches keyDown/keyUp pairs that match the US layout, gives pointer presses a realistic `pressure`, starts the pointer at a random point instead of (0, 0), and only brings a tab to the front when it is not already there.
+
+These measures are not cloaking. They do not spoof fonts, WebGL, canvas, audio or hardware, and they do not solve CAPTCHAs. Environment overrides (timezone, locale, UA-CH, viewport, geolocation) are explicit opt-ins; see [docs/environment.md](docs/environment.md).
+
+## Development
+
+```sh
+bun run check            # strict type check (src and tests)
+bun run test             # unit tests
+bun run test:integration # real Chrome, both CDP transports
+bun run test:node        # build, then a Node.js smoke test of the package and MCP over HTTP
+bun run format:check
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Report security issues as described in [SECURITY.md](SECURITY.md). Changes are recorded in [CHANGELOG.md](CHANGELOG.md).
+
+Most documents under `docs/` are currently written in Chinese.
+
+## License
+
+AGPL-3.0-or-later. See [LICENSE](LICENSE) and [NOTICE.md](NOTICE.md) for provenance and upstream attribution.

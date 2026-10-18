@@ -1,0 +1,10 @@
+# Local development plans and notes
+/docs/dev/
+/dev/
+node_modules/
+dist/
+coverage/
+*.log
+test-results/
+.tmp/
+.claude/scheduled_tasks.lock
