@@ -7,6 +7,7 @@ on:
     tags: ['v*']
 permissions:
   contents: read
+  actions: read
   id-token: write
 jobs:
   publish:
@@ -21,9 +22,24 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
       - name: Tag matches package version
         run: test "${GITHUB_REF_NAME}" = "v$(node -p "require('./package.json').version")"
+      # Publish only a commit on which the browser regression workflow passed. Waits while a run
+      # for this commit (including the one this tag push started) is still in progress.
+      - name: Regression passed on this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for attempt in $(seq 60); do
+            state=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow test.yml --commit "$GITHUB_SHA" --json status,conclusion \
+              --jq 'if any(.[]; .conclusion == "success") then "pass" elif any(.[]; .status != "completed") then "wait" else "fail" end')
+            if [ "$state" = pass ]; then exit 0; fi
+            if [ "$state" = fail ]; then break; fi
+            sleep 60
+          done
+          echo "::error::Browser regression has not passed on $GITHUB_SHA"
+          exit 1
       - run: npm ci
-      # The browser suites already ran on this commit in the regression workflow; repeat the fast
-      # checks here and test the built package that is about to be published.
+      # The browser suites ran in the regression workflow; repeat the fast checks here and test
+      # the built package that is about to be published.
       - run: npm test
       - run: npm run test:dist
       - run: npm publish --provenance --access public
