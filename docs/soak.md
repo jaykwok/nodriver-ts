@@ -1,7 +1,7 @@
 # 长稳测试
 
 ```sh
-bun run test:soak -- --hours 48 --output dev/soak-my-run
+bun run test:soak -- --hours 24 --output dev/soak-my-run
 ```
 
 任务在前台运行，默认每 15 秒一轮，使用两个独立的临时 Chrome：本地 Streamable HTTP + Chrome Pipe，以及本地 socket + Chrome WebSocket。浏览器、HTTP fixture 和协议服务都是本地资源，HTTP 只监听 loopback，不访问外部站点。
@@ -37,4 +37,4 @@ touch <输出目录>/STOP                            # Linux / WSL
 
 ## 当前结果
 
-尚未完成一次 48 小时运行。已有的最长运行在 Windows 与 WSL 上各约 40 分钟（156 轮与 152 轮），通过 STOP 正常收尾：没有失败，自有浏览器、租约和分配计数归零，临时 profile 已删除。这不足以说明数日运行的稳定性。
+尚未完成一次 24 小时运行。已有的最长运行在 Windows 与 WSL 上各约 40 分钟（156 轮与 152 轮），通过 STOP 正常收尾：没有失败，自有浏览器、租约和分配计数归零，临时 profile 已删除。这不足以说明长时间运行的稳定性。

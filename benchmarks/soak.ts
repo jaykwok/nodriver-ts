@@ -25,7 +25,7 @@ function option(name: string, fallback: string) {
   const i = args.indexOf(name);
   return i < 0 ? fallback : (args[i + 1] ?? '');
 }
-const hours = Number(option('--hours', '48')),
+const hours = Number(option('--hours', '24')),
   interval = Number(option('--interval-ms', '15000'));
 const cyclesLimit = Number(option('--cycles', '0'));
 assert.ok(Number.isFinite(hours) && hours > 0 && hours <= 168);
