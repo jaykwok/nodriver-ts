@@ -10,8 +10,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # The hosted macOS VM cannot resolve mDNS (.local) host candidates, so local WebRTC
+          # never leaves ICE "new"; expose plain host addresses to the test browser instead.
           - name: macos-arm64-chrome
             os: macos-latest
+            webrtc-args: --disable-features=WebRtcHideLocalIpsWithMdns
           - name: linux-arm64-chrome
             os: ubuntu-24.04-arm
             chrome: stable
@@ -25,6 +28,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       NODRIVER_HEADFUL: '0'
+      NODRIVER_WEBRTC_ARGS: ${{ matrix.webrtc-args }}
     steps:
       - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
@@ -71,14 +75,6 @@ jobs:
         if: success() || failure()
         shell: bash
         run: bun run test:compat 2>&1 | tee test-results/compat.log
-      # Informational: whether local WebRTC connects once host candidates are not mDNS names.
-      - name: WebRTC without mDNS candidates (informational)
-        if: runner.os == 'macOS' && (success() || failure())
-        continue-on-error: true
-        shell: bash
-        env:
-          NODRIVER_WEBRTC_ARGS: --disable-features=WebRtcHideLocalIpsWithMdns
-        run: bun test --timeout 60000 ./test/integration/native-signals.test.ts -t WebRTC 2>&1 | tee test-results/webrtc-no-mdns.log
       - name: Failure summary
         if: failure()
         shell: bash

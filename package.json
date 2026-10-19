@@ -74,6 +74,7 @@
     "test:all": "bun run check && bun test --timeout 60000 ./test",
     "example": "bun examples/basic.ts",
     "bench:mcp": "bun benchmarks/mcp.ts",
+    "bench:compare": "bun benchmarks/compare.ts",
     "format": "prettier --write src test examples benchmarks \"*.md\" \"docs/*.md\"",
     "format:check": "prettier --check src test examples benchmarks \"*.md\" \"docs/*.md\"",
     "prepack": "bun run check && bun run build",

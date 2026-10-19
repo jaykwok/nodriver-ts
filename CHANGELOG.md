@@ -24,6 +24,7 @@ First public release.
 
 - Clicks check visibility, stability and occlusion, including through parent frames, and are never replayed.
 - An optional seeded `human` input policy adds pointer trajectories, key-event typing for US-layout characters and wheel scrolling. Other text goes through `insertText`. Input actions return an `InputReport`.
+- On macOS, key events carry Chrome's editing commands, so `Meta+A`, `Meta+C/X/V/Z`, `Shift+Meta+Z` and the Alt/Meta arrow and delete chords act as they do on a physical keyboard.
 - `inspectEnvironment()`, `diagnoseEnvironment()` and `alignEnvironment()` sample the environment, produce structured diagnostics and apply explicit, verified overrides. No external network access happens unless configured.
 
 ### MCP server
@@ -37,5 +38,11 @@ First public release.
 ### Runtimes
 
 - Bun ≥ 1.4.3 and Node.js ≥ 22. The MCP HTTP server uses `Bun.serve` on Bun and `node:http` on Node.
+- Windows, Linux (x64 and ARM64) and macOS (ARM64).
+
+### Tooling
+
+- `bun run test:map` regenerates [docs/test-map.md](docs/test-map.md), which maps each public member, exported function and MCP tool to the tests that call it.
+- `bun run bench:compare` runs the same workload against Python nodriver 0.50.6 on the same machine.
 
 Verified platforms and known limits are listed in [docs/support.md](docs/support.md).

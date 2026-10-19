@@ -88,7 +88,7 @@ for (const transport of ['pipe', 'websocket'] as const) {
     const browser = await Browser.launch({
       headless: process.env.NODRIVER_HEADFUL !== '1',
       transport,
-      // Diagnostic hook, e.g. --disable-features=WebRtcHideLocalIpsWithMdns to rule out mDNS.
+      // Hosts that cannot resolve mDNS candidates: --disable-features=WebRtcHideLocalIpsWithMdns.
       args: process.env.NODRIVER_WEBRTC_ARGS?.split(' ').filter(Boolean),
     });
     try {

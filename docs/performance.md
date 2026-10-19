@@ -41,8 +41,33 @@ Ryzen 5 5600X，Bun 1.4.3；Windows 使用 Chrome 155.0.8059.80，WSL2 Ubuntu 26
 
 三档分别完成 5 / 25 / 100 个任务，错误为 0；释放后租约、浏览器和分配数均为 0。运行中 Chrome 进程 RSS 之和：Windows 约 0.67 / 1.81 / 5.90 GiB，WSL 约 1.36 / 3.96 / 13.15 GiB（最后一项超过 WSL 内存额度，说明 RSS 求和重复计算了共享页，不代表物理占用）。控制器结束时 RSS 约 80–102 MiB。
 
+## 与 Python nodriver 对照
+
+`bun run bench:compare` 运行 `benchmarks/compare.ts`：同一台机器、同一个 Chrome、headless、WebSocket、全新临时 profile 和同一个本地 fixture，两侧执行相同的工作负载。Python 侧通过 `uv` 以隔离模式运行 nodriver 0.50.6（Python 3.12，websockets 17.2），脚本位于 `benchmarks/compare/nodriver_bench.py`。默认先运行 TypeScript，`BENCH_PYTHON_FIRST=1` 时先运行 Python；`BENCH_SAMPLES` 调整往返样本数（默认 200）。
+
+- **冷启动**：启动浏览器并打开空白页，各 5 次。headless 启动默认用探测页去除 UA 中的 HeadlessChrome，nodriver 不做这一步，因此另测 `maskHeadless: false` 作为对等口径。
+- **往返**：预热 20 次后测 200 次 `Browser.getVersion` 与 200 次 `evaluate("1+1")`。
+- **查询**：1000 个按钮的页面上 100 次 `#b500`（nodriver 为 `tab.select`，本项目为 `tab.query`）。
+- **导航**：20 次同源导航到新 URL。本项目 `goto` 等待 load 事件；nodriver 的 `get` 在 load 前返回，脚本以 5 ms 间隔轮询 `document.readyState` 至 complete。
+- **AX 树**：10000 个按钮的页面上 5 次 `Accessibility.getFullAXTree`（30003 个节点），含响应解析。
+- **内存**：运行结束时控制器进程的 RSS。两种运行时的内存模型不同，只作参考。
+
+Ryzen 5 5600X、Windows 11、Chrome 155.0.8059.80、Bun 1.4.3，两种顺序各运行一次，表中为中位数 / p95（ms）：
+
+| 指标                 | nodriver-ts，TS 先行 | nodriver-ts，Python 先行 | nodriver，TS 先行 | nodriver，Python 先行 |
+| -------------------- | -------------------: | -----------------------: | ----------------: | --------------------: |
+| 冷启动（默认）       |        473.9 / 499.4 |            496.6 / 522.1 |     320.5 / 337.6 |         320.0 / 345.0 |
+| 冷启动（不处理 UA）  |        372.3 / 516.1 |            343.6 / 373.5 |                 — |                     — |
+| `Browser.getVersion` |          0.15 / 0.35 |              0.16 / 0.42 |       0.22 / 0.29 |           0.23 / 0.30 |
+| `evaluate("1+1")`    |          0.24 / 0.32 |              0.24 / 0.30 |       0.31 / 0.57 |           0.33 / 0.70 |
+| CSS 查询             |          1.02 / 1.55 |              0.98 / 1.39 |     19.55 / 47.49 |         19.36 / 46.23 |
+| 导航                 |        11.14 / 13.25 |            10.60 / 11.92 |     17.16 / 21.55 |         12.29 / 13.83 |
+| AX 树，30003 节点    |        568.7 / 639.9 |            566.7 / 681.5 |   1362.1 / 1549.9 |       1379.9 / 1557.1 |
+| 控制器 RSS，MiB      |                  135 |                      171 |               496 |                   496 |
+
+单次运行，结果只描述此工作负载在此机器上的表现。查询差异来自实现方式不同（nodriver 的 `select` 每次以 `DOM.getDocument(depth=-1, pierce=true)` 取回完整 DOM 树，再在 Python 中递归查找节点），不代表 CDP 通信本身的差距；导航一项两侧的完成判定方式不同。
+
 ## 未覆盖
 
-- 与 Python nodriver 固定提交的同机对照。
 - 大页面高频查询的长期成本和多日资源曲线（长稳运行见 [长稳测试](soak.md)）。
 - 任何内存下降或吞吐提升比例的结论。
