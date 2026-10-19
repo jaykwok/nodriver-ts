@@ -143,19 +143,20 @@ node dist/mcp/cli.js --mcp-transport http --port 3100
 
 ## 文档
 
-| 文档                                       | 内容                                       |
-| ------------------------------------------ | ------------------------------------------ |
-| [API](docs/api.md)                         | 对象、期限与取消、查询、求值、存储         |
-| [输入](docs/input.md)                      | human 输入策略、文本与按键、点击检查、取消 |
-| [环境](docs/environment.md)                | 环境采样、诊断、显式对齐、代理与 WebRTC    |
-| [自动化痕迹审计](docs/automation-audit.md) | 默认协议行为、回归证据、检测结果           |
-| [MCP](docs/mcp.md)                         | CLI、工具、引用、页面 JavaScript、嵌入     |
-| [HTTP 接入](docs/mcp-http.md)              | 租约、认证、限额、资源、人工交互           |
-| [socket 接入](docs/mcp-socket.md)          | Unix socket / 命名管道服务与客户端         |
-| [支持范围](docs/support.md)                | 已验证平台、能力、限制                     |
-| [性能](docs/performance.md)                | 基准方法与基线                             |
-| [长稳测试](docs/soak.md)                   | 长时间资源回收测试                         |
-| [上游映射](docs/upstream-api-map.md)       | nodriver 成员与 TypeScript 对应项          |
+| 文档                                       | 内容                                          |
+| ------------------------------------------ | --------------------------------------------- |
+| [API](docs/api.md)                         | 对象、期限与取消、查询、求值、存储            |
+| [输入](docs/input.md)                      | human 输入策略、文本与按键、点击检查、取消    |
+| [环境](docs/environment.md)                | 环境采样、诊断、显式对齐、代理与 WebRTC       |
+| [自动化痕迹审计](docs/automation-audit.md) | 默认协议行为、回归证据、检测结果              |
+| [MCP](docs/mcp.md)                         | CLI、工具、引用、页面 JavaScript、嵌入        |
+| [HTTP 接入](docs/mcp-http.md)              | 租约、认证、限额、资源、人工交互              |
+| [socket 接入](docs/mcp-socket.md)          | Unix socket / 命名管道服务与客户端            |
+| [支持范围](docs/support.md)                | 已验证平台、能力、限制                        |
+| [性能](docs/performance.md)                | 基准方法与基线                                |
+| [长稳测试](docs/soak.md)                   | 长时间资源回收测试                            |
+| [上游映射](docs/upstream-api-map.md)       | nodriver 成员与 TypeScript 对应项             |
+| [API 测试映射](docs/test-map.md)           | 每个公开成员与 MCP 工具对应的测试（自动生成） |
 
 变更记录见 [CHANGELOG.md](CHANGELOG.md)。
 

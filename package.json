@@ -70,6 +70,7 @@
     "test:compat": "bun test --timeout 120000 ./test/integration/runtime.test.ts ./test/integration/environment.test.ts ./test/integration/churn.test.ts",
     "test:signals": "bun test --timeout 60000 ./test/integration/native-signals.test.ts",
     "test:soak": "bun benchmarks/soak.ts",
+    "test:map": "bun test/api-map.ts",
     "test:all": "bun run check && bun test --timeout 60000 ./test",
     "example": "bun examples/basic.ts",
     "bench:mcp": "bun benchmarks/mcp.ts",

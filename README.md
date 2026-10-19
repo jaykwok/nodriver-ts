@@ -147,6 +147,7 @@ The documents under `docs/` are written in Chinese.
 | [Performance](docs/performance.md)           | Benchmark method and baseline                                     |
 | [Soak test](docs/soak.md)                    | Long-running resource test                                        |
 | [Upstream API map](docs/upstream-api-map.md) | nodriver members and their TypeScript counterparts                |
+| [API test map](docs/test-map.md)             | Tests that call each public member and MCP tool (generated)       |
 
 Changes are recorded in [CHANGELOG.md](CHANGELOG.md).
 

@@ -7,6 +7,7 @@ test('environment sampling rejects navigation between document and Worker withou
   const connection = new Connection({ send() {}, close() {} });
   const frame = new Frame({} as FrameManager, 'frame', connection.session('page'));
   const evaluate = spyOn(frame, 'evaluate');
+  const context = spyOn(frame, 'context').mockResolvedValue(1);
   evaluate.mockResolvedValueOnce({ userAgent: 'document' });
   evaluate.mockImplementationOnce(async <T>() => {
     frame.invalidate();
@@ -19,6 +20,7 @@ test('environment sampling rejects navigation between document and Worker withou
     expect(evaluate).toHaveBeenCalledTimes(2);
   } finally {
     evaluate.mockRestore();
+    context.mockRestore();
     await connection.close();
   }
 });
@@ -27,6 +29,7 @@ test('environment budget/abort checks run before any browser commands; UA-CH key
   const connection = new Connection({ send() {}, close() {} });
   const frame = new Frame({} as FrameManager, 'frame', connection.session('page'));
   const evaluate = spyOn(frame, 'evaluate');
+  const context = spyOn(frame, 'context').mockResolvedValue(1);
   try {
     await expect(frame.inspectEnvironment({ timeout: 0 })).rejects.toBeInstanceOf(TimeoutError);
     const controller = new AbortController();
@@ -46,6 +49,7 @@ test('environment budget/abort checks run before any browser commands; UA-CH key
     expect((await frame.inspectEnvironment({ worker: true })).differences).toEqual([]);
   } finally {
     evaluate.mockRestore();
+    context.mockRestore();
     await connection.close();
   }
 });

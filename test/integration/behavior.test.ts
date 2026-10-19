@@ -48,7 +48,12 @@ for (const transport of ['pipe', 'websocket'] as const) {
       expect(tab.inputBehavior.lastReport!.trace).toEqual(first.trace);
       const events = await tab.evaluate<any[]>('window.__events');
       expect(
-        events.some((e) => e.type === 'keydown' && e.key?.toLowerCase() === 'a' && e.ctrl),
+        events.some(
+          (e) =>
+            e.type === 'keydown' &&
+            e.key?.toLowerCase() === 'a' &&
+            (process.platform === 'darwin' ? e.meta : e.ctrl),
+        ),
       ).toBeTrue();
       expect(events.filter((e) => e.type === 'click' && e.id === 'target')).toHaveLength(2);
       expect(

@@ -133,7 +133,12 @@ export async function inspectEnvironment(
     differences: [],
   };
   if (!options.worker) return report;
+  // The page-side timer starts only once the function runs, so resolve the context first and
+  // keep a reserve for dispatch and the reply; the timer then fires before the CDP deadline.
+  await frame.context(options.world ?? 'isolated', execution());
+  assertDocument();
   const workerExecution = execution();
+  const reserve = Math.min(1000, Math.max(100, workerExecution.timeout * 0.2));
   const source = `self.onmessage=async()=>{try{postMessage({status:'ok',navigator:await (${navigatorSnapshot.toString()})()})}catch(error){postMessage({status:'unavailable',error:String(error)})}}`;
   report.worker = await frame.evaluate<
     NonNullable<EnvironmentReport['worker']>,
@@ -173,7 +178,7 @@ export async function inspectEnvironment(
           finish({ status: 'unavailable', error: String(error) });
         }
       }),
-    { source, timeout: Math.max(1, workerExecution.timeout - 100) },
+    { source, timeout: Math.max(1, workerExecution.timeout - reserve) },
     workerExecution,
   );
   assertDocument();
