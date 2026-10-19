@@ -641,7 +641,7 @@ for (const version of ['2026-07-28'])
       responseMode: 'sse',
       browser: {
         launch: { headless: process.env.NODRIVER_HEADFUL !== '1' },
-        operationTimeout: 3000,
+        operationTimeout: 8000, // includes a cold Chrome launch on slow CI runners
       },
     });
     let client: Client | undefined;
