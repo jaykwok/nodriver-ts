@@ -57,7 +57,9 @@ describe('navigation and lifecycle failures', () => {
       await t.go(-1);
       expect(await t.evaluate('secret')).toBe('main-secret');
       for (let i = 0; i < 100 && t.frames.length < 4; i++) await Bun.sleep(20);
-      expect(t.frames.length).toBe(4);
+      expect({ count: t.frames.length, urls: t.frames.map((frame) => frame.url) }).toMatchObject({
+        count: 4,
+      });
       for (const frame of t.frames.filter((frame) => frame !== t.mainFrame))
         expect(await frame.evaluate('frameSecret')).toBeDefined();
     } finally {

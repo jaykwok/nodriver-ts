@@ -717,7 +717,7 @@ export function createBrowserMcpServer(
   );
   tool(
     'browser_press_key',
-    'Send a key or chord such as Enter, Tab, F5, a, Shift+Tab or Control+A to the focused element in this tab.',
+    'Send a key or chord such as Enter, Tab, F5, a, Shift+Tab or Control+A (Meta+A on macOS) to the focused element in this tab.',
     { tabId, key: z.string().min(1).max(100), waitFor, snapshot: withSnapshot, timeout },
     write,
     async (args, signal) => {

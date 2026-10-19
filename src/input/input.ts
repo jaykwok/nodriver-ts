@@ -252,6 +252,64 @@ for (const [code, keyCode, key, shiftKey] of printable) {
 }
 characters.set(' ', { definition: named.Space!, shift: false });
 const modifierBits: Record<string, number> = { Alt: 1, Control: 2, Meta: 4, Shift: 8 };
+/**
+ * Chrome on macOS runs editing shortcuts through AppKit key bindings, which synthetic key events
+ * skip; CDP carries them as `commands`. Keys are modifiers (Shift, Control, Alt, Meta order) plus
+ * the key code. Insert commands are omitted because the key event itself inserts text.
+ */
+const macCommands: Record<string, string[]> = {};
+for (const [shortcuts, commands] of [
+  ['Backspace Shift+Backspace Control+KeyH', 'deleteBackward'],
+  ['Delete Shift+Delete Control+KeyD', 'deleteForward'],
+  ['Alt+Backspace', 'deleteWordBackward'],
+  ['Alt+Delete', 'deleteWordForward'],
+  ['Meta+Backspace', 'deleteToBeginningOfLine'],
+  ['Control+KeyK', 'deleteToEndOfParagraph'],
+  ['Escape', 'cancelOperation'],
+  ['ArrowUp Control+KeyP', 'moveUp'],
+  ['ArrowDown Control+KeyN', 'moveDown'],
+  ['ArrowLeft Control+KeyB', 'moveLeft'],
+  ['ArrowRight Control+KeyF', 'moveRight'],
+  ['Shift+ArrowUp Shift+Control+KeyP', 'moveUpAndModifySelection'],
+  ['Shift+ArrowDown Shift+Control+KeyN', 'moveDownAndModifySelection'],
+  ['Shift+ArrowLeft Shift+Control+KeyB', 'moveLeftAndModifySelection'],
+  ['Shift+ArrowRight Shift+Control+KeyF', 'moveRightAndModifySelection'],
+  ['Alt+ArrowLeft', 'moveWordLeft'],
+  ['Alt+ArrowRight', 'moveWordRight'],
+  ['Shift+Alt+ArrowLeft', 'moveWordLeftAndModifySelection'],
+  ['Shift+Alt+ArrowRight', 'moveWordRightAndModifySelection'],
+  ['Alt+ArrowUp', 'moveBackward moveToBeginningOfParagraph'],
+  ['Alt+ArrowDown', 'moveForward moveToEndOfParagraph'],
+  ['Shift+Alt+ArrowUp', 'moveParagraphBackwardAndModifySelection'],
+  ['Shift+Alt+ArrowDown', 'moveParagraphForwardAndModifySelection'],
+  ['Control+KeyA', 'moveToBeginningOfParagraph'],
+  ['Control+KeyE', 'moveToEndOfParagraph'],
+  ['Shift+Control+KeyA', 'moveToBeginningOfParagraphAndModifySelection'],
+  ['Shift+Control+KeyE', 'moveToEndOfParagraphAndModifySelection'],
+  ['Meta+ArrowLeft Control+ArrowLeft', 'moveToLeftEndOfLine'],
+  ['Meta+ArrowRight Control+ArrowRight', 'moveToRightEndOfLine'],
+  ['Shift+Meta+ArrowLeft Shift+Control+ArrowLeft', 'moveToLeftEndOfLineAndModifySelection'],
+  ['Shift+Meta+ArrowRight Shift+Control+ArrowRight', 'moveToRightEndOfLineAndModifySelection'],
+  ['Meta+ArrowUp', 'moveToBeginningOfDocument'],
+  ['Meta+ArrowDown', 'moveToEndOfDocument'],
+  ['Shift+Meta+ArrowUp Shift+Home', 'moveToBeginningOfDocumentAndModifySelection'],
+  ['Shift+Meta+ArrowDown Shift+End', 'moveToEndOfDocumentAndModifySelection'],
+  ['Home', 'scrollToBeginningOfDocument'],
+  ['End', 'scrollToEndOfDocument'],
+  ['PageUp Control+ArrowUp', 'scrollPageUp'],
+  ['PageDown Control+ArrowDown', 'scrollPageDown'],
+  ['Shift+PageUp', 'pageUpAndModifySelection'],
+  ['Shift+PageDown', 'pageDownAndModifySelection'],
+  ['Control+KeyT', 'transpose'],
+  ['Control+KeyY', 'yank'],
+  ['Meta+KeyA', 'selectAll'],
+  ['Meta+KeyC', 'copy'],
+  ['Meta+KeyX', 'cut'],
+  ['Meta+KeyV', 'paste'],
+  ['Meta+KeyZ', 'undo'],
+  ['Shift+Meta+KeyZ', 'redo'],
+] as const)
+  for (const shortcut of shortcuts.split(' ')) macCommands[shortcut] = commands.split(' ');
 /** Resolves a named key or a US-layout character to its CDP key definition. */
 export function keyDefinition(key: string): KeyDefinition {
   const definition = named[key] ?? characters.get(key)?.definition;
@@ -268,9 +326,11 @@ export function parseChord(chord: string): string[] {
 export class Keyboard {
   /** Held key name -> dispatched DOM key value, so keyUp mirrors keyDown. */
   private pressed = new Map<string, string>();
+  /** `mac` attaches macOS editing commands to key events; Tab sets it from the browser's platform. */
   constructor(
     readonly session: Session,
     readonly behavior = standalone(session),
+    readonly mac = false,
   ) {}
   get pressedKeys(): string[] {
     return [...this.pressed.keys()];
@@ -279,6 +339,10 @@ export class Keyboard {
     let result = 0;
     for (const key of this.pressed.keys()) result |= modifierBits[key] ?? 0;
     return result;
+  }
+  private shortcut(code: string): string {
+    const held = ['Shift', 'Control', 'Alt', 'Meta'].filter((key) => this.pressed.has(key));
+    return [...held, code].join('+');
   }
   private async insertRaw(text: string): Promise<void> {
     await this.session.send('Input.insertText', { text });
@@ -307,8 +371,10 @@ export class Keyboard {
     const autoRepeat = this.pressed.has(key);
     this.pressed.set(key, value);
     const plain = !(this.modifiers & ~8);
+    const commands = this.mac ? macCommands[this.shortcut(definition.code)] : undefined;
     try {
       await this.session.send('Input.dispatchKeyEvent', {
+        ...(commands && { commands }),
         type: text !== undefined && plain ? 'keyDown' : 'rawKeyDown',
         key: value,
         code: definition.code,

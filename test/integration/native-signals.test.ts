@@ -109,7 +109,16 @@ for (const transport of ['pipe', 'websocket'] as const) {
           let received = '';
           const done = new Promise<void>((resolve, reject) => {
             timer = setTimeout(
-              () => reject(new Error('Local WebRTC data channel timed out')),
+              () =>
+                reject(
+                  new Error(
+                    `Local WebRTC data channel timed out: ${JSON.stringify({
+                      ice: [a.iceConnectionState, b.iceConnectionState],
+                      gathering: [a.iceGatheringState, b.iceGatheringState],
+                      candidates,
+                    })}`,
+                  ),
+                ),
               10000,
             );
             a.onicecandidate = (e) => {

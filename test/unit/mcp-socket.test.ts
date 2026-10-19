@@ -1,7 +1,7 @@
 import { expect, test } from 'bun:test';
 import { createConnection } from 'node:net';
 import { once } from 'node:events';
-import { lstat, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -82,7 +82,7 @@ test('socket permissions, existing endpoint preservation and cleanup', async () 
   await expect(after.start()).rejects.toThrow();
   if (process.platform !== 'win32') {
     await expect(lstat(server.path)).rejects.toThrow();
-    const dir = await mkdtemp(join(tmpdir(), 'nodriver-preserve-'));
+    const dir = await mkdtemp(join(await realpath(tmpdir()), 'nodriver-preserve-'));
     const path = join(dir, 'existing');
     try {
       await writeFile(path, 'preserve me');

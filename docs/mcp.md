@@ -80,7 +80,7 @@ HTTP 只监听 loopback，要求 Bearer 令牌。省略 `Browser-Lease-Id` 时�
 | `browser_drag`         | 从元素拖到另一个元素或视口坐标                                                   |
 | `browser_fill`         | 替换输入内容，支持中文与 emoji                                                   |
 | `browser_type`         | 在光标/选择区处输入；human 模式下 US 布局字符使用按键事件                        |
-| `browser_press_key`    | 向焦点发送按键或组合键，如 Enter、Shift+Tab、Control+A                           |
+| `browser_press_key`    | 向焦点发送按键或组合键，如 Enter、Shift+Tab、Control+A（macOS 全选用 Meta+A）    |
 | `browser_select`       | 修改 select 的选中值                                                             |
 | `browser_check`        | 设置 checkbox/radio 的选中状态                                                   |
 | `browser_scroll`       | 把元素滚动进视口（ref），或在指定坐标发送滚轮增量                                |

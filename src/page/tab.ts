@@ -98,7 +98,9 @@ export class Tab {
       () => this.activate(),
     );
     this.mouse = new Mouse(session, this.inputBehavior);
-    this.keyboard = new Keyboard(session, this.inputBehavior);
+    // The browser's own UA, not an override: key bindings follow the platform Chrome runs on.
+    const mac = browser.version.userAgent.includes('Macintosh');
+    this.keyboard = new Keyboard(session, this.inputBehavior, mac);
   }
   get cdp(): Session {
     return this.session;

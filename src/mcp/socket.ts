@@ -211,7 +211,11 @@ export async function startBrowserMcpSocketServer(
     options.path ??
     (process.platform === 'win32'
       ? `\\\\.\\pipe\\nodriver-${randomUUID()}`
-      : join((directory = await mkdtemp(join(tmpdir(), 'nodriver-mcp-'))), 'mcp.sock'));
+      : join(
+          // macOS resolves tmpdir() through the /var -> /private/var symlink.
+          (directory = await mkdtemp(join(await realpath(tmpdir()), 'nodriver-mcp-'))),
+          'mcp.sock',
+        ));
   localPath(path);
   if (process.platform !== 'win32') {
     const parent = dirname(path),

@@ -20,7 +20,7 @@ const input = await tab.waitForSelector('input');
 await input.fill('replace all');
 await input.type('中文👨‍👩‍👧‍👦é'); // 在当前光标/选择区输入；不全选、不提交
 await input.type(['明确提交片段', '😀']);
-await tab.keyboard.press('Control+A');
+await tab.keyboard.press('Control+A'); // macOS 上全选为 Meta+A
 await tab.mouse.wheel(0, 420);
 console.log(tab.inputBehavior.lastReport);
 ```
@@ -35,6 +35,7 @@ console.log(tab.inputBehavior.lastReport);
 - **`type()`**：在当前选择区按字素（Intl.Segmenter）逐个提交，也接受字符串片段数组；不拆开 emoji 代理对、ZWJ 序列或组合字符。单次最多 100000 个 UTF-16 单元。
 - **按键事件**：`typing: 'keys'`，或 human 模式下的默认 `auto`，对 US 布局可打字符（字母、数字、常用符号、空格）逐个发送 keyDown/keyUp，大写与上档符号自动按住 Shift；keyUp 与 keyDown 的 key 一致。中日韩、emoji、换行和制表符使用 `insertText`。`typing: 'insertText'` 全部使用 `insertText`。
 - **`press()`**：支持命名键（Enter、Tab、Escape、方向键、Home/End、PageUp/PageDown、F1–F12、Space 等）、修饰键组合与 US 布局字符，例如 `Shift+Tab`、`Control++`；按住 Shift 时发送上档字符。`keyDefinition()` 与 `parseChord()` 已导出。
+- **macOS 编辑快捷键**：浏览器运行在 macOS 时，按键事件附带 AppKit 编辑命令（CDP `commands`），使 `Meta+A` 全选、`Meta+Z` 撤销、`Alt+ArrowLeft` 按词移动、`Control+A` 移到段首等组合与 Mac 键盘一致；平台按浏览器自身的 UA 判断，不受 UA 覆盖影响。
 - **`select()`**：通过 DOM 修改选项并派发合成 input/change，isTrusted 不改写；需要指针或按键交互时由调用者显式操作。
 
 不模拟操作系统输入法候选窗、composition 生命周期或非 US 键盘布局。

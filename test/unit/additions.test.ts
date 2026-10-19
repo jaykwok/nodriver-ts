@@ -58,6 +58,29 @@ test('keyUp mirrors keyDown; held Shift yields shifted keys; modifiers send rawK
   expect(keyboard.pressedKeys).toEqual([]);
 });
 
+test('macOS key events carry the platform editing commands', async () => {
+  const commands = async (mac: boolean, chord: string) => {
+    const { session, messages } = fakeSession();
+    await new Keyboard(session, undefined, mac).press(chord);
+    return messages
+      .filter((m) => m.method === 'Input.dispatchKeyEvent' && m.type !== 'keyUp')
+      .map((m) => m.commands ?? []);
+  };
+  expect(await commands(true, 'Meta+A')).toEqual([[], ['selectAll']]);
+  expect(await commands(true, 'Control+a')).toEqual([[], ['moveToBeginningOfParagraph']]);
+  expect(await commands(true, 'Shift+Alt+ArrowLeft')).toEqual([
+    [],
+    [],
+    ['moveWordLeftAndModifySelection'],
+  ]);
+  expect(await commands(true, 'Alt+ArrowUp')).toEqual([
+    [],
+    ['moveBackward', 'moveToBeginningOfParagraph'],
+  ]);
+  expect(await commands(true, 'Enter')).toEqual([[]]);
+  expect(await commands(false, 'Meta+A')).toEqual([[], []]);
+});
+
 test('human typing uses key events for keyboard characters and insertText otherwise', async () => {
   const { session, messages } = fakeSession();
   const behavior = new InputBehavior(
@@ -208,7 +231,10 @@ test('removeTree retries while another process keeps the directory busy', async 
   await mkdir(busy, { recursive: true });
   await writeFile(join(busy, 'f'), 'x');
   // On Windows a process whose cwd is inside the tree makes rm fail with EBUSY until it exits.
-  const child = spawn('node', ['-e', 'setTimeout(()=>{},700)'], { cwd: busy, stdio: 'ignore' });
+  const child = spawn(process.execPath, ['-e', 'setTimeout(()=>{},700)'], {
+    cwd: busy,
+    stdio: 'ignore',
+  });
   await new Promise((resolve) => child.once('spawn', resolve));
   await removeTree(root, 10_000);
   await expect(access(root)).rejects.toMatchObject({ code: 'ENOENT' });

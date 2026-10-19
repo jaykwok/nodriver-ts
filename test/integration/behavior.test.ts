@@ -3,6 +3,8 @@ import { Browser, InputActionError } from '../../src/index.js';
 import { fixtureServer } from '../fixtures/server.js';
 import { recordWire, forbiddenAutomaticCommands } from '../fixtures/wire.js';
 import { poll } from '../../src/utils.js';
+
+const selectAll = process.platform === 'darwin' ? 'Meta+A' : 'Control+A';
 const policy = {
   mode: 'human' as const,
   seed: 42,
@@ -31,7 +33,7 @@ for (const transport of ['pipe', 'websocket'] as const) {
       const typed = await input.type('新👨‍👩‍👧‍👦é');
       expect(typed.completedSegments).toBe(3);
       expect(await input.evaluate((el) => (el as HTMLInputElement).value)).toBe('新👨‍👩‍👧‍👦é value');
-      await tab.keyboard.press('Control+A');
+      await tab.keyboard.press(selectAll);
       await input.type(['中文', '😀']);
       expect(await input.evaluate((el) => (el as HTMLInputElement).value)).toBe('中文😀');
       expect(tab.keyboard.pressedKeys).toEqual([]);

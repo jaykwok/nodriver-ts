@@ -859,10 +859,11 @@ test('HTTP JSON request deadline cancels waiting work before its longer operatio
     tokens,
     port: 0,
     responseMode: 'json',
-    requestTimeout: 1500,
+    // Also bounds the first browser_open, which includes a cold browser start.
+    requestTimeout: 4000,
     browser: {
       launch: { headless: process.env.NODRIVER_HEADFUL !== '1' },
-      operationTimeout: 10000,
+      operationTimeout: 12000,
     },
   });
   let client: Client | undefined;
@@ -874,7 +875,7 @@ test('HTTP JSON request deadline cancels waiting work before its longer operatio
     const response = await rawTool(server, id, 'browser_wait', {
       tabId,
       selector: '#never',
-      timeout: 5000,
+      timeout: 8000,
     });
     expect([200, 499]).toContain(response.status);
     await response.text();

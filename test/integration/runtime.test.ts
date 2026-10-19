@@ -7,6 +7,8 @@ import { fixtureServer } from '../fixtures/server.js';
 function recordWire(transport: 'websocket' | 'pipe') {
   const prototype =
     transport === 'websocket' ? WebSocketTransport.prototype : PipeTransport.prototype;
+  // A test that failed before restore() leaves its spy installed; wrapping it would recurse.
+  (prototype.send as { mockRestore?: () => void }).mockRestore?.();
   const original = prototype.send;
   const messages: Array<{ method: string; sessionId?: string; params?: Record<string, unknown> }> =
     [];

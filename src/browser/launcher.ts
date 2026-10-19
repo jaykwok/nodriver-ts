@@ -74,6 +74,15 @@ async function executableOnPath(names: string[]): Promise<string | undefined> {
       }
   return undefined;
 }
+/**
+ * The group has no live member. macOS reports EPERM rather than ESRCH when only zombies remain
+ * (such as a leader not yet reaped); every member is our own process, so EPERM cannot mean a
+ * live process we may not signal.
+ */
+function groupGone(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === 'ESRCH' || (code === 'EPERM' && process.platform === 'darwin');
+}
 export async function findExecutable(explicit?: string): Promise<string> {
   if (explicit) {
     await access(explicit);
@@ -327,14 +336,14 @@ export class BrowserProcess {
     try {
       process.kill(-this.pid!, signal);
     } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== 'ESRCH') throw e;
+      if (!groupGone(e)) throw e;
     }
   }
   private async groupRunning(): Promise<boolean> {
     try {
       process.kill(-this.pid!, 0);
     } catch (e) {
-      if ((e as NodeJS.ErrnoException).code === 'ESRCH') return false;
+      if (groupGone(e)) return false;
       throw e;
     }
     if (process.platform !== 'linux') return true;

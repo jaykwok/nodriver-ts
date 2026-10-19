@@ -6,6 +6,8 @@ import { join } from 'node:path';
 import { Browser, EvaluationError, StaleElementError, TimeoutError } from '../../src/index.js';
 import type { Tab } from '../../src/index.js';
 import { fixtureServer } from '../fixtures/server.js';
+
+const selectAll = process.platform === 'darwin' ? 'Meta+A' : 'Control+A';
 const fixture = fixtureServer();
 let browser: Browser;
 const errors: unknown[] = [];
@@ -90,7 +92,7 @@ describe('browser and page', () => {
       expect(await tab.evaluate('inputs')).toEqual(['你好 😀']);
       await (await tab.waitForSelector('#input')).fill('replacement');
       expect(await tab.evaluate('document.querySelector("#input").value')).toBe('replacement');
-      await tab.keyboard.press('Control+A');
+      await tab.keyboard.press(selectAll);
       await tab.keyboard.insertText('最后');
       expect(await tab.evaluate('document.querySelector("#input").value')).toBe('最后');
       await (await tab.waitForSelector('#editable')).fill('可编辑');
