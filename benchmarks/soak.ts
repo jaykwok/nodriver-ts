@@ -213,6 +213,9 @@ async function setup(mode: Runtime['mode']) {
       tab = session.tab(String(tabId));
     assert.equal(tab.frames.length, 4);
     await tab.context.setCookies([{ name: 'soak-main', value: mode, url: fixture.base }]);
+    // The first piercing query on a session subscribes once to DOM structure events (closed
+    // shadow-root cache); make it before the baseline so only growth across rounds counts.
+    await find(client, String(tabId), '#input');
     await poll(async () =>
       browser.connection.pendingCount === 0 && tab.framesManager.setup.size === 0
         ? true
@@ -299,7 +302,13 @@ async function round(r: Runtime) {
         : undefined,
     { timeout: 5000 },
     'long-run resource baseline',
-  );
+  ).catch((error: Error) => {
+    error.message += ` (baseline ${JSON.stringify(r.baseline)}, now ${JSON.stringify({
+      ...resources(r.browser),
+      frameSetup: r.tab.framesManager.setup.size,
+    })})`;
+    throw error;
+  });
   assert.deepEqual(r.manager.stats(), { leases: 1, browsers: 1, allocations: 1, exclusive: false });
 }
 async function sample() {
