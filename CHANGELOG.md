@@ -37,12 +37,13 @@ First public release.
 
 ### Runtimes
 
-- Bun ≥ 1.4.3 and Node.js ≥ 22. The MCP HTTP server uses `Bun.serve` on Bun and `node:http` on Node.
+- Node.js ≥ 22 and Bun ≥ 1.4.3. The MCP HTTP server uses `node:http` on Node and `Bun.serve` on Bun.
 - Windows, Linux (x64 and ARM64) and macOS (ARM64).
 
 ### Tooling
 
-- `bun run test:map` regenerates [docs/test-map.md](docs/test-map.md), which maps each public member, exported function and MCP tool to the tests that call it.
-- `bun run bench:compare` runs the same workload against Python nodriver 0.50.6 on the same machine.
+- One test suite (`node:test` with `expect`) runs unchanged on Node.js and Bun. Node.js ≥ 24 runs the TypeScript sources directly, so tests need no build step; CI runs both runtimes on Windows and Linux and checks the built package on Node.js 22. npm is the package manager.
+- `npm run test:map` regenerates [docs/test-map.md](docs/test-map.md), which maps each public member, exported function and MCP tool to the tests that call it.
+- `npm run bench:compare` runs the same workload against Python nodriver 0.50.6 on the same machine.
 
 Verified platforms and known limits are listed in [docs/support.md](docs/support.md).

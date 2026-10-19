@@ -1,11 +1,12 @@
-import { expect, test } from 'bun:test';
-import { Browser } from '../../src/index.js';
-import { fixtureServer } from '../fixtures/server.js';
-import { recordWire, forbiddenAutomaticCommands } from '../fixtures/wire.js';
+import { test } from 'node:test';
+import { expect } from '../fixtures/expect.ts';
+import { Browser } from '../../src/index.ts';
+import { fixtureServer } from '../fixtures/server.ts';
+import { recordWire, forbiddenAutomaticCommands } from '../fixtures/wire.ts';
 
 test('headless mask, pointer pressure, screen offsets and key-event typing stay consistent', async () => {
   const headless = process.env.NODRIVER_HEADFUL !== '1';
-  const fixture = fixtureServer(),
+  const fixture = await fixtureServer(),
     audit = recordWire('pipe'),
     browser = await Browser.launch({ transport: 'pipe', headless });
   try {
@@ -18,7 +19,7 @@ test('headless mask, pointer pressure, screen offsets and key-event typing stay 
     expect(served.headers['user-agent']).toBe(ua);
     const brands = await tab.evaluate<Array<{ brand: string }>>('navigator.userAgentData.brands');
     expect(brands.length).toBeGreaterThan(0);
-    expect(brands.some((b) => b.brand.includes('Headless'))).toBeFalse();
+    expect(brands.some((b) => b.brand.includes('Headless'))).toBe(false);
 
     tab.setInputPolicy({ mode: 'human', seed: 7, pause: [0, 0], keyDelay: [5, 5] });
     await tab.evaluate(
@@ -56,7 +57,7 @@ test('headless mask, pointer pressure, screen offsets and key-event typing stay 
     expect(audit.messages.filter((m) => forbiddenAutomaticCommands.includes(m.method))).toEqual([]);
   } finally {
     await browser.close();
-    fixture.server.stop(true);
+    await fixture.server.stop();
     audit.restore();
   }
 });

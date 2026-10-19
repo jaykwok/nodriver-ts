@@ -31,6 +31,9 @@ jobs:
       NODRIVER_WEBRTC_ARGS: ${{ matrix.webrtc-args }}
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: '1.4.3'
@@ -57,30 +60,45 @@ jobs:
         if: matrix.edge
         shell: bash
         run: echo 'CHROME_PATH=C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe' >> "$GITHUB_ENV"
-      - run: bun install --frozen-lockfile
+      - run: npm ci
       - name: Record versions
         shell: bash
         run: |
           mkdir -p test-results
-          bun test/ci-versions.ts | tee test-results/versions.txt
+          { node test/ci-versions.ts; bun test/ci-versions.ts | grep '^runtime:'; } | tee test-results/versions.txt
           { echo '### Versions'; echo '```'; cat test-results/versions.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-      - name: Unit tests
+      # The same test sources run on Node.js and on Bun.
+      - name: Node.js unit tests
         shell: bash
-        run: bun run test 2>&1 | tee test-results/unit.log
-      - name: Integration tests
+        run: npm test 2>&1 | tee test-results/node-unit.log
+      - name: Node.js integration tests
         if: success() || failure()
         shell: bash
-        run: bun run test:integration 2>&1 | tee test-results/integration.log
-      - name: Compatibility tests
+        run: npm run test:integration 2>&1 | tee test-results/node-integration.log
+      - name: Node.js compatibility tests
         if: success() || failure()
         shell: bash
-        run: bun run test:compat 2>&1 | tee test-results/compat.log
+        run: npm run test:compat 2>&1 | tee test-results/node-compat.log
+      - name: Bun unit tests
+        if: success() || failure()
+        shell: bash
+        run: npm run test:bun 2>&1 | tee test-results/bun-unit.log
+      - name: Bun integration tests
+        if: success() || failure()
+        shell: bash
+        run: npm run test:bun:integration 2>&1 | tee test-results/bun-integration.log
+      - name: Bun compatibility tests
+        if: success() || failure()
+        shell: bash
+        run: npm run test:bun:compat 2>&1 | tee test-results/bun-compat.log
       - name: Failure summary
         if: failure()
         shell: bash
         run: |
           { echo '### Failed tests'; echo '```'
-            sed 's/\x1b\[[0-9;]*m//g' test-results/*.log | grep '^(fail)' || true
+            for log in test-results/*.log; do
+              node test/ci-failures.ts "$log" | sed "s|^|$(basename "$log" .log): |"
+            done
             echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload test logs
         if: always()

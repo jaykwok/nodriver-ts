@@ -1,12 +1,12 @@
-import type { Session } from '../protocol/connection.js';
+import type { Session } from '../protocol/connection.ts';
 import type { Protocol } from 'devtools-protocol';
 import {
   InputBehavior,
   type InputAction,
   type InputOptions,
   type InputReport,
-} from './behavior.js';
-import { StaleElementError } from '../errors.js';
+} from './behavior.ts';
+import { StaleElementError } from '../errors.ts';
 function standalone(session: Session) {
   return new InputBehavior(
     (task) => task(),
@@ -20,10 +20,12 @@ export class Mouse {
   private y = 0;
   private buttons = 0;
   private placed = false;
-  constructor(
-    readonly session: Session,
-    readonly behavior = standalone(session),
-  ) {}
+  readonly session: Session;
+  readonly behavior: InputBehavior;
+  constructor(session: Session, behavior: InputBehavior = standalone(session)) {
+    this.session = session;
+    this.behavior = behavior;
+  }
   get position() {
     return { x: this.x, y: this.y, buttons: this.buttons };
   }
@@ -326,12 +328,15 @@ export function parseChord(chord: string): string[] {
 export class Keyboard {
   /** Held key name -> dispatched DOM key value, so keyUp mirrors keyDown. */
   private pressed = new Map<string, string>();
+  readonly session: Session;
+  readonly behavior: InputBehavior;
+  readonly mac: boolean;
   /** `mac` attaches macOS editing commands to key events; Tab sets it from the browser's platform. */
-  constructor(
-    readonly session: Session,
-    readonly behavior = standalone(session),
-    readonly mac = false,
-  ) {}
+  constructor(session: Session, behavior: InputBehavior = standalone(session), mac = false) {
+    this.session = session;
+    this.behavior = behavior;
+    this.mac = mac;
+  }
   get pressedKeys(): string[] {
     return [...this.pressed.keys()];
   }

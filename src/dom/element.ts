@@ -1,12 +1,12 @@
 import type { Protocol } from 'devtools-protocol';
 import { resolve } from 'node:path';
 import { access } from 'node:fs/promises';
-import type { Session } from '../protocol/connection.js';
-import { argument, checkException, valueOf, type Frame } from '../page/frames.js';
-import { ActionabilityError, StaleElementError } from '../errors.js';
-import { delay, poll, type WaitOptions } from '../utils.js';
-import { query, type QueryOptions, type Selector } from './query.js';
-import type { InputOptions, InputReport } from '../input/behavior.js';
+import type { Session } from '../protocol/connection.ts';
+import { argument, checkException, valueOf, type Frame } from '../page/frames.ts';
+import { ActionabilityError, StaleElementError } from '../errors.ts';
+import { delay, poll, type WaitOptions } from '../utils.ts';
+import { query, type QueryOptions, type Selector } from './query.ts';
+import type { InputOptions, InputReport } from '../input/behavior.ts';
 type Point = { x: number; y: number };
 let pointerProbeId = 0;
 /** Maps viewport coordinates through a perspective transformed iframe content quad. */
@@ -44,12 +44,21 @@ export function project(point: Point, width: number, height: number, q: number[]
   return result;
 }
 export class Element {
+  readonly frame: Frame;
+  readonly backendNodeId: Protocol.DOM.BackendNodeId;
+  readonly generation: number;
+  readonly session: Session;
   constructor(
-    readonly frame: Frame,
-    readonly backendNodeId: Protocol.DOM.BackendNodeId,
-    readonly generation: number,
-    readonly session: Session,
-  ) {}
+    frame: Frame,
+    backendNodeId: Protocol.DOM.BackendNodeId,
+    generation: number,
+    session: Session,
+  ) {
+    this.frame = frame;
+    this.backendNodeId = backendNodeId;
+    this.generation = generation;
+    this.session = session;
+  }
   assertValid(): void {
     if (
       this.frame.detached ||

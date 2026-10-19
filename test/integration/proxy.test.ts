@@ -1,13 +1,14 @@
-import { describe, expect, test } from 'bun:test';
+import { describe, test } from 'node:test';
+import { expect } from '../fixtures/expect.ts';
 import { Server } from 'proxy-chain';
 import { createServer } from 'node:net';
 import { request } from 'node:http';
-import { Browser, ProxyForwarder } from '../../src/index.js';
-import { fixtureServer } from '../fixtures/server.js';
-import { socksFixture } from '../fixtures/socks.js';
+import { Browser, ProxyForwarder } from '../../src/index.ts';
+import { fixtureServer } from '../fixtures/server.ts';
+import { socksFixture } from '../fixtures/socks.ts';
 describe('proxy routing', () => {
   test('authenticated HTTP upstream, context-specific egress, and CONNECT tunnel', async () => {
-    const fixture = fixtureServer();
+    const fixture = await fixtureServer();
     let authenticated = 0;
     const urls: string[] = [];
     const upstream = new Server({
@@ -35,7 +36,7 @@ describe('proxy routing', () => {
       expect(authenticated).toBeGreaterThan(0);
       const direct = await b.newContext();
       await direct.newTab(fixture.base + '/empty?direct=1');
-      expect(urls.some((url) => url.includes('/empty?direct=1'))).toBeFalse();
+      expect(urls.some((url) => url.includes('/empty?direct=1'))).toBe(false);
       await direct.close();
       await context.close();
       const echo = createServer((socket) => socket.pipe(socket));
@@ -75,11 +76,11 @@ describe('proxy routing', () => {
     } finally {
       await b.close();
       await upstream.close(true);
-      fixture.server.stop(true);
+      await fixture.server.stop();
     }
   });
   test('SOCKS5 username/password and fragmented handshake', async () => {
-    const fixture = fixtureServer();
+    const fixture = await fixtureServer();
     const socks = await socksFixture();
     const b = await Browser.launch({
       headless: process.env.NODRIVER_HEADFUL !== '1',
@@ -93,12 +94,12 @@ describe('proxy routing', () => {
       const tab = await context.newTab(fixture.base + '/page');
       expect(await tab.evaluate('secret')).toBe('main-secret');
       expect(socks.authenticated).toBeGreaterThan(0);
-      expect(socks.requests.some((r) => r === `127.0.0.1:${fixture.server.port}`)).toBeTrue();
+      expect(socks.requests.some((r) => r === `127.0.0.1:${fixture.server.port}`)).toBe(true);
       await context.close();
     } finally {
       await b.close();
       await socks.close();
-      fixture.server.stop(true);
+      await fixture.server.stop();
     }
   });
 });

@@ -1,7 +1,7 @@
-import { Browser } from '../browser/browser.js';
-import type { BrowserContext } from '../browser/context.js';
-import type { BrowserMcpOptions } from './session.js';
-import { OperationQueue } from './queue.js';
+import { Browser } from '../browser/browser.ts';
+import type { BrowserContext } from '../browser/context.ts';
+import type { BrowserMcpOptions } from './session.ts';
+import { OperationQueue } from './queue.ts';
 
 export interface BrowserAllocation {
   browser: Browser;
@@ -21,12 +21,20 @@ export class BrowserPool {
   private gate = new OperationQueue(128);
   private closed = false;
   readonly exclusive: boolean;
+  readonly options: BrowserMcpOptions;
+  readonly maxBrowsers: number;
+  readonly contextsPerBrowser: number;
+  readonly queueLimit: number;
   constructor(
-    readonly options: BrowserMcpOptions,
-    readonly maxBrowsers: number,
-    readonly contextsPerBrowser: number,
-    readonly queueLimit: number,
+    options: BrowserMcpOptions,
+    maxBrowsers: number,
+    contextsPerBrowser: number,
+    queueLimit: number,
   ) {
+    this.options = options;
+    this.maxBrowsers = maxBrowsers;
+    this.contextsPerBrowser = contextsPerBrowser;
+    this.queueLimit = queueLimit;
     this.exclusive = !!(options.connect || options.launch?.userDataDir);
     if (options.proxy) {
       const proxy = new URL(options.proxy);

@@ -1,9 +1,11 @@
-import { expect, test, spyOn } from 'bun:test';
-import { Network } from '../../src/page/network.js';
-import type { Tab } from '../../src/page/tab.js';
-import type { Session } from '../../src/protocol/connection.js';
-import { EventHub } from '../../src/utils.js';
-import { BrowserMcpSession } from '../../src/mcp/session.js';
+import { test } from 'node:test';
+import { expect } from '../fixtures/expect.ts';
+import { spyOn } from 'jest-mock';
+import { Network } from '../../src/page/network.ts';
+import type { Tab } from '../../src/page/tab.ts';
+import type { Session } from '../../src/protocol/connection.ts';
+import { EventHub } from '../../src/utils.ts';
+import { BrowserMcpSession } from '../../src/mcp/session.ts';
 
 test('concurrent Network users wait for the same enable and share failures before retrying', async () => {
   const commands: string[] = [];
@@ -33,7 +35,7 @@ test('concurrent Network users wait for the same enable and share failures befor
   const headers = network.setExtraHeaders({ 'x-test': 'ready' });
   await Promise.resolve();
   await Promise.resolve();
-  expect(secondDone).toBeFalse();
+  expect(secondDone).toBe(false);
   expect(commands).toEqual(['Network.enable']);
   const error = new Error('enable rejected');
   const outcomes = Promise.allSettled([first, second, headers]);

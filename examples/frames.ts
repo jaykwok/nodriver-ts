@@ -1,6 +1,6 @@
-import { Browser } from '../src/index.js';
-import { fixtureServer } from '../test/fixtures/server.js';
-const fixture = fixtureServer();
+import { Browser } from '../src/index.ts';
+import { fixtureServer } from '../test/fixtures/server.ts';
+const fixture = await fixtureServer();
 try {
   await using browser = await Browser.launch({ args: ['--site-per-process'] });
   const tab = await browser.newTab(fixture.base + '/page?frames=1');
@@ -13,5 +13,5 @@ try {
     }
   }
 } finally {
-  fixture.server.stop(true);
+  await fixture.server.stop();
 }

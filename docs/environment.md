@@ -82,8 +82,8 @@ MCP 宿主可在 `BrowserSessionManagerOptions.environmentDiagnostics` 中配置
 ## 测试
 
 ```sh
-bun run test:compat    # 用 CHROME_PATH 指定待验证的 Chrome
-bun run test:signals   # 渲染字体、本机 HTTP 地址与 WebRTC 数据通道
+npm run test:compat    # 用 CHROME_PATH 指定待验证的 Chrome
+npm run test:signals   # 渲染字体、本机 HTTP 地址与 WebRTC 数据通道
 ```
 
 | 变量                                       | 作用                                          |

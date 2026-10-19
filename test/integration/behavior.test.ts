@@ -1,8 +1,9 @@
-import { expect, test } from 'bun:test';
-import { Browser, InputActionError } from '../../src/index.js';
-import { fixtureServer } from '../fixtures/server.js';
-import { recordWire, forbiddenAutomaticCommands } from '../fixtures/wire.js';
-import { poll } from '../../src/utils.js';
+import { test } from 'node:test';
+import { expect } from '../fixtures/expect.ts';
+import { Browser, InputActionError } from '../../src/index.ts';
+import { fixtureServer } from '../fixtures/server.ts';
+import { recordWire, forbiddenAutomaticCommands } from '../fixtures/wire.ts';
+import { poll } from '../../src/utils.ts';
 
 const selectAll = process.platform === 'darwin' ? 'Meta+A' : 'Control+A';
 const policy = {
@@ -17,7 +18,7 @@ const policy = {
 };
 for (const transport of ['pipe', 'websocket'] as const) {
   test(`${transport}: seeded input events, graphemes, selection, chords, four frames and scroll`, async () => {
-    const fixture = fixtureServer(),
+    const fixture = await fixtureServer(),
       audit = recordWire(transport),
       browser = await Browser.launch({
         transport,
@@ -54,11 +55,11 @@ for (const transport of ['pipe', 'websocket'] as const) {
             e.key?.toLowerCase() === 'a' &&
             (process.platform === 'darwin' ? e.meta : e.ctrl),
         ),
-      ).toBeTrue();
+      ).toBe(true);
       expect(events.filter((e) => e.type === 'click' && e.id === 'target')).toHaveLength(2);
       expect(
         events.filter((e) => e.type === 'mousedown' && e.id === 'target').every((e) => e.trusted),
-      ).toBeTrue();
+      ).toBe(true);
       expect(first.trace.filter((e) => e.type === 'move').length).toBe(5);
       expect(first.trace.map((e) => e.type).slice(-3)).toEqual(['down', 'pause', 'up']);
       for (const frame of tab.frames) {
@@ -88,12 +89,12 @@ for (const transport of ['pipe', 'websocket'] as const) {
       );
     } finally {
       await browser.close();
-      fixture.server.stop(true);
+      await fixture.server.stop();
       audit.restore();
     }
   });
   test(`${transport}: changed hit target, cancellation, partial text and navigation never replay input`, async () => {
-    const fixture = fixtureServer(),
+    const fixture = await fixtureServer(),
       browser = await Browser.launch({ transport, headless: true });
     try {
       const tab = await browser.newTab(fixture.base + '/input-events');
@@ -111,7 +112,7 @@ for (const transport of ['pipe', 'websocket'] as const) {
       abort.abort();
       const error = await click;
       expect(error).toBeInstanceOf(InputActionError);
-      expect(error.report.trace.some((e: any) => e.type === 'up')).toBeTrue();
+      expect(error.report.trace.some((e: any) => e.type === 'up')).toBe(true);
       expect(tab.mouse.position.buttons).toBe(0);
       const input = await tab.waitForSelector('#plain');
       tab.setInputPolicy({ ...policy, keyDelay: [300, 300] });
@@ -161,7 +162,7 @@ for (const transport of ['pipe', 'websocket'] as const) {
       expect(await tab.evaluate('document.querySelector("#plain").value')).toBe('');
     } finally {
       await browser.close();
-      fixture.server.stop(true);
+      await fixture.server.stop();
     }
   });
 }

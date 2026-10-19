@@ -1,11 +1,12 @@
-import { removeTree } from '../../src/utils.js';
-import { describe, expect, test } from 'bun:test';
+import { removeTree } from '../../src/utils.ts';
+import { describe, test } from 'node:test';
+import { expect } from '../fixtures/expect.ts';
 import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as pause } from 'node:timers/promises';
-import { Browser, StaleElementError, TimeoutError } from '../../src/index.js';
-import { fixtureServer } from '../fixtures/server.js';
+import { Browser, StaleElementError, TimeoutError } from '../../src/index.ts';
+import { fixtureServer } from '../fixtures/server.ts';
 async function rejection(promise: Promise<unknown>): Promise<unknown> {
   try {
     await promise;
@@ -45,7 +46,7 @@ describe('navigation and lifecycle failures', () => {
     }
   });
   test('BFCache with nested frames restores live execution contexts', async () => {
-    const f = fixtureServer();
+    const f = await fixtureServer();
     const b = await Browser.launch({
       headless: process.env.NODRIVER_HEADFUL !== '1',
       timeout: 15_000,
@@ -56,7 +57,7 @@ describe('navigation and lifecycle failures', () => {
       await t.goto(f.base + '/empty');
       await t.go(-1);
       expect(await t.evaluate('secret')).toBe('main-secret');
-      for (let i = 0; i < 100 && t.frames.length < 4; i++) await Bun.sleep(20);
+      for (let i = 0; i < 100 && t.frames.length < 4; i++) await pause(20);
       expect({ count: t.frames.length, urls: t.frames.map((frame) => frame.url) }).toMatchObject({
         count: 4,
       });
@@ -64,11 +65,11 @@ describe('navigation and lifecycle failures', () => {
         expect(await frame.evaluate('frameSecret')).toBeDefined();
     } finally {
       await b.close();
-      f.server.stop(true);
+      await f.server.stop();
     }
   });
   test('OOPIF moves into parent process and back, preserving correct ownership', async () => {
-    const f = fixtureServer();
+    const f = await fixtureServer();
     const b = await Browser.launch({
       headless: process.env.NODRIVER_HEADFUL !== '1',
       timeout: 15_000,
@@ -113,11 +114,11 @@ describe('navigation and lifecycle failures', () => {
       await button.click();
     } finally {
       await b.close();
-      f.server.stop(true);
+      await f.server.stop();
     }
   });
   test('navigation timeout/cancel releases listeners; no side effect is replayed', async () => {
-    const f = fixtureServer();
+    const f = await fixtureServer();
     const b = await Browser.launch({
       headless: process.env.NODRIVER_HEADFUL !== '1',
       timeout: 15_000,
@@ -143,11 +144,11 @@ describe('navigation and lifecycle failures', () => {
       expect(b.connection.pendingCount).toBe(0);
     } finally {
       await b.close();
-      f.server.stop(true);
+      await f.server.stop();
     }
   });
   test('renderer crash rejects navigation, reload recovers', async () => {
-    const f = fixtureServer();
+    const f = await fixtureServer();
     const b = await Browser.launch({
       headless: process.env.NODRIVER_HEADFUL !== '1',
       timeout: 15_000,
@@ -167,7 +168,7 @@ describe('navigation and lifecycle failures', () => {
       expect(await t.evaluate('secret')).toBe('main-secret');
     } finally {
       await b.close();
-      f.server.stop(true);
+      await f.server.stop();
     }
   });
   test('persistent profile survives close and reopens; temporary profiles are removed', async () => {
@@ -190,7 +191,7 @@ describe('navigation and lifecycle failures', () => {
     }
   });
   test('20 contexts remain isolated and release their target/session subscriptions', async () => {
-    const f = fixtureServer();
+    const f = await fixtureServer();
     const b = await Browser.launch({
       headless: process.env.NODRIVER_HEADFUL !== '1',
       timeout: 15_000,
@@ -203,13 +204,13 @@ describe('navigation and lifecycle failures', () => {
       for (let i = 0; i < tabs.length; i++)
         expect(await tabs[i]!.mainFrame.storage()).toEqual({ index: String(i) });
       await Promise.all(contexts.map((c) => c.close()));
-      for (let i = 0; i < 100 && b.tabs.length > 1; i++) await Bun.sleep(20);
+      for (let i = 0; i < 100 && b.tabs.length > 1; i++) await pause(20);
       expect(b.tabs.length).toBe(1);
       expect(b.connection.pendingCount).toBe(0);
       expect(b.connection.listenerCount).toBe(baseline);
     } finally {
       await b.close();
-      f.server.stop(true);
+      await f.server.stop();
     }
   });
 });

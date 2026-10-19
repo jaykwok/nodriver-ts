@@ -1,23 +1,24 @@
-import { expect, test } from 'bun:test';
+import { test } from 'node:test';
+import { expect } from '../fixtures/expect.ts';
 import { Client, type CallToolResult } from '@modelcontextprotocol/client';
 import { InMemoryTransport } from '@modelcontextprotocol/server';
 import {
   createBrowserMcpServer,
   BrowserSessionManager,
   MCP_PROTOCOL_VERSION,
-} from '../../src/mcp/server.js';
-import { fixtureServer } from '../fixtures/server.js';
-import { recordWire, forbiddenAutomaticCommands } from '../fixtures/wire.js';
-import { poll } from '../../src/utils.js';
+} from '../../src/mcp/server.ts';
+import { fixtureServer } from '../fixtures/server.ts';
+import { recordWire, forbiddenAutomaticCommands } from '../fixtures/wire.ts';
+import { poll } from '../../src/utils.ts';
 
 function data(reply: CallToolResult): Record<string, any> {
   if (reply.isError) throw new Error(JSON.stringify(reply.structuredContent ?? reply.content));
-  expect(reply.isError).not.toBeTrue();
+  expect(reply.isError).not.toBe(true);
   return reply.structuredContent as Record<string, any>;
 }
 for (const transport of ['pipe', 'websocket'] as const) {
   test(`MCP evaluate ${transport}: JSON, failures, deadlines, cancellation and lease boundaries without Runtime.enable`, async () => {
-    const fixture = fixtureServer();
+    const fixture = await fixtureServer();
     const wire = recordWire(transport);
     const manager = new BrowserSessionManager({
       launch: { transport, headless: process.env.NODRIVER_HEADFUL !== '1' },
@@ -81,7 +82,7 @@ for (const transport of ['pipe', 'websocket'] as const) {
         'return (;',
         'globalThis.scriptOnce = (globalThis.scriptOnce || 0) + 1; throw new Error("intentional");',
       ])
-        expect((await run(script)).isError).toBeTrue();
+        expect((await run(script)).isError).toBe(true);
       expect(data(await run('return scriptOnce;')).value).toBe(1);
       for (const extra of [
         { frameId: 'unknown' },
@@ -91,7 +92,7 @@ for (const transport of ['pipe', 'websocket'] as const) {
         { arg: 'x'.repeat(32769) },
         { unexpected: true },
       ])
-        expect((await run('globalThis.invalidRan = true;', extra)).isError).toBeTrue();
+        expect((await run('globalThis.invalidRan = true;', extra)).isError).toBe(true);
       expect(data(await run('return typeof invalidRan;')).value).toBe('undefined');
       expect(
         (
@@ -100,13 +101,13 @@ for (const transport of ['pipe', 'websocket'] as const) {
             arguments: { tabId, script: 'globalThis.wrongLease = true;' },
           })
         ).isError,
-      ).toBeTrue();
+      ).toBe(true);
       expect(data(await run('return typeof wrongLease;')).value).toBe('undefined');
       // CDP's execution deadline stops this synchronous loop. A host timeout
       // alone would leave the renderer hung and the next evaluation would fail.
-      expect((await run('while (true) {}', { timeout: 150 })).isError).toBeTrue();
+      expect((await run('while (true) {}', { timeout: 150 })).isError).toBe(true);
       expect(data(await run('return 7;', { timeout: 2000 })).value).toBe(7);
-      expect((await run('await new Promise(() => {});', { timeout: 100 })).isError).toBeTrue();
+      expect((await run('await new Promise(() => {});', { timeout: 100 })).isError).toBe(true);
       const controller = new AbortController();
       const script = '/* cancel-script-probe */ await new Promise(() => {});';
       const pending = client.callTool(
@@ -127,21 +128,21 @@ for (const transport of ['pipe', 'websocket'] as const) {
         { timeout: 2000 },
       );
       controller.abort(new Error('script caller cancelled'));
-      expect(await cancelled).toBeTrue();
+      expect(await cancelled).toBe(true);
       expect(data(await run('return 9;')).value).toBe(9);
       expect(wire.messages.filter((m) => forbiddenAutomaticCommands.includes(m.method))).toEqual(
         [],
       );
       expect(
         wire.messages.some((m) => m.method === 'Runtime.evaluate' && m.params?.timeout === 150),
-      ).toBeTrue();
+      ).toBe(true);
     } finally {
       await client.close();
       await other.close();
       await server.close();
       await otherServer.close();
       await manager.close();
-      fixture.server.stop(true);
+      await fixture.server.stop();
       wire.restore();
     }
   });

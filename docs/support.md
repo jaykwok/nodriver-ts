@@ -2,7 +2,7 @@
 
 ## 运行环境
 
-- **运行时**：Bun ≥ 1.4.3 是主要运行时，完整测试在 Bun 下运行。Node.js ≥ 22 运行构建产物，以冒烟测试覆盖启动、查询、输入和 MCP HTTP。
+- **运行时**：包支持 Node.js ≥ 22 与 Bun ≥ 1.4.3。同一套测试（`node:test` 与 `expect`）不经改写地在 Node.js 与 Bun 下运行；Node.js ≥ 24 直接运行 TypeScript 源码，因此从源码开发和测试需要 Node.js 24 及以上，Node.js 22 以构建产物的冒烟测试覆盖。包管理使用 npm。
 - **浏览器**：本机 Chrome、Chromium 或 Edge。Windows、macOS、Linux 的常见安装位置与 `PATH` 自动探测，也可用 `CHROME_PATH` 或 `executablePath` 指定。
 - **协议**：CDP 类型固定为 devtools-protocol 0.0.1718299；MCP 仅支持 2026-07-28。
 - **Linux**：以普通用户运行，安装 Chrome 所需共享库（如 libnspr4、libnss3）。框架不添加 `--no-sandbox`，也不关闭站点隔离。WSL 的有界面模式需要 WSLg 或其他显示服务。
@@ -73,10 +73,11 @@
 ## 复验命令
 
 ```sh
-bun install --frozen-lockfile
-bun run check
-bun run test
-bun run test:integration
-bun run test:node
-bun run test:compat    # 用 CHROME_PATH 指定待验证的 Chrome
+npm ci
+npm run check
+npm test
+npm run test:integration
+npm run test:dist
+npm run test:compat         # 用 CHROME_PATH 指定待验证的 Chrome
+npm run test:bun            # Bun 下的单元测试；另有 test:bun:integration、test:bun:compat
 ```

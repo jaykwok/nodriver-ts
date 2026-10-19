@@ -1,10 +1,10 @@
 import type { Protocol } from 'devtools-protocol';
-import type { Frame } from '../page/frames.js';
-import { checkException } from '../page/frames.js';
-import type { Session } from '../protocol/connection.js';
-import { Element } from './element.js';
-import { StaleElementError } from '../errors.js';
-import { budget, type WaitOptions } from '../utils.js';
+import type { Frame } from '../page/frames.ts';
+import { checkException } from '../page/frames.ts';
+import type { Session } from '../protocol/connection.ts';
+import { Element } from './element.ts';
+import { StaleElementError } from '../errors.ts';
+import { budget, type WaitOptions } from '../utils.ts';
 export type Selector =
   string | { css: string } | { xpath: string } | { text: string; exact?: boolean };
 /** `timeout` and `signal` bound the whole query, including every CDP request it makes. */

@@ -1,9 +1,10 @@
-import { test, expect, describe } from 'bun:test';
-import { Browser } from '../../src/index.js';
-import { fixtureServer } from '../fixtures/server.js';
+import { describe, test } from 'node:test';
+import { expect } from '../fixtures/expect.ts';
+import { Browser } from '../../src/index.ts';
+import { fixtureServer } from '../fixtures/server.ts';
 describe('environment and interaction boundaries', () => {
   test('viewport, timezone, scoped query, element screenshot and disabled controls', async () => {
-    const f = fixtureServer();
+    const f = await fixtureServer();
     const b = await Browser.launch({
       headless: process.env.NODRIVER_HEADFUL !== '1',
       timeout: 15_000,
@@ -33,14 +34,14 @@ describe('environment and interaction boundaries', () => {
       const checkbox = await t.waitForSelector('#check');
       await checkbox.setChecked(true);
       await checkbox.setChecked(false);
-      expect(await checkbox.evaluate((el) => (el as HTMLInputElement).checked)).toBeFalse();
+      expect(await checkbox.evaluate((el) => (el as HTMLInputElement).checked)).toBe(false);
     } finally {
       await b.close();
-      f.server.stop(true);
+      await f.server.stop();
     }
   });
   test('init scripts run before page and OOPIF scripts; transformed iframe click', async () => {
-    const f = fixtureServer();
+    const f = await fixtureServer();
     const errors: unknown[] = [];
     const b = await Browser.launch({
       headless: process.env.NODRIVER_HEADFUL !== '1',
@@ -66,7 +67,7 @@ describe('environment and interaction boundaries', () => {
       expect(errors).toEqual([]);
     } finally {
       await b.close();
-      f.server.stop(true);
+      await f.server.stop();
     }
   });
 });

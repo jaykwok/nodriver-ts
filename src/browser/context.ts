@@ -1,11 +1,11 @@
 import type { Protocol } from 'devtools-protocol';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import type { Browser } from './browser.js';
-import type { Tab } from '../page/tab.js';
-import type { Frame } from '../page/frames.js';
-import { ProxyForwarder } from '../optional/proxy.js';
-import { NodriverError } from '../errors.js';
+import type { Browser } from './browser.ts';
+import type { Tab } from '../page/tab.ts';
+import type { Frame } from '../page/frames.ts';
+import { ProxyForwarder } from '../optional/proxy.ts';
+import { NodriverError } from '../errors.ts';
 export interface ContextOptions {
   proxyServer?: string;
   proxyBypassList?: string;
@@ -26,12 +26,16 @@ export class BrowserContext {
   private readonly usedOrigins = new Set<string>();
   private closing?: Promise<void>;
   private disposed = false;
-  constructor(
-    readonly browser: Browser,
-    readonly id?: string,
-    readonly proxy?: ProxyForwarder,
-    readonly proxyConfigured = false,
-  ) {}
+  readonly browser: Browser;
+  readonly id?: string;
+  readonly proxy?: ProxyForwarder;
+  readonly proxyConfigured: boolean;
+  constructor(browser: Browser, id?: string, proxy?: ProxyForwarder, proxyConfigured = false) {
+    this.browser = browser;
+    this.id = id;
+    this.proxy = proxy;
+    this.proxyConfigured = proxyConfigured;
+  }
   get tabs(): Tab[] {
     return this.browser.tabs.filter((t) => t.context === this);
   }

@@ -1,12 +1,13 @@
-import { expect, test } from 'bun:test';
-import { Browser } from '../../src/index.js';
-import { fixtureServer } from '../fixtures/server.js';
+import { test } from 'node:test';
+import { expect } from '../fixtures/expect.ts';
+import { Browser } from '../../src/index.ts';
+import { fixtureServer } from '../fixtures/server.ts';
 import { appendFile } from 'node:fs/promises';
-import { forbiddenAutomaticCommands, recordWire } from '../fixtures/wire.js';
+import { forbiddenAutomaticCommands, recordWire } from '../fixtures/wire.ts';
 
 for (const transport of ['websocket', 'pipe'] as const) {
   test(`${transport}: native environment across documents, OOPIF and temporary Workers`, async () => {
-    const fixture = fixtureServer();
+    const fixture = await fixtureServer();
     const audit = recordWire(transport);
     const browser = await Browser.launch({
       transport,
@@ -27,7 +28,7 @@ for (const transport of ['websocket', 'pipe'] as const) {
         expect(report.frameId).toBe(frame.id);
         expect(report.url).toBe(frame.url);
         expect(report.document.userAgent).toBe(await frame.evaluate('navigator.userAgent'));
-        expect(report.document.webdriver).toBeFalse();
+        expect(report.document.webdriver).toBe(false);
         expect(report.document.screen.width).toBeGreaterThan(0);
         expect(report.document.viewport.width).toBeGreaterThan(0);
         expect(report.document.webgl).toBeDefined();
@@ -69,14 +70,14 @@ for (const transport of ['websocket', 'pipe'] as const) {
       });
     } finally {
       await browser.close();
-      fixture.server.stop(true);
+      await fixture.server.stop();
       audit.restore();
     }
   });
 }
 
 test('Worker sampling obeys CSP and disposes temporary Worker/blob resources', async () => {
-  const fixture = fixtureServer();
+  const fixture = await fixtureServer();
   const browser = await Browser.launch({
     transport: 'pipe',
     headless: process.env.NODRIVER_HEADFUL !== '1',
@@ -134,6 +135,6 @@ test('Worker sampling obeys CSP and disposes temporary Worker/blob resources', a
     expect((await tab.inspectEnvironment({ worker: true })).worker?.status).toBe('unavailable');
   } finally {
     await browser.close();
-    fixture.server.stop(true);
+    await fixture.server.stop();
   }
 });

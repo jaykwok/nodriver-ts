@@ -1,15 +1,17 @@
-// Test preload for `bun run test:map`: wraps the public classes and records, per member, the test
-// source locations that call it directly. Calls made from library code are not recorded.
-import { afterAll } from 'bun:test';
+// Test preload for `npm run test:map` (node --import): wraps the public classes and records, per
+// member, the test source locations that call it directly. Calls made from library code are not
+// recorded. Each test-file process writes its own trace into the NODRIVER_API_TRACE directory.
+import { randomUUID } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
-import { relative, resolve } from 'node:path';
-import * as api from '../src/index.js';
-import { BrowserSessionManager } from '../src/mcp/manager.js';
+import { join, relative, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import * as api from '../src/index.ts';
+import { BrowserSessionManager } from '../src/mcp/manager.ts';
 
 const output = process.env.NODRIVER_API_TRACE;
-if (!output) throw new Error('NODRIVER_API_TRACE must name the trace output file');
-const root = resolve(import.meta.dir, '..');
-const self = resolve(import.meta.path);
+if (!output) throw new Error('NODRIVER_API_TRACE must name the trace output directory');
+const root = resolve(import.meta.dirname, '..');
+const self = resolve(import.meta.filename);
 const calls = new Map<string, Set<string>>();
 
 /** The first stack frame outside this file, as a repository-relative "file:line" in test/. */
@@ -19,9 +21,12 @@ function caller(): string | undefined {
   const stack = new Error().stack ?? '';
   Error.stackTraceLimit = limit;
   for (const frame of stack.split('\n').slice(1)) {
-    const match = /\(?((?:[A-Za-z]:)?[^():]+):(\d+):\d+\)?$/.exec(frame.trim());
-    if (!match || resolve(match[1]!) === self) continue;
-    const file = relative(root, match[1]!).replaceAll('\\', '/');
+    // V8 prints ESM frames as file:// URLs.
+    const match = /\(?((?:file:\/\/\/?)?(?:[A-Za-z]:)?[^():]+):(\d+):\d+\)?$/.exec(frame.trim());
+    if (!match) continue;
+    const path = resolve(match[1]!.startsWith('file:') ? fileURLToPath(match[1]!) : match[1]!);
+    if (path === self) continue;
+    const file = relative(root, path).replaceAll('\\', '/');
     return file.startsWith('test/') ? `${file}:${match[2]}` : undefined;
   }
   return undefined;
@@ -75,10 +80,8 @@ for (const [name, cls] of Object.entries(classes)) {
   wrap(cls.prototype, name, '');
   wrap(cls, name, 'static ');
 }
-// Hooks in a preload are global; rewrite the cumulative trace after each file's tests.
-afterAll(() => {
-  const data = Object.fromEntries(
-    [...calls].sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => [k, [...v].sort()]),
-  );
-  writeFileSync(output, JSON.stringify(data, null, 1));
+process.on('exit', () => {
+  const data = Object.fromEntries([...calls].map(([k, v]) => [k, [...v]]));
+  // Windows reuses PIDs across the sequential test-file processes.
+  writeFileSync(join(output, `${randomUUID()}.json`), JSON.stringify(data));
 });

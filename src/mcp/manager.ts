@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { EventHub } from '../utils.js';
-import { BrowserMcpSession, type BrowserMcpOptions } from './session.js';
-import { BrowserPool } from './pool.js';
+import { EventHub } from '../utils.ts';
+import { BrowserMcpSession, type BrowserMcpOptions } from './session.ts';
+import { BrowserPool } from './pool.ts';
 
 export interface BrowserSessionManagerOptions extends BrowserMcpOptions {
   maxLeases?: number;
@@ -30,11 +30,10 @@ const LEASE_NAME = /^[A-Za-z0-9._-]{1,64}$/;
 const LEASE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export class LeaseError extends Error {
   override name = 'LeaseError';
-  constructor(
-    readonly code: 'invalid' | 'capacity' | 'unknown',
-    message: string,
-  ) {
+  readonly code: 'invalid' | 'capacity' | 'unknown';
+  constructor(code: 'invalid' | 'capacity' | 'unknown', message: string) {
     super(message);
+    this.code = code;
   }
 }
 function positive(value: number, label: string): number {
@@ -52,7 +51,9 @@ export class BrowserSessionManager {
   private timer: ReturnType<typeof setInterval>;
   readonly retired = new EventHub<string>();
   readonly limits;
-  constructor(readonly options: BrowserSessionManagerOptions = {}) {
+  readonly options: BrowserSessionManagerOptions;
+  constructor(options: BrowserSessionManagerOptions = {}) {
+    this.options = options;
     if (options.launch && options.connect) throw new TypeError('Choose launch or connect');
     this.limits = {
       maxLeases: positive(options.maxLeases ?? 16, 'maxLeases'),

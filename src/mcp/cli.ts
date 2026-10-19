@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 import { serveStdio } from '@modelcontextprotocol/server/stdio';
-import { createBrowserMcpServer, type BrowserMcpOptions } from './server.js';
-import { startBrowserMcpHttpServer } from './http.js';
-import { startBrowserMcpSocketServer } from './socket.js';
-import type { BrowserSessionManagerOptions } from './manager.js';
-import type { LaunchOptions } from '../browser/launcher.js';
-import { MCP_PROTOCOL_VERSION } from './protocol.js';
-import { PACKAGE } from '../version.js';
+import { createBrowserMcpServer, type BrowserMcpOptions } from './server.ts';
+import { startBrowserMcpHttpServer } from './http.ts';
+import { startBrowserMcpSocketServer } from './socket.ts';
+import type { BrowserSessionManagerOptions } from './manager.ts';
+import type { LaunchOptions } from '../browser/launcher.ts';
+import { MCP_PROTOCOL_VERSION } from './protocol.ts';
+import { PACKAGE } from '../version.ts';
 
 interface Parsed {
   browser: BrowserSessionManagerOptions;

@@ -1,24 +1,27 @@
 import assert from 'node:assert/strict';
-import { appendFile, mkdir, readFile, readdir, access } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { appendFile, mkdir, readFile, readdir, access, writeFile } from 'node:fs/promises';
 import { createHash, randomBytes } from 'node:crypto';
 import { resolve, join } from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
+import { promisify } from 'node:util';
 import {
   Client,
   StreamableHTTPClientTransport,
   type CallToolResult,
 } from '@modelcontextprotocol/client';
-import { Browser, StaleElementError, type Tab } from '../src/index.js';
-import { BrowserSessionManager } from '../src/mcp/manager.js';
-import { startBrowserMcpHttpServer, type BrowserMcpHttpServer } from '../src/mcp/http.js';
+import { Browser, StaleElementError, type Tab } from '../src/index.ts';
+import { BrowserSessionManager } from '../src/mcp/manager.ts';
+import { startBrowserMcpHttpServer, type BrowserMcpHttpServer } from '../src/mcp/http.ts';
 import {
   startBrowserMcpSocketServer,
   BrowserMcpSocketClientTransport,
   type BrowserMcpSocketServer,
-} from '../src/mcp/socket.js';
-import { PipeTransport } from '../src/transport/pipe.js';
-import { WebSocketTransport } from '../src/transport/websocket.js';
-import { fixtureServer } from '../test/fixtures/server.js';
-import { poll } from '../src/utils.js';
+} from '../src/mcp/socket.ts';
+import { PipeTransport } from '../src/transport/pipe.ts';
+import { WebSocketTransport } from '../src/transport/websocket.ts';
+import { fixtureServer } from '../test/fixtures/server.ts';
+import { poll } from '../src/utils.ts';
 
 const args = process.argv.slice(2);
 function option(name: string, fallback: string) {
@@ -33,8 +36,13 @@ assert.ok(Number.isSafeInteger(interval) && interval >= 10);
 assert.ok(Number.isSafeInteger(cyclesLimit) && cyclesLimit >= 0);
 const output = resolve(option('--output', `dev/soak-${process.platform}-${Date.now()}`));
 await mkdir(output, { recursive: true });
+const exists = (path: string) =>
+  access(path).then(
+    () => true,
+    () => false,
+  );
 assert.equal(
-  await Bun.file(join(output, 'status.json')).exists(),
+  await exists(join(output, 'status.json')),
   false,
   'Use a fresh output directory; never overwrite a previous run',
 );
@@ -48,7 +56,7 @@ process.on('SIGTERM', () => {
   stopping = true;
 });
 const token = randomBytes(32).toString('hex'); // Never written to a report or command line.
-const fixture = fixtureServer({ hostname: '127.0.0.1' });
+const fixture = await fixtureServer({ hostname: '127.0.0.1' });
 const counts = { pipe: 0, websocket: 0 },
   violations: string[] = [];
 const originals = [PipeTransport.prototype.send, WebSocketTransport.prototype.send];
@@ -98,16 +106,19 @@ for (const file of [
   'src/page/frames.ts',
   'benchmarks/soak.ts',
   'test/fixtures/server.ts',
+  'test/fixtures/serve.ts',
 ])
   hashes[file] = createHash('sha256')
-    .update(new Uint8Array(await Bun.file(resolve(file)).arrayBuffer()))
+    .update(await readFile(resolve(file)))
     .digest('hex');
 async function writeStatus(extra: Record<string, unknown> = {}) {
   const state = {
     status,
     pid: process.pid,
     platform: process.platform,
-    runtime: `Bun ${Bun.version}`,
+    runtime: process.versions.bun
+      ? `Bun ${process.versions.bun}`
+      : `Node.js ${process.versions.node}`,
     startedAt: new Date(started).toISOString(),
     plannedEnd: new Date(until).toISOString(),
     updatedAt: new Date().toISOString(),
@@ -132,10 +143,10 @@ async function writeStatus(extra: Record<string, unknown> = {}) {
     ...extra,
   };
   const temporary = join(output, 'status-next.json');
-  await Bun.write(temporary, JSON.stringify(state, null, 2) + '\n');
+  await writeFile(temporary, JSON.stringify(state, null, 2) + '\n');
   // Readers may inspect status during a write; retaining the previous sample in
   // JSONL makes an interrupted write diagnosable without pretending completion.
-  await Bun.write(join(output, 'status.json'), JSON.stringify(state, null, 2) + '\n');
+  await writeFile(join(output, 'status.json'), JSON.stringify(state, null, 2) + '\n');
 }
 function resources(browser: Browser) {
   return {
@@ -347,19 +358,17 @@ async function sample() {
       }),
     );
   if (process.platform === 'win32') {
-    const p = Bun.spawn(
+    const { stdout } = await promisify(execFile)(
+      'powershell.exe',
       [
-        'powershell.exe',
         '-NoProfile',
         '-NonInteractive',
         '-Command',
         `$items=@(Get-Process -Id ${ids.join(',')} -ErrorAction SilentlyContinue | Select-Object Id,WorkingSet64,Handles); ConvertTo-Json -Compress -InputObject $items`,
       ],
-      { stdout: 'pipe', stderr: 'pipe', windowsHide: true },
+      { windowsHide: true },
     );
-    const text = await new Response(p.stdout).text();
-    assert.equal(await p.exited, 0);
-    osProcesses = JSON.parse(text);
+    osProcesses = JSON.parse(stdout);
   }
   await appendFile(
     join(output, 'samples.jsonl'),
@@ -389,7 +398,7 @@ try {
     Date.now() < until &&
     (!cyclesLimit || cycle < cyclesLimit) &&
     !stopping &&
-    !(await Bun.file(join(output, 'STOP')).exists())
+    !(await exists(join(output, 'STOP')))
   ) {
     const gap = Date.now() - lastCycle;
     largestGapMs = Math.max(largestGapMs, gap);
@@ -415,11 +424,11 @@ try {
     );
     if (cyclesLimit && cycle >= cyclesLimit) break;
     const next = Date.now() + interval;
-    while (Date.now() < next && !stopping && !(await Bun.file(join(output, 'STOP')).exists()))
-      await Bun.sleep(Math.max(1, Math.min(1000, next - Date.now())));
+    while (Date.now() < next && !stopping && !(await exists(join(output, 'STOP'))))
+      await sleep(Math.max(1, Math.min(1000, next - Date.now())));
   }
   status =
-    stopping || (await Bun.file(join(output, 'STOP')).exists())
+    stopping || (await exists(join(output, 'STOP')))
       ? 'stopped'
       : cyclesLimit
         ? 'completed-cycles'
@@ -453,7 +462,7 @@ try {
     failure = String(outcomes.filter((o) => o.status === 'rejected').map((o) => o.reason));
     process.exitCode = 1;
   }
-  fixture.server.stop(true);
+  await fixture.server.stop();
   PipeTransport.prototype.send = originals[0]!;
   WebSocketTransport.prototype.send = originals[1]!;
   const cleaned = await Promise.all(

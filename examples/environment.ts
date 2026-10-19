@@ -1,4 +1,4 @@
-import { Browser } from '../src/index.js';
+import { Browser } from '../src/index.ts';
 
 await using browser = await Browser.launch({ transport: 'pipe' });
 const tab = await browser.newTab('http://localhost:8000');

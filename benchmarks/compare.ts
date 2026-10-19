@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import { arch, cpus, platform, release, totalmem } from 'node:os';
 import { join } from 'node:path';
-import { Browser, findExecutable } from '../src/index.js';
+import { setTimeout as sleep } from 'node:timers/promises';
+import { promisify } from 'node:util';
+import { Browser, findExecutable } from '../src/index.ts';
+import { serve } from '../test/fixtures/serve.ts';
 
 // Same-machine comparison with Python nodriver: same Chrome, headless, WebSocket, fresh temporary
 // profiles, local fixture. Run explicitly; results describe this workload on this machine only.
@@ -25,9 +29,8 @@ async function timed(count: number, fn: () => Promise<unknown>): Promise<number[
   }
   return values;
 }
-const fixture = Bun.serve({
+const fixture = await serve({
   hostname: '127.0.0.1',
-  port: 0,
   fetch(request) {
     const url = new URL(request.url);
     const n = url.pathname === '/buttons' ? Number(url.searchParams.get('n') ?? 0) : 0;
@@ -58,7 +61,7 @@ async function typescript() {
       await browser.newTab(base + '/empty');
       series.push(performance.now() - start);
       await browser.close();
-      await Bun.sleep(1000);
+      await sleep(1000);
     }
   const browser = await launch();
   try {
@@ -80,7 +83,9 @@ async function typescript() {
       axNodes = (await tab.cdp.send('Accessibility.getFullAXTree')).nodes.length;
     });
     return {
-      runtime: `Bun ${Bun.version}`,
+      runtime: process.versions.bun
+        ? `Bun ${process.versions.bun}`
+        : `Node.js ${process.versions.node}`,
       library: 'nodriver-ts (this commit)',
       coldStart,
       coldStartUnmasked,
@@ -97,11 +102,11 @@ async function typescript() {
   }
 }
 
-// Async spawn: the fixture server runs on this process's event loop.
+// Async spawn: the fixture server runs on this process's event loop. Progress goes to stderr.
 async function python() {
-  const run = Bun.spawn(
+  const run = promisify(execFile)(
+    'uv',
     [
-      'uv',
       'run',
       '--no-project',
       '--python',
@@ -112,16 +117,16 @@ async function python() {
       PSUTIL,
       'python',
       '-I',
-      join(import.meta.dir, 'compare', 'nodriver_bench.py'),
+      join(import.meta.dirname, 'compare', 'nodriver_bench.py'),
       base,
       chrome,
       String(samples),
     ],
-    { stdout: 'pipe', stderr: 'inherit' },
+    { maxBuffer: 64 * 1024 * 1024 },
   );
-  const [output, code] = await Promise.all([new Response(run.stdout).text(), run.exited]);
-  if (code !== 0) throw new Error(`Python benchmark failed (${code})`);
-  return JSON.parse(output.trim().split('\n').at(-1)!);
+  run.child.stderr?.pipe(process.stderr);
+  const { stdout } = await run;
+  return JSON.parse(stdout.trim().split('\n').at(-1)!);
 }
 
 try {
@@ -172,5 +177,5 @@ try {
     ),
   );
 } finally {
-  fixture.stop(true);
+  await fixture.stop();
 }

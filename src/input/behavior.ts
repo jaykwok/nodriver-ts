@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { delay, timeoutValue, type WaitOptions } from '../utils.js';
-import { TimeoutError } from '../errors.js';
+import { delay, timeoutValue, type WaitOptions } from '../utils.ts';
+import { TimeoutError } from '../errors.ts';
 
 export interface InputPolicy {
   mode?: 'instant' | 'human';
@@ -32,14 +32,13 @@ export interface InputReport {
 }
 export class InputActionError extends Error {
   override name = 'InputActionError';
-  constructor(
-    readonly report: InputReport,
-    cause: unknown,
-  ) {
+  readonly report: InputReport;
+  constructor(report: InputReport, cause: unknown) {
     super(
       `Input ${report.action} interrupted after ${report.events} events / ${report.completedSegments} text segments: ${String(cause)}`,
       { cause },
     );
+    this.report = report;
   }
 }
 /** A browser-wide, reentrant input lock. Calls from distinct async tasks serialize. */
@@ -78,12 +77,21 @@ export class InputBehavior {
   private state = 1;
   lastReport?: InputReport;
   private active = 0;
+  readonly run: <T>(task: () => Promise<T>) => Promise<T>;
+  readonly guard: () => void;
+  readonly snapshotGuard: () => () => void;
+  readonly prepare: () => Promise<void>;
   constructor(
-    readonly run: <T>(task: () => Promise<T>) => Promise<T>,
-    readonly guard: () => void,
-    readonly snapshotGuard: () => () => void = () => () => {},
-    readonly prepare: () => Promise<void> = async () => {},
-  ) {}
+    run: <T>(task: () => Promise<T>) => Promise<T>,
+    guard: () => void,
+    snapshotGuard: () => () => void = () => () => {},
+    prepare: () => Promise<void> = async () => {},
+  ) {
+    this.run = run;
+    this.guard = guard;
+    this.snapshotGuard = snapshotGuard;
+    this.prepare = prepare;
+  }
   configure(policy: InputPolicy): void {
     if (this.active) throw new Error('Cannot change input policy during an action');
     const next = { ...structuredClone(defaults), ...structuredClone(policy) };
@@ -164,11 +172,11 @@ export class InputAction {
   readonly report: InputReport;
   readonly end: number;
   private documentGuard: () => void;
-  constructor(
-    readonly behavior: InputBehavior,
-    action: string,
-    readonly options: InputOptions,
-  ) {
+  readonly behavior: InputBehavior;
+  readonly options: InputOptions;
+  constructor(behavior: InputBehavior, action: string, options: InputOptions) {
+    this.behavior = behavior;
+    this.options = options;
     this.end = performance.now() + timeoutValue(options.timeout ?? 10000);
     this.documentGuard = behavior.snapshotGuard();
     this.report = {

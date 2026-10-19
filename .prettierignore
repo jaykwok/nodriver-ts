@@ -2,4 +2,4 @@ node_modules/
 dist/
 dev/
 docs/dev/
-bun.lock
+package-lock.json

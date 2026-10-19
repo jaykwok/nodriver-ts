@@ -1,10 +1,14 @@
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { arch, cpus, platform, release, totalmem } from 'node:os';
+import { setTimeout as sleep } from 'node:timers/promises';
+import { promisify } from 'node:util';
 import { Client, InMemoryTransport, type CallToolResult } from '@modelcontextprotocol/client';
-import { Browser } from '../src/index.js';
-import { BrowserSessionManager, createBrowserMcpServer } from '../src/mcp/server.js';
-import { BrowserMcpSession } from '../src/mcp/session.js';
+import { Browser } from '../src/index.ts';
+import { BrowserSessionManager, createBrowserMcpServer } from '../src/mcp/server.ts';
+import { BrowserMcpSession } from '../src/mcp/session.ts';
+import { serve } from '../test/fixtures/serve.ts';
 
 // Run explicitly; benchmarks are not correctness tests or performance promises.
 const repeats = Number(process.env.BENCH_SAMPLES ?? 7);
@@ -28,9 +32,8 @@ function result(reply: CallToolResult): Record<string, unknown> {
   assert.notEqual(reply.isError, true, JSON.stringify(reply.content));
   return reply.structuredContent as Record<string, unknown>;
 }
-const fixture = Bun.serve({
+const fixture = await serve({
   hostname: '127.0.0.1',
-  port: 0,
   fetch(request) {
     const n = Number(new URL(request.url).searchParams.get('nodes') ?? 1);
     return new Response(
@@ -97,19 +100,17 @@ async function memory(browsers: Browser[]) {
     chromeRssBytes = rss.reduce((a, b) => a + b, 0);
   } else if (process.platform === 'win32' && ids.length) {
     // IDs are numeric protocol values, never user-provided shell text.
-    const proc = Bun.spawn(
+    const { stdout } = await promisify(execFile)(
+      'powershell.exe',
       [
-        'powershell.exe',
         '-NoProfile',
         '-NonInteractive',
         '-Command',
         `$items=@(Get-Process -Id ${ids.join(',')} -ErrorAction SilentlyContinue | Select-Object Id,WorkingSet64); ConvertTo-Json -Compress -InputObject $items`,
       ],
-      { stdout: 'pipe', stderr: 'pipe', windowsHide: true },
+      { windowsHide: true },
     );
-    const output = await new Response(proc.stdout).text();
-    assert.equal(await proc.exited, 0, await new Response(proc.stderr).text());
-    const rows = JSON.parse(output) as { Id: number; WorkingSet64: number }[];
+    const rows = JSON.parse(stdout) as { Id: number; WorkingSet64: number }[];
     sampled = rows.map((p) => p.Id);
     chromeRssBytes = rows.reduce((n, p) => n + p.WorkingSet64, 0);
   }
@@ -124,7 +125,9 @@ async function memory(browsers: Browser[]) {
 }
 const report: Record<string, unknown> = {
   date: new Date().toISOString(),
-  runtime: `Bun ${Bun.version}`,
+  runtime: process.versions.bun
+    ? `Bun ${process.versions.bun}`
+    : `Node.js ${process.versions.node}`,
   os: {
     platform: platform(),
     release: release(),
@@ -294,7 +297,7 @@ try {
       const stats = manager.stats();
       for (const client of clients) await client.close();
       for (const id of leases) await manager.release('benchmark', id);
-      await Bun.sleep(5);
+      await sleep(5);
       await manager.sweep();
       pools.push({
         contexts: count,
@@ -324,5 +327,5 @@ try {
   assert.equal(forbiddenCount, 0);
   console.log(JSON.stringify(report, null, 2));
 } finally {
-  fixture.stop(true);
+  await fixture.stop();
 }

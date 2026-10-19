@@ -1,8 +1,8 @@
-import type { Tab, Environment } from './tab.js';
-import type { EnvironmentReport, NavigatorSnapshot } from './environment.js';
-import type { WaitOptions } from '../utils.js';
-import { StaleElementError } from '../errors.js';
-import { timeoutValue } from '../utils.js';
+import type { Tab, Environment } from './tab.ts';
+import type { EnvironmentReport, NavigatorSnapshot } from './environment.ts';
+import type { WaitOptions } from '../utils.ts';
+import { StaleElementError } from '../errors.ts';
+import { timeoutValue } from '../utils.ts';
 export interface DiagnoseEnvironmentOptions extends WaitOptions {
   worker?: boolean;
   webgl?: boolean;

@@ -1,4 +1,4 @@
-import { Browser } from '../src/index.js';
+import { Browser } from '../src/index.ts';
 await using browser = await Browser.launch(); // Default headed; set headless:true on a server.
 const tab = await browser.newTab();
 await tab.setContent('<input><button>Continue</button>');

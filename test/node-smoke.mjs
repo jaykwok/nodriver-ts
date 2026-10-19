@@ -1,4 +1,4 @@
-// Node.js smoke test against the built package (run: bun run test:node).
+// Node.js smoke test against the built package (run: npm run test:dist).
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';

@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { Client } from '@modelcontextprotocol/client';
-import { startBrowserMcpSocketServer, BrowserMcpSocketClientTransport } from '../src/mcp/socket.js';
+import { startBrowserMcpSocketServer, BrowserMcpSocketClientTransport } from '../src/mcp/socket.ts';
 
 const token = randomBytes(32).toString('hex');
 const service = await startBrowserMcpSocketServer({ tokens: { [token]: 'example' } });

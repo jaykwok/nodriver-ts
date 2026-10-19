@@ -1,5 +1,8 @@
-import { poll, removeTree } from '../../src/utils.js';
-import { test, expect, spyOn } from 'bun:test';
+import { setTimeout as sleep } from 'node:timers/promises';
+import { poll, removeTree } from '../../src/utils.ts';
+import { test } from 'node:test';
+import { expect } from '../fixtures/expect.ts';
+import { spyOn } from 'jest-mock';
 import { Client, type CallToolResult } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { InMemoryTransport } from '@modelcontextprotocol/server';
@@ -7,11 +10,11 @@ import { fileURLToPath } from 'node:url';
 import { access, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { Browser } from '../../src/index.js';
-import { BrowserProcess } from '../../src/browser/launcher.js';
-import { createBrowserMcpServer } from '../../src/mcp/server.js';
-import { PipeTransport } from '../../src/transport/pipe.js';
-import { fixtureServer } from '../fixtures/server.js';
+import { Browser } from '../../src/index.ts';
+import { BrowserProcess } from '../../src/browser/launcher.ts';
+import { createBrowserMcpServer } from '../../src/mcp/server.ts';
+import { PipeTransport } from '../../src/transport/pipe.ts';
+import { fixtureServer } from '../fixtures/server.ts';
 
 interface Snapshot {
   nodes: Array<{ ref: string; role: string; name: string; states: Record<string, unknown> }>;
@@ -41,7 +44,7 @@ const cli = fileURLToPath(new URL('../../src/mcp/cli.ts', import.meta.url));
 
 for (const mode of ['websocket', 'pipe'] as const) {
   test(`MCP stdio ${mode}: discovery, snapshot refs, nested frames, actions and errors`, async () => {
-    const fixture = fixtureServer();
+    const fixture = await fixtureServer();
     const transport = new StdioClientTransport({
       command: process.execPath,
       args: [
@@ -71,8 +74,8 @@ for (const mode of ['websocket', 'pipe'] as const) {
       await client.connect(transport);
       const { tools } = await client.listTools();
       expect(tools.length).toBe(26);
-      expect(tools.some((t) => t.name === 'browser_snapshot')).toBeTrue();
-      expect(tools.find((t) => t.name === 'browser_click')!.annotations?.readOnlyHint).toBeFalse();
+      expect(tools.some((t) => t.name === 'browser_snapshot')).toBe(true);
+      expect(tools.find((t) => t.name === 'browser_click')!.annotations?.readOnlyHint).toBe(false);
       expect(await call(client, 'browser_tabs')).toMatchObject({ connected: false, tabs: [] });
       const opened = await call<TabInfo>(client, 'browser_open', {
         url: fixture.base + '/page?frames=1',
@@ -85,21 +88,21 @@ for (const mode of ['websocket', 'pipe'] as const) {
           frameId: frame.frameId,
         });
         const button = snapshot.nodes.find((n) => n.role === 'button');
-        expect(button?.ref).toBeString();
+        expect(button?.ref).toEqual(expect.any(String));
         await call(client, 'browser_click', { tabId, ref: button!.ref });
       }
       const snapshot = await call<Snapshot>(client, 'browser_snapshot', { tabId });
       const closed = snapshot.nodes.find((n) => n.role === 'button' && n.name === 'Closed shadow')!;
-      expect(closed.ref).toBeString();
+      expect(closed.ref).toEqual(expect.any(String));
       await call(client, 'browser_click', { tabId, ref: closed.ref });
       expect(
         (await call<Snapshot>(client, 'browser_snapshot', { tabId })).nodes.some(
           (n) => n.name === 'shadow-clicked',
         ),
-      ).toBeTrue();
+      ).toBe(true);
       expect(
         (await call<Snapshot>(client, 'browser_snapshot', { tabId, limit: 1 })).truncated,
-      ).toBeTrue();
+      ).toBe(true);
       const other = await call<TabInfo>(client, 'browser_open', {});
       expect(
         (
@@ -108,20 +111,20 @@ for (const mode of ['websocket', 'pipe'] as const) {
             arguments: { tabId: other.tabId, ref: closed.ref },
           })
         ).isError,
-      ).toBeTrue();
+      ).toBe(true);
       await call(client, 'browser_close_tab', { tabId: other.tabId });
       await call(client, 'browser_navigate', { tabId, url: fixture.base + '/mcp' });
       expect(
         (await client.callTool({ name: 'browser_click', arguments: { tabId, ref: closed.ref } }))
           .isError,
-      ).toBeTrue();
+      ).toBe(true);
       const name = await find(client, tabId, '#name');
       await call(client, 'browser_fill', { tabId, ref: name, text: '中文😀' });
       expect(
         (await call<Snapshot>(client, 'browser_snapshot', { tabId })).nodes.some(
           (n) => n.name === '中文😀',
         ),
-      ).toBeTrue();
+      ).toBe(true);
       await call(client, 'browser_press_key', { tabId, key: 'End' });
       const check = await find(client, tabId, '#check');
       await call(client, 'browser_check', { tabId, ref: check, checked: true });
@@ -139,11 +142,11 @@ for (const mode of ['websocket', 'pipe'] as const) {
         (await call<Snapshot>(client, 'browser_snapshot', { tabId })).nodes.some(
           (n) => n.name === 'b',
         ),
-      ).toBeTrue();
+      ).toBe(true);
       await call(client, 'browser_click', { tabId, ref: await find(client, tabId, '#delayed') });
       expect(
         (await call<{ ref: string }>(client, 'browser_wait', { tabId, selector: '#later' })).ref,
-      ).toBeString();
+      ).toEqual(expect.any(String));
       const shot = await client.callTool({ name: 'browser_screenshot', arguments: { tabId } });
       const image = shot.content[0]!;
       expect(image.type).toBe('image');
@@ -152,14 +155,14 @@ for (const mode of ['websocket', 'pipe'] as const) {
       expect(
         (await client.callTool({ name: 'browser_open', arguments: { url: 'file:///private' } }))
           .isError,
-      ).toBeTrue();
+      ).toBe(true);
       const controller = new AbortController();
       const pending = client.callTool(
         { name: 'browser_wait', arguments: { tabId, selector: '#never', timeout: 5000 } },
         { signal: controller.signal },
       );
       const caught = pending.catch((e: unknown) => e);
-      await Bun.sleep(60);
+      await sleep(60);
       controller.abort();
       expect(await caught).toBeInstanceOf(Error);
       expect(await call(client, 'browser_tabs')).toMatchObject({ connected: true });
@@ -182,24 +185,24 @@ for (const mode of ['websocket', 'pipe'] as const) {
         ),
       ).toBe('alert');
       await call(client, 'browser_dialog', { tabId, accept: true });
-      expect((await click).isError).not.toBeTrue();
+      expect((await click).isError).not.toBe(true);
       expect(
         (await call<Snapshot>(client, 'browser_snapshot', { tabId })).nodes.some(
           (n) => n.name === 'done',
         ),
-      ).toBeTrue();
+      ).toBe(true);
       await call(client, 'browser_close');
       expect(await call(client, 'browser_tabs')).toMatchObject({ connected: false, tabs: [] });
     } finally {
       await client.close();
-      fixture.server.stop(true);
+      await fixture.server.stop();
     }
     expect(stderr).toBe('');
   });
 }
 
 test('MCP embedding: no Runtime.enable on wire; disconnect cleans owned profile', async () => {
-  const fixture = fixtureServer();
+  const fixture = await fixtureServer();
   const methods: string[] = [];
   const originalSend = PipeTransport.prototype.send;
   const wire = spyOn(PipeTransport.prototype, 'send').mockImplementation(function (
@@ -231,7 +234,7 @@ test('MCP embedding: no Runtime.enable on wire; disconnect cleans owned profile'
     await client.connect(a);
     await client.listTools();
     expect(profile).toBeUndefined();
-    await Bun.sleep(30); // A live private connection owns its lease through idle sweeps.
+    await sleep(30); // A live private connection owns its lease through idle sweeps.
     const { tabId } = await call<TabInfo>(client, 'browser_open', { url: fixture.base + '/page' });
     await call(client, 'browser_snapshot', { tabId });
     await call(client, 'browser_fill', {
@@ -253,14 +256,14 @@ test('MCP embedding: no Runtime.enable on wire; disconnect cleans owned profile'
     ).toEqual([]);
     await client.close();
     await server.close();
-    expect(profile).toBeString();
+    expect(profile).toEqual(expect.any(String));
     await expect(access(profile!)).rejects.toThrow();
   } finally {
     await client.close();
     await server.close();
     wire.mockRestore();
     launch.mockRestore();
-    fixture.server.stop(true);
+    await fixture.server.stop();
   }
 });
 
@@ -278,7 +281,7 @@ test('MCP disconnect leaves externally connected Chrome and its tabs alive', asy
     const { tabId } = await call<TabInfo>(client, 'browser_open', {});
     await client.close();
     await server.close();
-    expect(owner.closed).toBeFalse();
+    expect(owner.closed).toBe(false);
     const tab = owner.tabs.find((t) => t.id === tabId)!;
     expect(await tab.evaluate('2+2')).toBe(4);
   } finally {
@@ -326,7 +329,7 @@ test('MCP stdio EOF closes Chrome and releases persistent profile lock', async (
       () => true,
       () => false,
     );
-    expect(endpointAlive).toBeFalse();
+    expect(endpointAlive).toBe(false);
   } finally {
     await client.close();
     await removeTree(profile);

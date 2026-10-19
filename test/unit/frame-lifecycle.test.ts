@@ -1,8 +1,9 @@
-import { expect, test } from 'bun:test';
-import { Connection } from '../../src/protocol/connection.js';
-import { Frame, FrameManager } from '../../src/page/frames.js';
-import type { Tab } from '../../src/page/tab.js';
-import { poll } from '../../src/utils.js';
+import { test } from 'node:test';
+import { expect } from '../fixtures/expect.ts';
+import { Connection } from '../../src/protocol/connection.ts';
+import { Frame, FrameManager } from '../../src/page/frames.ts';
+import type { Tab } from '../../src/page/tab.ts';
+import { poll } from '../../src/utils.ts';
 
 test('removed frame subtrees are retired without retaining every historical frame', async () => {
   const connection = new Connection({ send() {}, close() {} });
@@ -23,7 +24,7 @@ test('removed frame subtrees are retired without retaining every historical fram
         sessionId: session.id,
         params: { frameId: child.id, reason: 'remove' },
       });
-      expect(child.detached && nested.detached).toBeTrue();
+      expect(child.detached && nested.detached).toBe(true);
       expect(manager.frames.size).toBe(1);
     }
   } finally {
@@ -49,14 +50,14 @@ test('navigation retires old descendants and swapped session events preserve the
       sessionId: session.id,
       params: { frameId: child.id, reason: 'swap' },
     });
-    expect(child.detached).toBeFalse();
+    expect(child.detached).toBe(false);
     expect(manager.frames.get(child.id)).toBe(child);
     connection.dispatch({
       method: 'Page.frameNavigated',
       sessionId: session.id,
       params: { frame: { id: 'root', url: 'http://example.test/new', loaderId: 'new' } },
     });
-    expect(child.detached).toBeTrue();
+    expect(child.detached).toBe(true);
     expect(manager.frames.size).toBe(1);
     manager.dispose();
     expect(manager.frames.size).toBe(0);
@@ -137,7 +138,7 @@ test('BFCache restores OOPIF ownership and nested trees omitted by the parent sn
     expect(manager.frames.get('cross')?.session.id).toBe('cross');
     expect(manager.frames.get('nested')?.session.id).toBe('nested');
     expect(manager.frames.get('nested')?.parentId).toBe('cross');
-    expect(old.detached).toBeTrue();
+    expect(old.detached).toBe(true);
     expect(errors).toEqual([]);
     connection.detach('cross');
     expect(manager.frames.size).toBe(1);

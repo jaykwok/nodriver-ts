@@ -18,13 +18,14 @@ export class ActionabilityError extends NodriverError {
 }
 export class ProtocolError extends NodriverError {
   override name = 'ProtocolError';
-  constructor(
-    readonly method: string,
-    readonly code: number,
-    message: string,
-    readonly data?: string,
-  ) {
+  readonly method: string;
+  readonly code: number;
+  readonly data?: string;
+  constructor(method: string, code: number, message: string, data?: string) {
     super(`${method}: ${message}${data ? ` (${data})` : ''}`);
+    this.method = method;
+    this.code = code;
+    this.data = data;
   }
 }
 export class EvaluationError extends NodriverError {

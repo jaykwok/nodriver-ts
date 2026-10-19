@@ -1,10 +1,11 @@
-import { expect, test } from 'bun:test';
-import { Browser } from '../../src/index.js';
-import { fixtureServer } from '../fixtures/server.js';
-import { recordWire, forbiddenAutomaticCommands } from '../fixtures/wire.js';
+import { test } from 'node:test';
+import { expect } from '../fixtures/expect.ts';
+import { Browser } from '../../src/index.ts';
+import { fixtureServer } from '../fixtures/server.ts';
+import { recordWire, forbiddenAutomaticCommands } from '../fixtures/wire.ts';
 for (const transport of ['pipe', 'websocket'] as const) {
   test(`${transport}: structured diagnostics separate native, explicit, resolver, site and missing observations`, async () => {
-    const fixture = fixtureServer(),
+    const fixture = await fixtureServer(),
       audit = recordWire(transport),
       browser = await Browser.launch({
         transport,
@@ -29,7 +30,7 @@ for (const transport of ['pipe', 'websocket'] as const) {
       expect(native.fonts.value).toHaveLength(12);
       expect(native.http.status).toBe('observed');
       expect(native.webrtc.status).toBe('observed');
-      expect(native.webrtc.value!.complete).toBeTrue();
+      expect(native.webrtc.value!.complete).toBe(true);
       expect(native.overrides.requested).toEqual({});
       expect(native.nativeBaseline).toBeUndefined();
       expect(native.siteAssessments.source).toBe('site-assessment');
@@ -74,12 +75,12 @@ for (const transport of ['pipe', 'websocket'] as const) {
         aligned.verification.some(
           (v) => v.field === 'timezone' && v.scope.endsWith('/document') && v.status === 'match',
         ),
-      ).toBeTrue();
+      ).toBe(true);
       expect(
         aligned.verification
           .filter((v) => v.field === 'viewport' && v.scope.endsWith('/worker'))
           .every((v) => v.status === 'unavailable'),
-      ).toBeTrue();
+      ).toBe(true);
       await expect(
         tab.alignEnvironment({ geoip: { address: 'x', fields: ['timezone'] } }),
       ).rejects.toThrow('caller-supplied resolver');
@@ -98,13 +99,13 @@ for (const transport of ['pipe', 'websocket'] as const) {
       );
     } finally {
       await browser.close();
-      fixture.server.stop(true);
+      await fixture.server.stop();
       audit.restore();
     }
   });
 }
 test('explicit WebRTC routing policy is observable and does not become the default', async () => {
-  const fixture = fixtureServer(),
+  const fixture = await fixtureServer(),
     browser = await Browser.launch({
       headless: true,
       webRtcIPHandlingPolicy: 'disable_non_proxied_udp',
@@ -113,15 +114,15 @@ test('explicit WebRTC routing policy is observable and does not become the defau
     const tab = await browser.newTab(fixture.base + '/signals'),
       report = await tab.diagnoseEnvironment({ stunServers: [] });
     expect(report.routing.webRtcIPHandlingPolicy).toBe('disable_non_proxied_udp');
-    expect(report.webrtc.value?.complete).toBeTrue();
+    expect(report.webrtc.value?.complete).toBe(true);
     expect(report.webrtc.value!.candidates.filter((c) => c.protocol === 'udp')).toEqual([]);
   } finally {
     await browser.close();
-    fixture.server.stop(true);
+    await fixture.server.stop();
   }
 });
 test('geolocation alignment reports permission gaps and verifies only already-granted location', async () => {
-  const fixture = fixtureServer(),
+  const fixture = await fixtureServer(),
     browser = await Browser.launch({ headless: true });
   try {
     const tab = await browser.newTab(fixture.base + '/mcp');
@@ -136,6 +137,6 @@ test('geolocation alignment reports permission gaps and verifies only already-gr
     expect(applied.verification.find((v) => v.field === 'geolocation')!.status).toBe('match');
   } finally {
     await browser.close();
-    fixture.server.stop(true);
+    await fixture.server.stop();
   }
 });

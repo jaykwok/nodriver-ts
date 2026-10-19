@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import type { Session } from '../protocol/connection.js';
-import { ProtocolError, UnsupportedError } from '../errors.js';
-import type { WaitOptions } from '../utils.js';
+import type { Session } from '../protocol/connection.ts';
+import { ProtocolError, UnsupportedError } from '../errors.ts';
+import type { WaitOptions } from '../utils.ts';
 
 export function isContextGone(error: unknown): boolean {
   return (

@@ -1,8 +1,10 @@
-import { describe, expect, spyOn, test } from 'bun:test';
-import { Browser, StaleElementError } from '../../src/index.js';
-import { WebSocketTransport } from '../../src/transport/websocket.js';
-import { PipeTransport } from '../../src/transport/pipe.js';
-import { fixtureServer } from '../fixtures/server.js';
+import { describe, test } from 'node:test';
+import { expect } from '../fixtures/expect.ts';
+import { spyOn } from 'jest-mock';
+import { Browser, StaleElementError } from '../../src/index.ts';
+import { WebSocketTransport } from '../../src/transport/websocket.ts';
+import { PipeTransport } from '../../src/transport/pipe.ts';
+import { fixtureServer } from '../fixtures/server.ts';
 
 function recordWire(transport: 'websocket' | 'pipe') {
   const prototype =
@@ -38,7 +40,7 @@ describe('Runtime remains disabled and helpers avoid main-world patches', () => 
   for (const transport of ['websocket', 'pipe'] as const) {
     test(`${transport}: all frame worlds, input, popup, navigation and reconnect`, async () => {
       const audit = recordWire(transport);
-      const fixture = fixtureServer();
+      const fixture = await fixtureServer();
       const errors: unknown[] = [];
       let browser: Browser | undefined;
       try {
@@ -100,7 +102,7 @@ describe('Runtime remains disabled and helpers avoid main-world patches', () => 
         await (await tab.waitForSelector('#probe-button')).click();
         const child = await popup;
         await child.waitForFunction('typeof __audit==="object"');
-        expect(await child.evaluate('navigator.webdriver')).toBeFalse();
+        expect(await child.evaluate('navigator.webdriver')).toBe(false);
         await child.close();
         if (browser.endpoint) {
           const external = await Browser.connect({ endpoint: browser.endpoint });
@@ -126,8 +128,8 @@ describe('Runtime remains disabled and helpers avoid main-world patches', () => 
           ].includes(m.method),
         );
         expect(forbidden).toEqual([]);
-        expect(audit.messages.some((m) => m.method === 'DOM.resolveNode')).toBeTrue();
-        expect(audit.messages.some((m) => m.method === 'Runtime.callFunctionOn')).toBeTrue();
+        expect(audit.messages.some((m) => m.method === 'DOM.resolveNode')).toBe(true);
+        expect(audit.messages.some((m) => m.method === 'Runtime.callFunctionOn')).toBe(true);
         console.log('Runtime wire audit', {
           transport,
           commands: audit.messages.length,
@@ -135,21 +137,21 @@ describe('Runtime remains disabled and helpers avoid main-world patches', () => 
         });
       } finally {
         await browser?.close();
-        fixture.server.stop(true);
+        await fixture.server.stop();
         audit.restore();
       }
     });
   }
   test('positive control observes explicitly enabled Runtime and native webdriver', async () => {
     const audit = recordWire('websocket');
-    const fixture = fixtureServer();
+    const fixture = await fixtureServer();
     const browser = await Browser.launch({
       automationControlled: true,
       headless: process.env.NODRIVER_HEADFUL !== '1',
     });
     try {
       const tab = await browser.newTab(fixture.base + '/audit?level=control');
-      expect(await tab.evaluate('navigator.webdriver')).toBeTrue();
+      expect(await tab.evaluate('navigator.webdriver')).toBe(true);
       const events: string[] = [];
       const off = browser.connection.events.on((e) => {
         if (e.method.startsWith('Runtime.')) events.push(e.method);
@@ -175,7 +177,7 @@ describe('Runtime remains disabled and helpers avoid main-world patches', () => 
       off();
     } finally {
       await browser.close();
-      fixture.server.stop(true);
+      await fixture.server.stop();
       audit.restore();
     }
   });

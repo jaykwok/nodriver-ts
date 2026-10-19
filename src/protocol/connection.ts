@@ -1,7 +1,7 @@
 import type { ProtocolMapping } from 'devtools-protocol/types/protocol-mapping.js';
-import type { Transport } from '../transport/transport.js';
-import { DisconnectedError, ProtocolError, TimeoutError } from '../errors.js';
-import { abortReason, EventHub, timeoutValue, type Listener, type WaitOptions } from '../utils.js';
+import type { Transport } from '../transport/transport.ts';
+import { DisconnectedError, ProtocolError, TimeoutError } from '../errors.ts';
+import { abortReason, EventHub, timeoutValue, type Listener, type WaitOptions } from '../utils.ts';
 export type Command = keyof ProtocolMapping.Commands;
 export type Event = keyof ProtocolMapping.Events;
 export type Params<M extends Command> = ProtocolMapping.Commands[M]['paramsType'];
@@ -61,10 +61,11 @@ export class Connection {
   readonly disconnected: EventHub<Error>;
   readonly root: Session;
   readonly timeout: number;
-  constructor(
-    readonly transport: Transport,
-    readonly options: ConnectionOptions = {},
-  ) {
+  readonly transport: Transport;
+  readonly options: ConnectionOptions;
+  constructor(transport: Transport, options: ConnectionOptions = {}) {
+    this.transport = transport;
+    this.options = options;
     this.timeout = timeoutValue(options.timeout ?? 30_000);
     this.events = new EventHub(options.onError);
     this.disconnected = new EventHub(options.onError);
@@ -279,10 +280,12 @@ export class Session {
   private failure?: Error;
   private readonly subscriptions = new Set<() => void>();
   readonly disconnected = new EventHub<Error>();
-  constructor(
-    readonly connection: Connection,
-    readonly id?: string,
-  ) {}
+  readonly connection: Connection;
+  readonly id?: string;
+  constructor(connection: Connection, id?: string) {
+    this.connection = connection;
+    this.id = id;
+  }
   get closed(): boolean {
     return !!this.failure || this.connection.closed;
   }

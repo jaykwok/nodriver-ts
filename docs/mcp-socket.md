@@ -9,7 +9,7 @@
 先设置随机的 `NODRIVER_MCP_TOKEN`（至少 32 个字符）：
 
 ```sh
-bun run build
+npm run build
 node dist/mcp/cli.js --mcp-transport socket
 ```
 

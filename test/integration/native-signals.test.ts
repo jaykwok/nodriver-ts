@@ -1,12 +1,13 @@
-import { expect, test } from 'bun:test';
+import { test } from 'node:test';
+import { expect } from '../fixtures/expect.ts';
 import { appendFile } from 'node:fs/promises';
-import { Browser } from '../../src/index.js';
-import { fixtureServer } from '../fixtures/server.js';
-import { recordWire, forbiddenAutomaticCommands } from '../fixtures/wire.js';
+import { Browser } from '../../src/index.ts';
+import { fixtureServer } from '../fixtures/server.ts';
+import { recordWire, forbiddenAutomaticCommands } from '../fixtures/wire.ts';
 
 for (const transport of ['pipe', 'websocket'] as const) {
   test(`${transport}: actual platform fonts and HTTP peer address across four frames`, async () => {
-    const fixture = fixtureServer(),
+    const fixture = await fixtureServer(),
       audit = recordWire(transport);
     const browser = await Browser.launch({
       transport,
@@ -55,7 +56,7 @@ for (const transport of ['pipe', 'websocket'] as const) {
             nodeId: nodeIds[0]!,
           });
           expect(actual.fonts.length).toBeGreaterThan(0);
-          expect(actual.fonts.every((f) => f.familyName.length > 0 && f.glyphCount > 0)).toBeTrue();
+          expect(actual.fonts.every((f) => f.familyName.length > 0 && f.glyphCount > 0)).toBe(true);
           expect(surface.text.find((p) => p.id === id)!.width).toBeGreaterThan(0);
           fonts.push({ id, fonts: actual.fonts });
         }
@@ -77,13 +78,13 @@ for (const transport of ['pipe', 'websocket'] as const) {
         );
     } finally {
       await browser.close();
-      fixture.server.stop(true);
+      await fixture.server.stop();
       audit.restore();
     }
   });
 
   test(`${transport}: native WebRTC local data channel transfers Unicode and closes peers`, async () => {
-    const fixture = fixtureServer(),
+    const fixture = await fixtureServer(),
       audit = recordWire(transport);
     const browser = await Browser.launch({
       headless: process.env.NODRIVER_HEADFUL !== '1',
@@ -189,7 +190,7 @@ for (const transport of ['pipe', 'websocket'] as const) {
         { world: 'isolated', timeout: 15000 },
       );
       expect(report.received).toBe('ack:原生 WebRTC 中文😀');
-      expect(report.candidates.some((c) => c.type === 'host')).toBeTrue();
+      expect(report.candidates.some((c) => c.type === 'host')).toBe(true);
       expect(report.states).toEqual(['closed', 'closed']);
       expect(report.channelState).toBe('closed');
       expect(audit.messages.filter((m) => forbiddenAutomaticCommands.includes(m.method))).toEqual(
@@ -208,7 +209,7 @@ for (const transport of ['pipe', 'websocket'] as const) {
         );
     } finally {
       await browser.close();
-      fixture.server.stop(true);
+      await fixture.server.stop();
       audit.restore();
     }
   });

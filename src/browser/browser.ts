@@ -1,14 +1,14 @@
 import type { Protocol } from 'devtools-protocol';
-import { Connection, type ConnectionOptions, type Session } from '../protocol/connection.js';
-import { BrowserProcess, type LaunchOptions } from './launcher.js';
-import { BrowserContext, type ContextOptions } from './context.js';
-import { Tab, type Environment } from '../page/tab.js';
-import { Download } from './download.js';
-import { ProxyForwarder } from '../optional/proxy.js';
-import { WebSocketTransport } from '../transport/websocket.js';
-import { abortReason, EventHub, poll, timeoutValue, type WaitOptions } from '../utils.js';
-import { DisconnectedError, NodriverError, TimeoutError } from '../errors.js';
-import { InputCoordinator } from '../input/behavior.js';
+import { Connection, type ConnectionOptions, type Session } from '../protocol/connection.ts';
+import { BrowserProcess, type LaunchOptions } from './launcher.ts';
+import { BrowserContext, type ContextOptions } from './context.ts';
+import { Tab, type Environment } from '../page/tab.ts';
+import { Download } from './download.ts';
+import { ProxyForwarder } from '../optional/proxy.ts';
+import { WebSocketTransport } from '../transport/websocket.ts';
+import { abortReason, EventHub, poll, timeoutValue, type WaitOptions } from '../utils.ts';
+import { DisconnectedError, NodriverError, TimeoutError } from '../errors.ts';
+import { InputCoordinator } from '../input/behavior.ts';
 /**
  * Which page targets a Browser attaches to. "all" adopts every page; "created" adopts only tabs
  * opened through this client and popups they open, leaving a user's existing tabs untouched.
@@ -40,13 +40,21 @@ export class Browser {
   private downloads = new Map<string, Download>();
   private closing?: Promise<void>;
   private disconnected = false;
+  readonly connection: Connection;
+  readonly process?: BrowserProcess;
+  readonly endpoint?: string;
+  readonly attachPolicy: AttachPolicy;
   private constructor(
-    readonly connection: Connection,
+    connection: Connection,
     version: Protocol.Browser.GetVersionResponse,
-    readonly process?: BrowserProcess,
-    readonly endpoint?: string,
-    readonly attachPolicy: AttachPolicy = 'all',
+    process?: BrowserProcess,
+    endpoint?: string,
+    attachPolicy: AttachPolicy = 'all',
   ) {
+    this.connection = connection;
+    this.process = process;
+    this.endpoint = endpoint;
+    this.attachPolicy = attachPolicy;
     this.cdp = connection.root;
     this.version = version;
     this.contextMap.set('', new BrowserContext(this));

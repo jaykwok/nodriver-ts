@@ -1,7 +1,7 @@
 import type { Protocol } from 'devtools-protocol';
-import type { Tab } from './tab.js';
-import { abortReason, timeoutValue, type WaitOptions } from '../utils.js';
-import { DisconnectedError, TimeoutError } from '../errors.js';
+import type { Tab } from './tab.ts';
+import { abortReason, timeoutValue, type WaitOptions } from '../utils.ts';
+import { DisconnectedError, TimeoutError } from '../errors.ts';
 export interface NavigationOptions extends WaitOptions {
   /** "networkidle" waits for Chrome's networkIdle lifecycle event (no requests for 500ms). */
   waitUntil?: 'commit' | 'domcontentloaded' | 'load' | 'networkidle';
@@ -21,11 +21,9 @@ export class NavigationWatcher {
   private lifecycle = new Map<string, Set<string>>();
   private armed = false;
   private settled = false;
-  constructor(
-    tab: Tab,
-    private options: NavigationOptions = {},
-    autoArm = true,
-  ) {
+  private options: NavigationOptions;
+  constructor(tab: Tab, options: NavigationOptions = {}, autoArm = true) {
+    this.options = options;
     this.promise = new Promise((resolve, reject) => {
       this.resolve = resolve;
       this.reject = reject;

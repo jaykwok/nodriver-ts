@@ -1,17 +1,18 @@
-import { expect, test } from 'bun:test';
+import { test } from 'node:test';
+import { expect } from '../fixtures/expect.ts';
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { tmpdir, hostname } from 'node:os';
 import { join } from 'node:path';
-import { Connection } from '../../src/protocol/connection.js';
-import type { Session } from '../../src/protocol/connection.js';
-import type { Transport } from '../../src/transport/transport.js';
-import { InputBehavior } from '../../src/input/behavior.js';
-import { Keyboard, keyDefinition, parseChord } from '../../src/input/input.js';
-import { acquireProfileLock } from '../../src/browser/launcher.js';
-import { BrowserSessionManager, LeaseError } from '../../src/mcp/manager.js';
-import { BrowserMcpSession } from '../../src/mcp/session.js';
-import { removeTree } from '../../src/utils.js';
+import { Connection } from '../../src/protocol/connection.ts';
+import type { Session } from '../../src/protocol/connection.ts';
+import type { Transport } from '../../src/transport/transport.ts';
+import { InputBehavior } from '../../src/input/behavior.ts';
+import { Keyboard, keyDefinition, parseChord } from '../../src/input/input.ts';
+import { acquireProfileLock } from '../../src/browser/launcher.ts';
+import { BrowserSessionManager, LeaseError } from '../../src/mcp/manager.ts';
+import { BrowserMcpSession } from '../../src/mcp/session.ts';
+import { removeTree } from '../../src/utils.ts';
 
 function fakeSession() {
   const messages: any[] = [];

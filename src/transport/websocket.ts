@@ -1,13 +1,15 @@
-import { WebSocket } from './ws-runtime.js';
+import { WebSocket } from './ws-runtime.ts';
 import type { RawData } from 'ws';
-import type { Transport } from './transport.js';
-import { DisconnectedError, TimeoutError } from '../errors.js';
-import { abortReason, timeoutValue, type WaitOptions } from '../utils.js';
+import type { Transport } from './transport.ts';
+import { DisconnectedError, TimeoutError } from '../errors.ts';
+import { abortReason, timeoutValue, type WaitOptions } from '../utils.ts';
 export class WebSocketTransport implements Transport {
   onmessage?: (message: string) => void;
   onclose?: (reason: Error) => void;
   private closing?: Promise<void>;
-  private constructor(private readonly socket: WebSocket) {
+  private readonly socket: WebSocket;
+  private constructor(socket: WebSocket) {
+    this.socket = socket;
     socket.on('message', (data: RawData, binary: boolean) => {
       if (binary) {
         this.onclose?.(new DisconnectedError('Expected a CDP text WebSocket message'));

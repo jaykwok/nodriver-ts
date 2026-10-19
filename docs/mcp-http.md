@@ -5,7 +5,7 @@ HTTP 是常驻本地服务的主入口，与 stdio、socket、InMemory 共用工
 ## 启动
 
 ```sh
-bun run build
+npm run build
 # 先设置 NODRIVER_MCP_TOKEN 为随机秘密（至少 32 个字符）
 node dist/mcp/cli.js --mcp-transport http --port 3100 --browser-transport pipe
 ```

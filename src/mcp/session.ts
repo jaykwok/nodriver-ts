@@ -2,18 +2,18 @@ import { randomUUID } from 'node:crypto';
 import { realpath } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import type { Protocol } from 'devtools-protocol';
-import { Browser, type ConnectOptions } from '../browser/browser.js';
-import type { BrowserContext } from '../browser/context.js';
-import type { LaunchOptions } from '../browser/launcher.js';
-import type { Tab } from '../page/tab.js';
-import type { Frame } from '../page/frames.js';
-import { Element } from '../dom/element.js';
-import { DisconnectedError, StaleElementError, TimeoutError } from '../errors.js';
-import { abortReason, delay, EventHub, type WaitOptions } from '../utils.js';
-import { OperationQueue } from './queue.js';
-import type { BrowserAllocation } from './pool.js';
-import type { InputPolicy } from '../input/behavior.js';
-import type { DiagnoseEnvironmentOptions, GeoIPResolver } from '../page/diagnostics.js';
+import { Browser, type ConnectOptions } from '../browser/browser.ts';
+import type { BrowserContext } from '../browser/context.ts';
+import type { LaunchOptions } from '../browser/launcher.ts';
+import type { Tab } from '../page/tab.ts';
+import type { Frame } from '../page/frames.ts';
+import { Element } from '../dom/element.ts';
+import { DisconnectedError, StaleElementError, TimeoutError } from '../errors.ts';
+import { abortReason, delay, EventHub, type WaitOptions } from '../utils.ts';
+import { OperationQueue } from './queue.ts';
+import type { BrowserAllocation } from './pool.ts';
+import type { InputPolicy } from '../input/behavior.ts';
+import type { DiagnoseEnvironmentOptions, GeoIPResolver } from '../page/diagnostics.ts';
 
 export interface BrowserMcpOptions {
   /** Lazy launch; mutually exclusive with connect. */
@@ -150,7 +150,9 @@ export class BrowserMcpSession {
   private downloadCursors = new Map<string, number>();
   private downloadContexts = new WeakSet<BrowserContext>();
   private captures = new Map<string, { entries: NetworkEntry[]; off: () => void }>();
-  constructor(readonly options: SessionOptions) {
+  readonly options: SessionOptions;
+  constructor(options: SessionOptions) {
+    this.options = options;
     if (options.launch && options.connect)
       throw new TypeError('Choose launch or connect, not both');
     this.queue = new OperationQueue(options.queueLimit ?? 32);

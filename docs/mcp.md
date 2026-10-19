@@ -9,7 +9,7 @@
 ## 启动
 
 ```sh
-bun run build
+npm run build
 
 # stdio：由客户端启动；省略 --mcp-transport 时即为 stdio
 node dist/mcp/cli.js --browser-transport pipe
@@ -19,7 +19,7 @@ node dist/mcp/cli.js --endpoint http://127.0.0.1:9222
 node dist/mcp/cli.js --mcp-transport http --port 3100
 ```
 
-安装包提供 `nodriver-mcp` 命令，源码入口为 `bun run mcp`。stdout 专用于协议，日志和帮助写 stderr。服务在前台运行，不安装系统服务或开机自启，也不修改客户端配置。
+安装包提供 `nodriver-mcp` 命令，源码入口为 `npm run mcp`。stdout 专用于协议，日志和帮助写 stderr。服务在前台运行，不安装系统服务或开机自启，也不修改客户端配置。
 
 stdio 客户端配置示例（mcpServers 格式）：
 
@@ -184,8 +184,8 @@ const handle = serveStdio(() => createBrowserMcpServer({ launch: { transport: 'p
 ## 测试
 
 ```sh
-bun run test:mcp
-bun run test:all
+npm run test:mcp
+npm run test:all
 ```
 
 测试使用官方 MCP 客户端，以真实 stdio 子进程和两种 Chrome 传输运行，并验证旧协议被拒绝；覆盖四类 frame、closed shadow root、引用失效与跨标签页拒绝、中文输入、checkbox/select、截图、非法参数、取消、JS 对话框和下载等待。嵌入测试审计实际 CDP 命令，并验证关闭后清理自有 profile、保留外部 Chrome；EOF 测试验证持久 profile 保留、锁释放且调试端口已退出。

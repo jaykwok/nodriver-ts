@@ -4,12 +4,12 @@ import {
   readRequestBody,
   type McpHttpHandler,
 } from '@modelcontextprotocol/server';
-import { createBrowserMcpServer } from './server.js';
-import { BrowserSessionManager, type BrowserSessionManagerOptions } from './manager.js';
-import { cancellableBody } from './body.js';
-import { MCP_PROTOCOL_VERSION } from './protocol.js';
-import { serveFetch } from './serve.js';
-import { LeaseError } from './manager.js';
+import { createBrowserMcpServer } from './server.ts';
+import { BrowserSessionManager, type BrowserSessionManagerOptions } from './manager.ts';
+import { cancellableBody } from './body.ts';
+import { MCP_PROTOCOL_VERSION } from './protocol.ts';
+import { serveFetch } from './serve.ts';
+import { LeaseError } from './manager.ts';
 
 export interface BrowserMcpHttpOptions {
   /** Local, explicitly provisioned bearer token -> trusted principal. Not clientInfo. */

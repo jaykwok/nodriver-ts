@@ -1,7 +1,9 @@
-import { expect, test } from 'bun:test';
-import { InputBehavior, InputCoordinator, InputActionError } from '../../src/input/behavior.js';
-import { Mouse, Keyboard } from '../../src/input/input.js';
-import type { Session } from '../../src/protocol/connection.js';
+import { setTimeout as sleep } from 'node:timers/promises';
+import { test } from 'node:test';
+import { expect } from '../fixtures/expect.ts';
+import { InputBehavior, InputCoordinator, InputActionError } from '../../src/input/behavior.ts';
+import { Mouse, Keyboard } from '../../src/input/input.ts';
+import type { Session } from '../../src/protocol/connection.ts';
 test('input policy validates ranges and a browser coordinator serializes tasks with reentrant calls', async () => {
   const queue = new InputCoordinator(),
     behavior = new InputBehavior(
@@ -18,7 +20,7 @@ test('input policy validates ranges and a browser coordinator serializes tasks w
       await queue.run(async () => {
         events.push('nested');
       });
-      await Bun.sleep(10);
+      await sleep(10);
       events.push('b');
     }),
     queue.run(async () => {
@@ -75,8 +77,8 @@ test('button and modifier release are attempted even when a press protocol respo
     keyboard = new Keyboard(session);
   await expect(mouse.click(1, 2)).rejects.toBeInstanceOf(InputActionError);
   expect(mouse.position.buttons).toBe(0);
-  expect(events.some((e) => e.type === 'mouseReleased')).toBeTrue();
+  expect(events.some((e) => e.type === 'mouseReleased')).toBe(true);
   await expect(keyboard.press('Control+A')).rejects.toBeInstanceOf(InputActionError);
   expect(keyboard.pressedKeys).toEqual([]);
-  expect(events.some((e) => e.type === 'keyUp')).toBeTrue();
+  expect(events.some((e) => e.type === 'keyUp')).toBe(true);
 });

@@ -1,19 +1,30 @@
 import { copyFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { EventHub, type WaitOptions } from '../utils.js';
-import { NodriverError } from '../errors.js';
-import type { BrowserContext } from './context.js';
+import { EventHub, type WaitOptions } from '../utils.ts';
+import { NodriverError } from '../errors.ts';
+import type { BrowserContext } from './context.ts';
 export class Download {
   private state: 'inProgress' | 'completed' | 'canceled' = 'inProgress';
   /** Emits on every state report from the browser; read `status` for the new state. */
   readonly updates = new EventHub<void>();
+  readonly context: BrowserContext;
+  readonly guid: string;
+  readonly url: string;
+  readonly suggestedFilename: string;
+  readonly directory: string;
   constructor(
-    readonly context: BrowserContext,
-    readonly guid: string,
-    readonly url: string,
-    readonly suggestedFilename: string,
-    readonly directory: string,
-  ) {}
+    context: BrowserContext,
+    guid: string,
+    url: string,
+    suggestedFilename: string,
+    directory: string,
+  ) {
+    this.context = context;
+    this.guid = guid;
+    this.url = url;
+    this.suggestedFilename = suggestedFilename;
+    this.directory = directory;
+  }
   get status(): 'inProgress' | 'completed' | 'canceled' {
     return this.state;
   }

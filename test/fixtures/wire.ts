@@ -1,6 +1,6 @@
-import { spyOn } from 'bun:test';
-import { WebSocketTransport } from '../../src/transport/websocket.js';
-import { PipeTransport } from '../../src/transport/pipe.js';
+import { spyOn } from 'jest-mock';
+import { WebSocketTransport } from '../../src/transport/websocket.ts';
+import { PipeTransport } from '../../src/transport/pipe.ts';
 
 export const forbiddenAutomaticCommands = [
   'Runtime.enable',

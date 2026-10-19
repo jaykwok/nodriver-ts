@@ -1,7 +1,9 @@
-import { expect, test } from 'bun:test';
-import { OperationQueue } from '../../src/mcp/queue.js';
-import { BrowserSessionManager } from '../../src/mcp/manager.js';
-import { createBrowserMcpHttpService } from '../../src/mcp/http.js';
+import { setTimeout as sleep } from 'node:timers/promises';
+import { test } from 'node:test';
+import { expect } from '../fixtures/expect.ts';
+import { OperationQueue } from '../../src/mcp/queue.ts';
+import { BrowserSessionManager } from '../../src/mcp/manager.ts';
+import { createBrowserMcpHttpService } from '../../src/mcp/http.ts';
 
 test('bounded queue cancels waiting work and keeps a running operation locked until cleanup', async () => {
   const queue = new OperationQueue(1),
@@ -57,7 +59,7 @@ test('HTTP body deadlines cancel slow readers and never allocate browser state',
       } as RequestInit),
     );
     expect(response.status).toBe(400);
-    expect(cancelled).toBeTrue();
+    expect(cancelled).toBe(true);
     expect(service.manager.stats().leases).toBe(0);
   } finally {
     await service.close();
@@ -76,13 +78,13 @@ test('leases bind authenticated principals, expire idle state and protect active
     expect(() => manager.session('bob', a.id)).toThrow('unauthorized');
     expect(() => manager.create('alice')).toThrow('capacity');
     const release = manager.retain('alice', a.id);
-    await Bun.sleep(30);
+    await sleep(30);
     await manager.sweep();
     expect(manager.list('bob')).toEqual([]);
     expect(manager.list('alice')).toHaveLength(1);
     expect(() => manager.session('bob', b.id)).toThrow('expired');
     release();
-    await Bun.sleep(30);
+    await sleep(30);
     await manager.sweep();
     expect(manager.stats().leases).toBe(0);
   } finally {

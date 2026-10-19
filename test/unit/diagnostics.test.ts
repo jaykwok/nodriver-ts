@@ -1,6 +1,7 @@
-import { expect, test } from 'bun:test';
-import { alignEnvironment } from '../../src/page/diagnostics.js';
-import type { Tab } from '../../src/page/tab.js';
+import { test } from 'node:test';
+import { expect } from '../fixtures/expect.ts';
+import { alignEnvironment } from '../../src/page/diagnostics.ts';
+import type { Tab } from '../../src/page/tab.ts';
 test('GeoIP resolver is opt-in and bounded; cancellation never applies a late result', async () => {
   let applied = 0;
   const tab = {

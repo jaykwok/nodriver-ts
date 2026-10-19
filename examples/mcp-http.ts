@@ -1,4 +1,4 @@
-import { startBrowserMcpHttpServer } from '../src/mcp/http.js';
+import { startBrowserMcpHttpServer } from '../src/mcp/http.ts';
 
 const token = process.env.NODRIVER_MCP_TOKEN;
 if (!token)

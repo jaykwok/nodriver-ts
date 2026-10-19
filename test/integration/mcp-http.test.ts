@@ -1,21 +1,25 @@
-import { removeTree } from '../../src/utils.js';
-import { expect, test, spyOn } from 'bun:test';
+import { setTimeout as sleep } from 'node:timers/promises';
+import { removeTree } from '../../src/utils.ts';
+import { test } from 'node:test';
+import { expect } from '../fixtures/expect.ts';
+import { spyOn } from 'jest-mock';
 import {
   Client,
   StreamableHTTPClientTransport,
   type CallToolResult,
 } from '@modelcontextprotocol/client';
 import { InMemoryTransport } from '@modelcontextprotocol/server';
-import { startBrowserMcpHttpServer, type BrowserMcpHttpServer } from '../../src/mcp/http.js';
-import { BrowserSessionManager, createBrowserMcpServer } from '../../src/mcp/server.js';
-import { Browser } from '../../src/index.js';
-import { BrowserProcess } from '../../src/browser/launcher.js';
+import { startBrowserMcpHttpServer, type BrowserMcpHttpServer } from '../../src/mcp/http.ts';
+import { BrowserSessionManager, createBrowserMcpServer } from '../../src/mcp/server.ts';
+import { Browser } from '../../src/index.ts';
+import { BrowserProcess } from '../../src/browser/launcher.ts';
 import { access, mkdtemp, rm } from 'node:fs/promises';
+import { request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fixtureServer } from '../fixtures/server.js';
-import { recordWire, forbiddenAutomaticCommands } from '../fixtures/wire.js';
-import { poll } from '../../src/utils.js';
+import { fixtureServer } from '../fixtures/server.ts';
+import { recordWire, forbiddenAutomaticCommands } from '../fixtures/wire.ts';
+import { poll } from '../../src/utils.ts';
 
 const alice = 'a'.repeat(40),
   bob = 'b'.repeat(40);
@@ -68,7 +72,7 @@ async function ref(client: Client, tabId: unknown, selector = '#name') {
 for (const version of ['2026-07-28'])
   for (const responseMode of ['json', 'sse'] as const) {
     test(`HTTP ${version} ${responseMode}: cross-request browser/ref, permissions, resource, cancellation`, async () => {
-      const fixture = fixtureServer(),
+      const fixture = await fixtureServer(),
         audit = recordWire('pipe');
       const server = await startBrowserMcpHttpServer({
         tokens,
@@ -117,7 +121,7 @@ for (const version of ['2026-07-28'])
                 arguments: { tabId, ref: observed },
               })
             ).isError,
-          ).toBeTrue();
+          ).toBe(true);
           const { tabId: otherTab } = await call(other.client, 'browser_open', {
             url: fixture.base + '/mcp',
           });
@@ -128,7 +132,7 @@ for (const version of ['2026-07-28'])
                 arguments: { tabId: otherTab, ref: observed, text: 'forbidden' },
               })
             ).isError,
-          ).toBeTrue();
+          ).toBe(true);
           expect(server.manager.stats().browsers).toBe(1);
           expect(server.manager.stats().allocations).toBe(2);
         } finally {
@@ -142,7 +146,7 @@ for (const version of ['2026-07-28'])
           { signal: controller.signal },
         );
         const failure = waiting.catch((e) => e);
-        await Bun.sleep(80);
+        await sleep(80);
         controller.abort();
         expect(await failure).toBeInstanceOf(Error);
         await call(client, 'browser_fill', { tabId, ref: observed, text: 'after cancel' });
@@ -154,7 +158,7 @@ for (const version of ['2026-07-28'])
               arguments: { tabId, ref: observed, text: 'stale' },
             })
           ).isError,
-        ).toBeTrue();
+        ).toBe(true);
         for (const frame of (await call(client, 'browser_tabs')).tabs as {
           frames: { frameId: string }[];
           tabId: string;
@@ -195,16 +199,27 @@ for (const version of ['2026-07-28'])
         client = reconnected.client;
         expect(JSON.stringify(await call(client, 'browser_tabs'))).toContain(String(tabId));
         await call(client, 'browser_close');
-        expect((await call(client, 'browser_tabs')).connected).toBeFalse();
+        expect((await call(client, 'browser_tabs')).connected).toBe(false);
       } finally {
         await client?.close();
         await server.close();
-        fixture.server.stop(true);
+        await fixture.server.stop();
         audit.restore();
       }
     });
   }
 
+/** Node's fetch() always sends the real Host header; node:http sends the one given. */
+function statusWithHost(url: string, headers: Record<string, string>): Promise<number> {
+  return new Promise((resolve, reject) => {
+    request(url, { headers }, (response) => {
+      response.resume();
+      resolve(response.statusCode!);
+    })
+      .on('error', reject)
+      .end();
+  });
+}
 test('HTTP guards reject origin/host/auth, forged leases/sessions, metadata mismatch and oversized bodies', async () => {
   const server = await startBrowserMcpHttpServer({
     browser: { launch: { headless: process.env.NODRIVER_HEADFUL !== '1' } },
@@ -228,10 +243,9 @@ test('HTTP guards reject origin/host/auth, forged leases/sessions, metadata mism
         })
       ).status,
     ).toBe(403);
-    expect(
-      (await fetch(server.url + '/leases', { headers: { ...headers, host: 'evil.example' } }))
-        .status,
-    ).toBe(403);
+    expect(await statusWithHost(server.url + '/leases', { ...headers, host: 'evil.example' })).toBe(
+      403,
+    );
     expect(
       (
         await fetch(server.url + '/mcp', {
@@ -326,7 +340,7 @@ test('injected InMemory adapters close only request resources; lease retirement 
     await second.server.close();
     await manager.release('trusted', id);
     expect(manager.stats().allocations).toBe(0);
-    await Bun.sleep(5);
+    await sleep(5);
     await manager.sweep();
     expect(manager.stats().browsers).toBe(0);
   } finally {
@@ -335,7 +349,7 @@ test('injected InMemory adapters close only request resources; lease retirement 
 });
 
 test('HTTP queue cancellation, operation deadlines, bounded requests and active lease protection', async () => {
-  const fixture = fixtureServer();
+  const fixture = await fixtureServer();
   const manager = new BrowserSessionManager({
     launch: { headless: process.env.NODRIVER_HEADFUL !== '1', transport: 'pipe' },
     queueLimit: 1,
@@ -361,7 +375,7 @@ test('HTTP queue cancellation, operation deadlines, bounded requests and active 
       name: 'browser_wait',
       arguments: { tabId, selector: '#never', timeout: 2000 },
     });
-    await Bun.sleep(40);
+    await sleep(40);
     const controller = new AbortController();
     const queued = client
       .callTool(
@@ -369,22 +383,22 @@ test('HTTP queue cancellation, operation deadlines, bounded requests and active 
         { signal: controller.signal },
       )
       .catch((e) => e);
-    await Bun.sleep(40);
+    await sleep(40);
     const rejected = await client.callTool({
       name: 'browser_click',
       arguments: { tabId, ref: button },
     });
-    expect(rejected.isError).toBeTrue();
+    expect(rejected.isError).toBe(true);
     expect(JSON.stringify(rejected)).toContain('queue limit');
     controller.abort();
     expect(await queued).toBeInstanceOf(Error);
-    await Bun.sleep(120);
+    await sleep(120);
     await manager.sweep();
     expect(manager.list('alice')).toHaveLength(1);
-    expect((await active).isError).toBeTrue();
+    expect((await active).isError).toBe(true);
     const snapshot = await call(client, 'browser_snapshot', { tabId });
     expect(JSON.stringify(snapshot)).not.toContain('ready');
-    await Bun.sleep(140);
+    await sleep(140);
     await manager.sweep();
     expect(manager.stats().leases).toBe(0);
     expect(
@@ -397,7 +411,7 @@ test('HTTP queue cancellation, operation deadlines, bounded requests and active 
   } finally {
     await client?.close();
     await server.close();
-    fixture.server.stop(true);
+    await fixture.server.stop();
   }
 });
 
@@ -432,10 +446,10 @@ test('HTTP subscriptions are lease-filtered, event history bounded, progress rem
     );
     await poll(async () => (notifications > 0 ? true : undefined), { timeout: 2000 });
     expect(progress).toEqual([0, 1, 2]);
-    await Bun.sleep(60);
+    await sleep(60);
     const before = notifications;
     await call(b, 'browser_open');
-    await Bun.sleep(60);
+    await sleep(60);
     expect(notifications).toBe(before);
     const session = server.manager.session('alice', id);
     for (let i = 0; i < 100; i++) session.changed('test');
@@ -451,7 +465,7 @@ test('HTTP subscriptions are lease-filtered, event history bounded, progress rem
 
 for (const version of ['2026-07-28'])
   test(`HTTP ${version}: explicit human handoff, authenticated continuation and no action replay`, async () => {
-    const fixture = fixtureServer();
+    const fixture = await fixtureServer();
     const server = await startBrowserMcpHttpServer({
       tokens,
       port: 0,
@@ -486,7 +500,7 @@ for (const version of ['2026-07-28'])
       await client.listTools();
       const { tabId } = await call(client, 'browser_open', { url: fixture.base + '/mcp' });
       const result = await call(client, 'browser_handoff', { tabId });
-      expect(result.completed).toBeTrue();
+      expect(result.completed).toBe(true);
       expect(prompts).toBe(1);
       const noCapability = (await clientFor(server, id, version)).client;
       try {
@@ -495,19 +509,19 @@ for (const version of ['2026-07-28'])
           name: 'browser_handoff',
           arguments: { tabId },
         });
-        expect(unsupported.isError).toBeTrue();
+        expect(unsupported.isError).toBe(true);
       } finally {
         await noCapability.close();
       }
     } finally {
       await client?.close();
       await server.close();
-      fixture.server.stop(true);
+      await fixture.server.stop();
     }
   });
 
 test('manager persistent/external ownership and crash invalidation', async () => {
-  const fixture = fixtureServer(),
+  const fixture = await fixtureServer(),
     profile = await mkdtemp(join(tmpdir(), 'nodriver-lease-'));
   const persistent = new BrowserSessionManager({
     launch: {
@@ -571,7 +585,7 @@ test('manager persistent/external ownership and crash invalidation', async () =>
     expect(reopened.id).not.toBe(tab.id);
   } finally {
     await manager.close();
-    fixture.server.stop(true);
+    await fixture.server.stop();
   }
 });
 
@@ -620,7 +634,7 @@ function rawTool(
 
 for (const version of ['2026-07-28'])
   test(`HTTP ${version}: stream disconnect follows its era cancellation semantics`, async () => {
-    const fixture = fixtureServer();
+    const fixture = await fixtureServer();
     const server = await startBrowserMcpHttpServer({
       tokens,
       port: 0,
@@ -659,11 +673,11 @@ for (const version of ['2026-07-28'])
         { timeout: 500 },
         'modern stream cancellation',
       );
-      expect((await call(client, 'browser_tabs')).connected).toBeTrue();
+      expect((await call(client, 'browser_tabs')).connected).toBe(true);
     } finally {
       await client?.close();
       await server.close();
-      fixture.server.stop(true);
+      await fixture.server.stop();
     }
   });
 
@@ -766,7 +780,7 @@ test('bounded pool scales, reuses processes after context retirement and cleans 
     expect(profiles).toHaveLength(2);
     await manager.release('same-owner', b.id);
     await manager.release('same-owner', c.id);
-    await Bun.sleep(5);
+    await sleep(5);
     await manager.sweep();
     expect(manager.stats().browsers).toBe(0);
     for (const profile of profiles) await expect(access(profile)).rejects.toThrow();
@@ -838,12 +852,12 @@ test('HTTP MRTR opaque state rejects forgery and cross-lease continuation; compl
     };
     try {
       const pending = await rpc(id);
-      expect(pending.requestState).toBeString();
+      expect(pending.requestState).toEqual(expect.any(String));
       expect(front).toHaveBeenCalledTimes(1);
-      expect((await rpc(id, 'forged')).isError).toBeTrue();
-      expect((await rpc(other, pending.requestState)).isError).toBeTrue();
-      expect((await rpc(id, pending.requestState)).structuredContent?.completed).toBeTrue();
-      expect((await rpc(id, pending.requestState)).structuredContent?.completed).toBeTrue();
+      expect((await rpc(id, 'forged')).isError).toBe(true);
+      expect((await rpc(other, pending.requestState)).isError).toBe(true);
+      expect((await rpc(id, pending.requestState)).structuredContent?.completed).toBe(true);
+      expect((await rpc(id, pending.requestState)).structuredContent?.completed).toBe(true);
       expect(front).toHaveBeenCalledTimes(1);
     } finally {
       front.mockRestore();
@@ -884,7 +898,7 @@ test('HTTP JSON request deadline cancels waiting work before its longer operatio
         server.manager.session('alice', id).status().queuedOperations === 0 ? true : undefined,
       { timeout: 1000 },
     );
-    expect((await call(client, 'browser_tabs')).connected).toBeTrue();
+    expect((await call(client, 'browser_tabs')).connected).toBe(true);
   } finally {
     await client?.close();
     await server.close();

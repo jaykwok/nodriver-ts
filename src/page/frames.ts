@@ -1,17 +1,17 @@
 import type { Protocol } from 'devtools-protocol';
 import { randomUUID } from 'node:crypto';
-import type { Session, CdpEvent } from '../protocol/connection.js';
-import { EvaluationError, StaleElementError, DisconnectedError } from '../errors.js';
-import { bounded, EventHub, poll, type WaitOptions } from '../utils.js';
-import { query, type Selector, type QueryOptions } from '../dom/query.js';
-import type { Element } from '../dom/element.js';
-import type { Tab } from './tab.js';
-import { isContextGone, resolveMainContext } from './execution-context.js';
+import type { Session, CdpEvent } from '../protocol/connection.ts';
+import { EvaluationError, StaleElementError, DisconnectedError } from '../errors.ts';
+import { bounded, EventHub, poll, type WaitOptions } from '../utils.ts';
+import { query, type Selector, type QueryOptions } from '../dom/query.ts';
+import type { Element } from '../dom/element.ts';
+import type { Tab } from './tab.ts';
+import { isContextGone, resolveMainContext } from './execution-context.ts';
 import {
   inspectEnvironment,
   type InspectEnvironmentOptions,
   type EnvironmentReport,
-} from './environment.js';
+} from './environment.ts';
 export type World = 'main' | 'isolated';
 export type EvaluationInput<A> = A extends JSHandle<infer Value> ? Value : A;
 export interface EvaluateOptions extends WaitOptions {
@@ -54,10 +54,11 @@ export class JSHandle<T = unknown> {
   private disposed = false;
   readonly generation: number;
   readonly session: Session;
-  constructor(
-    readonly frame: Frame,
-    readonly object: Protocol.Runtime.RemoteObject,
-  ) {
+  readonly frame: Frame;
+  readonly object: Protocol.Runtime.RemoteObject;
+  constructor(frame: Frame, object: Protocol.Runtime.RemoteObject) {
+    this.frame = frame;
+    this.object = object;
     this.generation = frame.generation;
     this.session = frame.session;
   }
@@ -105,11 +106,14 @@ export class Frame {
   parentId?: string;
   private main?: { generation: number; promise: Promise<number> };
   private isolated?: { generation: number; promise: Promise<number> };
-  constructor(
-    readonly manager: FrameManager,
-    readonly id: string,
-    public session: Session,
-  ) {}
+  readonly manager: FrameManager;
+  readonly id: string;
+  public session: Session;
+  constructor(manager: FrameManager, id: string, session: Session) {
+    this.manager = manager;
+    this.id = id;
+    this.session = session;
+  }
   get tab(): Tab {
     return this.manager.tab;
   }
@@ -352,10 +356,11 @@ export class FrameManager {
   private disposed = false;
   private subscriptions = new Map<Session, () => void>();
   mainFrame!: Frame;
-  constructor(
-    readonly tab: Tab,
-    readonly session: Session,
-  ) {
+  readonly tab: Tab;
+  readonly session: Session;
+  constructor(tab: Tab, session: Session) {
+    this.tab = tab;
+    this.session = session;
     this.track(session);
   }
   /** Adds a page or OOPIF session and routes only its events to this manager. */

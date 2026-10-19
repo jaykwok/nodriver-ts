@@ -1,17 +1,20 @@
-import { removeTree } from '../../src/utils.js';
-import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
+import { serve } from '../fixtures/serve.ts';
+import { setTimeout as sleep } from 'node:timers/promises';
+import { removeTree } from '../../src/utils.ts';
+import { after, before, describe, test } from 'node:test';
+import { expect } from '../fixtures/expect.ts';
 import { mkdtemp, readFile, rm, writeFile, access } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Browser, EvaluationError, StaleElementError, TimeoutError } from '../../src/index.js';
-import type { Tab } from '../../src/index.js';
-import { fixtureServer } from '../fixtures/server.js';
+import { Browser, EvaluationError, StaleElementError, TimeoutError } from '../../src/index.ts';
+import type { Tab } from '../../src/index.ts';
+import { fixtureServer } from '../fixtures/server.ts';
 
 const selectAll = process.platform === 'darwin' ? 'Meta+A' : 'Control+A';
-const fixture = fixtureServer();
+const fixture = await fixtureServer();
 let browser: Browser;
 const errors: unknown[] = [];
-beforeAll(async () => {
+before(async () => {
   browser = await Browser.launch({
     headless: process.env.NODRIVER_HEADFUL !== '1',
     timeout: 15_000,
@@ -19,9 +22,9 @@ beforeAll(async () => {
     onError: (e) => errors.push(e),
   });
 });
-afterAll(async () => {
+after(async () => {
   if (browser) await browser.close();
-  fixture.server.stop(true);
+  await fixture.server.stop();
   if (errors.length) console.error('background errors:', errors);
 });
 async function page(fn: (tab: Tab) => Promise<void>, url = '/page') {
@@ -44,7 +47,7 @@ describe('browser and page', () => {
       expect(await tab.evaluate('undefined')).toBeUndefined();
       expect(await tab.evaluate('NaN')).toBeNaN();
       expect(await tab.evaluate('123n')).toBe(123n);
-      expect(Object.is(await tab.evaluate('-0'), -0)).toBeTrue();
+      expect(Object.is(await tab.evaluate('-0'), -0)).toBe(true);
       expect(await tab.evaluate((n) => n, Infinity)).toBe(Infinity);
       await expect(tab.evaluate('throw new Error("fixture-error")')).rejects.toBeInstanceOf(
         EvaluationError,
@@ -121,7 +124,7 @@ describe('browser and page', () => {
       expect(tab.url).toContain('#changed');
       expect(await button.text()).toBe('Click');
       await Promise.all([tab.waitForNavigation(), (await tab.waitForSelector('#link')).click()]);
-      expect(tab.url).toEndWith('/empty');
+      expect(tab.url).toMatch(/\/empty$/);
       await expect(button.text()).rejects.toBeInstanceOf(StaleElementError);
       await tab.go(-1);
       expect(tab.url).toContain('#changed');
@@ -140,7 +143,7 @@ describe('browser and page', () => {
         ).length < 3;
         i++
       )
-        await Bun.sleep(50);
+        await sleep(50);
       console.log(
         'frame sessions',
         tab.frames.map((f) => ({
@@ -198,10 +201,10 @@ describe('browser and page', () => {
   });
   test('storage restore never follows a cross-origin redirect or writes another origin', async () => {
     const html = (body: string) => new Response(body, { headers: { 'content-type': 'text/html' } });
-    const destination = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: () => html('<p>B') });
+    const destination = await serve({ hostname: '127.0.0.1', port: 0, fetch: () => html('<p>B') });
     const dest = `http://127.0.0.1:${destination.port}`;
     let rootHits = 0;
-    const source = Bun.serve({
+    const source = await serve({
       hostname: '127.0.0.1',
       port: 0,
       fetch(request) {
@@ -231,16 +234,16 @@ describe('browser and page', () => {
       expect(await b.mainFrame.storage()).toEqual({ existing: 'b' });
     } finally {
       await context.close();
-      source.stop(true);
-      destination.stop(true);
+      await source.stop();
+      await destination.stop();
     }
   });
   test('storageState covers iframes and closed tabs, but not partitioned storage', async () => {
     const html = (body: string) => new Response(body, { headers: { 'content-type': 'text/html' } });
-    const child = Bun.serve({ hostname: '0.0.0.0', port: 0, fetch: () => html('<p>child') });
+    const child = await serve({ hostname: '0.0.0.0', port: 0, fetch: () => html('<p>child') });
     const same = `http://127.0.0.1:${child.port}`;
     const cross = `http://localhost:${child.port}`;
-    const top = Bun.serve({
+    const top = await serve({
       hostname: '127.0.0.1',
       port: 0,
       fetch: () =>
@@ -276,8 +279,8 @@ describe('browser and page', () => {
     } finally {
       await context.close();
       await target.close();
-      top.stop(true);
-      child.stop(true);
+      await top.stop();
+      await child.stop();
     }
   });
   test('screenshot, PDF, upload, download and popup', async () =>

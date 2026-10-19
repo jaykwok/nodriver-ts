@@ -2,7 +2,7 @@ import { constants } from 'node:fs';
 import { lstat, mkdir, open, realpath, rename, rm } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
-import type { StorageState } from '../browser/context.js';
+import type { StorageState } from '../browser/context.ts';
 
 async function statePath(directory: string, name: string, create: boolean): Promise<string> {
   if (!/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$/.test(name)) throw new TypeError('Invalid state name');

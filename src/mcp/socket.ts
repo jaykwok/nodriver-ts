@@ -16,8 +16,8 @@ import {
   type JSONRPCMessage,
   type Transport,
 } from '@modelcontextprotocol/server';
-import { BrowserSessionManager, type BrowserSessionManagerOptions } from './manager.js';
-import { createBrowserMcpServer } from './server.js';
+import { BrowserSessionManager, type BrowserSessionManagerOptions } from './manager.ts';
+import { createBrowserMcpServer } from './server.ts';
 
 export interface BrowserMcpSocketOptions {
   tokens: Record<string, string>;
@@ -103,10 +103,19 @@ class SocketTransport implements Transport {
   private pending = new Set<string | number>();
   private inbox: JSONRPCMessage[] = [];
   private pumping = false;
+  private socket: Socket;
+  private limits: { messages: number; output: number; requests: number; write: number };
   constructor(
-    private socket: Socket,
-    private limits = { messages: 256 * 1024, output: 8 * 1024 * 1024, requests: 16, write: 60000 },
+    socket: Socket,
+    limits = {
+      messages: 256 * 1024,
+      output: 8 * 1024 * 1024,
+      requests: 16,
+      write: 60000,
+    },
   ) {
+    this.socket = socket;
+    this.limits = limits;
     this.wire = new StdioServerTransport(socket, socket, { maxBufferSize: limits.messages });
     socket.on('error', () => {});
   }
@@ -347,7 +356,9 @@ export class BrowserMcpSocketClientTransport implements Transport {
   private socket?: Socket;
   private started = false;
   private closed = false;
-  constructor(private options: BrowserMcpSocketClientOptions) {
+  private options: BrowserMcpSocketClientOptions;
+  constructor(options: BrowserMcpSocketClientOptions) {
+    this.options = options;
     localPath(options.path);
   }
   async start() {

@@ -1,6 +1,7 @@
-import { expect, test } from 'bun:test';
-import { Browser } from '../../src/index.js';
-import { recordWire } from '../fixtures/wire.js';
+import { test } from 'node:test';
+import { expect } from '../fixtures/expect.ts';
+import { Browser } from '../../src/index.ts';
+import { recordWire } from '../fixtures/wire.ts';
 
 for (const transport of ['pipe', 'websocket'] as const)
   test(`${transport}: cached queries observe dynamically added and removed closed shadow roots`, async () => {

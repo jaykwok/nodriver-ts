@@ -5,15 +5,7 @@
     "rootDir": ".",
     "noUnusedLocals": false,
     "noUnusedParameters": false,
-    "types": [
-      "bun",
-      "node"
-    ]
+    "types": ["node"]
   },
-  "include": [
-    "src/**/*.ts",
-    "test/**/*.ts",
-    "examples/**/*.ts",
-    "benchmarks/**/*.ts"
-  ]
+  "include": ["src/**/*.ts", "test/**/*.ts", "examples/**/*.ts", "benchmarks/**/*.ts"]
 }

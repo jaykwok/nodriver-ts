@@ -1,8 +1,8 @@
-import type { Frame, World } from './frames.js';
-import type { WaitOptions } from '../utils.js';
-import { timeoutValue } from '../utils.js';
-import { abortReason } from '../utils.js';
-import { StaleElementError, TimeoutError } from '../errors.js';
+import type { Frame, World } from './frames.ts';
+import type { WaitOptions } from '../utils.ts';
+import { timeoutValue } from '../utils.ts';
+import { abortReason } from '../utils.ts';
+import { StaleElementError, TimeoutError } from '../errors.ts';
 
 export interface NavigatorSnapshot {
   userAgent: string;

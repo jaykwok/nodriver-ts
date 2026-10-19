@@ -26,8 +26,8 @@ AX 快照使用 Accessibility 域，页面无法直接观察，但会让渲染�
 ## 回归验证
 
 ```sh
-bun run test:audit
-bun run test:all
+npm run test:audit
+npm run test:all
 ```
 
 - `test/integration/runtime.test.ts` 在浏览器启动前截取 `Transport.send` 的真实消息，覆盖双传输、四类 frame（含嵌套 OOPIF）、中文输入、closed shadow root、JSHandle、导航、BFCache、popup 与 WebSocket 重连，断言禁用域、绑定和自动 init script 命令为零。另用独立浏览器显式启用 Runtime 作阳性对照，证明采集器能看到这些命令及 executionContextCreated/consoleAPICalled 事件。

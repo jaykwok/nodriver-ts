@@ -1,6 +1,7 @@
-import { test, expect } from 'bun:test';
-import { WebSocketServer } from '../../src/transport/ws-runtime.js';
-import { Connection, WebSocketTransport } from '../../src/index.js';
+import { test } from 'node:test';
+import { expect } from '../fixtures/expect.ts';
+import { WebSocketServer } from '../../src/transport/ws-runtime.ts';
+import { Connection, WebSocketTransport } from '../../src/index.ts';
 import { once } from 'node:events';
 test('WebSocket reassembles fragmented Unicode text and enforces payload size', async () => {
   const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });

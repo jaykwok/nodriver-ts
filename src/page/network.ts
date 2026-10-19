@@ -1,14 +1,16 @@
 import type { Protocol } from 'devtools-protocol';
-import type { Session } from '../protocol/connection.js';
-import type { Tab } from './tab.js';
-import { EventHub, type WaitOptions } from '../utils.js';
-import { NodriverError } from '../errors.js';
+import type { Session } from '../protocol/connection.ts';
+import type { Tab } from './tab.ts';
+import { EventHub, type WaitOptions } from '../utils.ts';
+import { NodriverError } from '../errors.ts';
 export class Route {
   private handled = false;
-  constructor(
-    readonly session: Session,
-    readonly request: Protocol.Fetch.RequestPausedEvent,
-  ) {}
+  readonly session: Session;
+  readonly request: Protocol.Fetch.RequestPausedEvent;
+  constructor(session: Session, request: Protocol.Fetch.RequestPausedEvent) {
+    this.session = session;
+    this.request = request;
+  }
   get done(): boolean {
     return this.handled;
   }
@@ -55,8 +57,10 @@ export interface Response {
 }
 /** An event hub that runs a hook when the first listener subscribes. */
 class LazyHub<T> extends EventHub<T> {
-  constructor(private readonly subscribed: () => void) {
+  private readonly subscribed: () => void;
+  constructor(subscribed: () => void) {
     super();
+    this.subscribed = subscribed;
   }
   override on(listener: (event: T) => void | Promise<void>): () => void {
     this.subscribed();
@@ -83,7 +87,10 @@ export class Network {
   private offline = false;
   private configured = new Set<Session>();
   private authAttempts = new Set<string>();
-  constructor(private tab: Tab) {}
+  private tab: Tab;
+  constructor(tab: Tab) {
+    this.tab = tab;
+  }
   async configure(session: Session): Promise<void> {
     if (this.configured.has(session)) return;
     this.configured.add(session);

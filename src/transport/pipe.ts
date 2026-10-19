@@ -1,14 +1,16 @@
 import type { Readable, Writable } from 'node:stream';
-import type { Transport } from './transport.js';
-import { DisconnectedError } from '../errors.js';
+import type { Transport } from './transport.ts';
+import { DisconnectedError } from '../errors.ts';
 /** CDP pipe framing operates on bytes: UTF-8 characters may span arbitrary chunks. */
 export class PipeDecoder {
   private chunks: Buffer[] = [];
   private length = 0;
-  constructor(
-    private readonly emit: (json: string) => void,
-    private readonly maxBytes = 256 * 1024 * 1024,
-  ) {}
+  private readonly emit: (json: string) => void;
+  private readonly maxBytes: number;
+  constructor(emit: (json: string) => void, maxBytes = 256 * 1024 * 1024) {
+    this.emit = emit;
+    this.maxBytes = maxBytes;
+  }
   push(chunk: Uint8Array): void {
     const bytes = Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
     let start = 0;
@@ -38,11 +40,11 @@ export class PipeTransport implements Transport {
   onmessage?: (message: string) => void;
   onclose?: (reason: Error) => void;
   private closed = false;
-  constructor(
-    private readonly readable: Readable,
-    private readonly writable: Writable,
-    maxBytes?: number,
-  ) {
+  private readonly readable: Readable;
+  private readonly writable: Writable;
+  constructor(readable: Readable, writable: Writable, maxBytes?: number) {
+    this.readable = readable;
+    this.writable = writable;
     const decoder = new PipeDecoder((m) => this.onmessage?.(m), maxBytes);
     readable.on('data', (b: Buffer) => {
       try {

@@ -1,13 +1,14 @@
-import { describe, expect, test } from 'bun:test';
+import { describe, test } from 'node:test';
+import { expect } from '../fixtures/expect.ts';
 import {
   Connection,
   ProtocolError,
   TimeoutError,
   DisconnectedError,
   PipeDecoder,
-} from '../../src/index.js';
-import type { Transport } from '../../src/index.js';
-import { project } from '../../src/dom/element.js';
+} from '../../src/index.ts';
+import type { Transport } from '../../src/index.ts';
+import { project } from '../../src/dom/element.ts';
 class FakeTransport implements Transport {
   onmessage?: (message: string) => void;
   onclose?: (reason: Error) => void;
@@ -43,7 +44,7 @@ describe('CDP connection', () => {
     await expect(c.root.send('Browser.getVersion')).rejects.toBeInstanceOf(TimeoutError);
     expect(c.pendingCount).toBe(0);
     t.respond(0, {});
-    expect(c.closed).toBeFalse();
+    expect(c.closed).toBe(false);
     await c.close();
   });
   test('abort before and during request', async () => {
@@ -70,7 +71,7 @@ describe('CDP connection', () => {
     await expect(a).rejects.toBeInstanceOf(DisconnectedError);
     t.respond(1, { product: 'okay' });
     expect((await b).product).toBe('okay');
-    expect(s.closed).toBeTrue();
+    expect(s.closed).toBe(true);
     await expect(s.send('Page.getFrameTree')).rejects.toBeInstanceOf(DisconnectedError);
     await c.close();
   });
@@ -89,8 +90,8 @@ describe('CDP connection', () => {
     const pending = nested.send('Page.getFrameTree');
     const rejected = pending.catch((error) => error);
     t.event('Target.detachedFromTarget', { sessionId: 'page' });
-    expect(parent.closed && child.closed && nested.closed).toBeTrue();
-    expect(sibling.closed).toBeFalse();
+    expect(parent.closed && child.closed && nested.closed).toBe(true);
+    expect(sibling.closed).toBe(false);
     expect(c.events.size).toBe(baseline);
     expect(c.pendingCount).toBe(0);
     expect(await rejected).toBeInstanceOf(DisconnectedError);
@@ -107,7 +108,7 @@ describe('CDP connection', () => {
       }),
     );
     await expect(p).rejects.toBeInstanceOf(ProtocolError);
-    expect(c.closed).toBeFalse();
+    expect(c.closed).toBe(false);
     await c.close();
   });
   test('event order is preserved and throwing listeners cannot stop routing', async () => {
@@ -156,7 +157,7 @@ describe('CDP connection', () => {
         mismatch ? JSON.stringify({ id: t.messages[0]!.id, result: {}, sessionId: 'wrong' }) : '{',
       );
       await expect(p).rejects.toBeInstanceOf(DisconnectedError);
-      expect(c.closed).toBeTrue();
+      expect(c.closed).toBe(true);
       expect(c.pendingCount).toBe(0);
     }
   });
@@ -171,7 +172,7 @@ describe('CDP connection', () => {
       }),
     );
     await expect(p).rejects.toBeInstanceOf(DisconnectedError);
-    expect(c.closed).toBeFalse();
+    expect(c.closed).toBe(false);
     expect(c.pendingCount).toBe(0);
     await c.close();
   });

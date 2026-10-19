@@ -60,25 +60,28 @@
     "docs/*.md"
   ],
   "scripts": {
-    "mcp": "bun src/mcp/cli.ts",
+    "mcp": "node src/mcp/cli.ts",
     "check": "tsc --noEmit && tsc -p tsconfig.test.json",
     "build": "tsc",
-    "test": "bun test ./test/unit",
-    "test:integration": "bun test --timeout 60000 ./test/integration",
-    "test:audit": "bun test --timeout 60000 ./test/unit/execution-context.test.ts ./test/integration/runtime.test.ts",
-    "test:mcp": "bun test --timeout 60000 ./test/unit/mcp-manager.test.ts ./test/unit/mcp-socket.test.ts ./test/integration/mcp.test.ts ./test/integration/mcp-http.test.ts ./test/integration/mcp-socket.test.ts ./test/integration/mcp-contract.test.ts ./test/integration/mcp-evaluate.test.ts",
-    "test:compat": "bun test --timeout 120000 ./test/integration/runtime.test.ts ./test/integration/environment.test.ts ./test/integration/churn.test.ts",
-    "test:signals": "bun test --timeout 60000 ./test/integration/native-signals.test.ts",
-    "test:soak": "bun benchmarks/soak.ts",
-    "test:map": "bun test/api-map.ts",
-    "test:all": "bun run check && bun test --timeout 60000 ./test",
-    "example": "bun examples/basic.ts",
-    "bench:mcp": "bun benchmarks/mcp.ts",
-    "bench:compare": "bun benchmarks/compare.ts",
+    "test": "node --test --test-timeout=60000 \"test/unit/*.test.ts\"",
+    "test:integration": "node --test --test-concurrency=1 --test-timeout=60000 \"test/integration/*.test.ts\"",
+    "test:audit": "node --test --test-concurrency=1 --test-timeout=60000 test/unit/execution-context.test.ts test/integration/runtime.test.ts",
+    "test:mcp": "node --test --test-concurrency=1 --test-timeout=60000 test/unit/mcp-manager.test.ts test/unit/mcp-socket.test.ts \"test/integration/mcp*.test.ts\"",
+    "test:compat": "node --test --test-concurrency=1 --test-timeout=120000 test/integration/runtime.test.ts test/integration/environment.test.ts test/integration/churn.test.ts",
+    "test:signals": "node --test --test-concurrency=1 --test-timeout=60000 test/integration/native-signals.test.ts",
+    "test:all": "npm run check && npm test && npm run test:integration && npm run test:dist",
+    "test:dist": "npm run build && node --test test/node-http.mjs && node test/node-smoke.mjs",
+    "test:bun": "bun test ./test/unit",
+    "test:bun:integration": "bun test --timeout 60000 ./test/integration",
+    "test:bun:compat": "bun test --timeout 120000 ./test/integration/runtime.test.ts ./test/integration/environment.test.ts ./test/integration/churn.test.ts",
+    "test:soak": "node benchmarks/soak.ts",
+    "test:map": "node test/api-map.ts",
+    "example": "node examples/basic.ts",
+    "bench:mcp": "node benchmarks/mcp.ts",
+    "bench:compare": "node benchmarks/compare.ts",
     "format": "prettier --write src test examples benchmarks \"*.md\" \"docs/*.md\"",
     "format:check": "prettier --check src test examples benchmarks \"*.md\" \"docs/*.md\"",
-    "prepack": "bun run check && bun run build",
-    "test:node": "bun run build && node --test test/node-http.mjs && node test/node-smoke.mjs"
+    "prepack": "npm run check && npm run build"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.3.1",
@@ -91,7 +94,8 @@
   },
   "devDependencies": {
     "@modelcontextprotocol/client": "2.3.1",
-    "@types/bun": "1.4.3",
+    "expect": "30.5.2",
+    "jest-mock": "30.5.2",
     "prettier": "3.9.10",
     "typescript": "7.0.2"
   }

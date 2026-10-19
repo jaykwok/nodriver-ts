@@ -1,4 +1,6 @@
-import { expect, test } from 'bun:test';
+import { setTimeout as sleep } from 'node:timers/promises';
+import { test } from 'node:test';
+import { expect } from '../fixtures/expect.ts';
 import { createConnection } from 'node:net';
 import { once } from 'node:events';
 import { lstat, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
@@ -7,7 +9,7 @@ import { join } from 'node:path';
 import {
   BrowserMcpSocketClientTransport,
   startBrowserMcpSocketServer,
-} from '../../src/mcp/socket.js';
+} from '../../src/mcp/socket.ts';
 
 const token = 'a'.repeat(40);
 test('socket rejects bad credentials, oversized/slow preambles and excess connections without a lease', async () => {
@@ -72,7 +74,7 @@ test('socket permissions, existing endpoint preservation and cleanup', async () 
     ).rejects.toThrow();
     const client = new BrowserMcpSocketClientTransport({ path: server.path, token });
     await client.start();
-    expect(client.leaseId).toBeString();
+    expect(client.leaseId).toEqual(expect.any(String));
     await client.close();
     if (process.platform !== 'win32') expect((await lstat(server.path)).mode & 0o777).toBe(0o600);
   } finally {
@@ -119,10 +121,10 @@ test('socket authentication tolerates fragmentation and pipelined MCP bytes', as
         '\n',
     );
     socket.write(opening.subarray(0, 13));
-    await Bun.sleep(5);
+    await sleep(5);
     for (let at = 13; at < opening.length; at += 7) socket.write(opening.subarray(at, at + 7));
     for (let i = 0; i < 200 && !Buffer.concat(received).toString().includes('protocolVersion'); i++)
-      await Bun.sleep(5);
+      await sleep(5);
     const messages = Buffer.concat(received)
       .toString('utf8')
       .trim()

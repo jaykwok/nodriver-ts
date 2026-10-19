@@ -13,11 +13,11 @@ import {
 import { tmpdir, homedir, hostname } from 'node:os';
 import { delimiter, join, resolve } from 'node:path';
 import type { Readable, Writable } from 'node:stream';
-import { WebSocketTransport } from '../transport/websocket.js';
-import { PipeTransport } from '../transport/pipe.js';
-import type { Transport } from '../transport/transport.js';
-import { DisconnectedError, NodriverError } from '../errors.js';
-import { abortReason, delay, poll, removeTree, timeoutValue, type WaitOptions } from '../utils.js';
+import { WebSocketTransport } from '../transport/websocket.ts';
+import { PipeTransport } from '../transport/pipe.ts';
+import type { Transport } from '../transport/transport.ts';
+import { DisconnectedError, NodriverError } from '../errors.ts';
+import { abortReason, delay, poll, removeTree, timeoutValue, type WaitOptions } from '../utils.ts';
 export interface LaunchOptions extends WaitOptions {
   executablePath?: string;
   /** False by default. Set true when running without a graphical desktop. */
@@ -142,12 +142,15 @@ export class BrowserProcess {
   private exitCode: number | null = null;
   private stderr = '';
   private signalListeners: Array<[NodeJS.Signals, () => void]> = [];
-  private constructor(
-    readonly child: ChildProcess,
-    readonly profile: string,
-    readonly temporary: boolean,
-    private lock?: FileHandle,
-  ) {
+  readonly child: ChildProcess;
+  readonly profile: string;
+  readonly temporary: boolean;
+  private lock?: FileHandle;
+  private constructor(child: ChildProcess, profile: string, temporary: boolean, lock?: FileHandle) {
+    this.child = child;
+    this.profile = profile;
+    this.temporary = temporary;
+    this.lock = lock;
     child.stderr?.on('data', (b: Buffer) => {
       this.stderr = (this.stderr + b.toString()).slice(-16_384);
     });

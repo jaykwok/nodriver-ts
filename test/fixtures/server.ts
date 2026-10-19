@@ -1,9 +1,10 @@
-import { detectionPage } from './detection.js';
-export function fixtureServer(options: { hostname?: string } = {}) {
-  const server = Bun.serve({
+import { serve } from './serve.ts';
+import { detectionPage } from './detection.ts';
+export async function fixtureServer(options: { hostname?: string } = {}) {
+  const server = await serve({
     hostname: options.hostname ?? '0.0.0.0',
     port: 0,
-    fetch(request): Response {
+    fetch(request: Request): Response {
       const u = new URL(request.url);
       const base = `http://127.0.0.1:${server.port}`;
       const cross = `http://localhost:${server.port}`;

@@ -1,39 +1,41 @@
 // Generates docs/test-map.md: which tests exercise each public API member and MCP tool.
-// Usage: bun test/api-map.ts            (runs unit + integration tests with tracing; needs Chrome)
-//        bun test/api-map.ts --reuse    (rebuilds the document from the last trace)
-import { mkdirSync, readFileSync, readdirSync, writeFileSync, existsSync } from 'node:fs';
+// Usage: node test/api-map.ts            (runs unit + integration tests with tracing; needs Chrome)
+//        node test/api-map.ts --reuse    (rebuilds the document from the last trace)
+import { spawnSync } from 'node:child_process';
+import { mkdirSync, readFileSync, readdirSync, writeFileSync, existsSync, rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import * as prettier from 'prettier';
 import * as typescript from 'prettier/plugins/typescript';
 
-const root = resolve(import.meta.dir, '..');
-const tracePath = join(root, 'dev', 'api-trace.json');
+const root = resolve(import.meta.dirname, '..');
+const traceDir = join(root, 'dev', 'api-trace');
 const outputPath = join(root, 'docs', 'test-map.md');
 
-if (!process.argv.includes('--reuse') || !existsSync(tracePath)) {
-  mkdirSync(join(root, 'dev'), { recursive: true });
-  const run = Bun.spawnSync(
+if (!process.argv.includes('--reuse') || !existsSync(traceDir)) {
+  rmSync(traceDir, { recursive: true, force: true });
+  mkdirSync(traceDir, { recursive: true });
+  const run = spawnSync(
+    process.execPath,
     [
-      process.execPath,
-      'test',
-      '--preload',
+      '--import',
       './test/api-trace.ts',
-      '--timeout',
-      '60000',
-      './test/unit',
-      './test/integration',
+      '--test',
+      '--test-concurrency=1',
+      '--test-timeout=60000',
+      'test/unit/*.test.ts',
+      'test/integration/*.test.ts',
     ],
-    {
-      cwd: root,
-      // Strict-mode proper tail calls drop the frame of `(r) => r.fulfill()`-style callers.
-      env: { ...process.env, NODRIVER_API_TRACE: tracePath, BUN_JSC_useTailCalls: '0' },
-      stdout: 'inherit',
-      stderr: 'inherit',
-    },
+    { cwd: root, env: { ...process.env, NODRIVER_API_TRACE: traceDir }, stdio: 'inherit' },
   );
-  if (run.exitCode !== 0) throw new Error(`Traced test run failed (${run.exitCode})`);
+  if (run.status !== 0) throw new Error(`Traced test run failed (${run.status})`);
 }
-const trace = JSON.parse(readFileSync(tracePath, 'utf8')) as Record<string, string[]>;
+// One trace per test-file process.
+const trace: Record<string, string[]> = {};
+for (const file of readdirSync(traceDir))
+  for (const [member, callers] of Object.entries(
+    JSON.parse(readFileSync(join(traceDir, file), 'utf8')) as Record<string, string[]>,
+  ))
+    trace[member] = [...new Set([...(trace[member] ?? []), ...callers])].sort();
 
 type Node = { type: string; loc: { start: { line: number }; end: { line: number } } } & Record<
   string,
@@ -240,7 +242,7 @@ const cell = (tests: string[]) => {
 const lines: string[] = [
   '# API 测试映射',
   '',
-  '本文件由 `bun run test:map` 生成，请勿手工编辑。生成脚本以插桩方式运行全部单元与集成测试，记录测试代码对每个公开方法和访问器的直接调用；库内部的间接调用不计入，测试辅助函数中的调用归属到调用该辅助函数的测试。字段（如 `tab.network`）不单独列出。MCP 工具与导出函数按测试代码中的名称引用静态匹配。',
+  '本文件由 `npm run test:map` 生成，请勿手工编辑。生成脚本以插桩方式运行全部单元与集成测试，记录测试代码对每个公开方法和访问器的直接调用；库内部的间接调用不计入，测试辅助函数中的调用归属到调用该辅助函数的测试。字段（如 `tab.network`）不单独列出。MCP 工具与导出函数按测试代码中的名称引用静态匹配。',
   '',
   '每格最多列出三个测试，格式为 `文件 › 测试名`。',
   '',

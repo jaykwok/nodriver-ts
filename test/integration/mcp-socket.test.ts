@@ -1,13 +1,15 @@
-import { expect, test } from 'bun:test';
+import { setTimeout as sleep } from 'node:timers/promises';
+import { test } from 'node:test';
+import { expect } from '../fixtures/expect.ts';
 import { Client, type CallToolResult } from '@modelcontextprotocol/client';
 import {
   BrowserMcpSocketClientTransport,
   startBrowserMcpSocketServer,
   type BrowserMcpSocketServer,
-} from '../../src/mcp/socket.js';
-import { fixtureServer } from '../fixtures/server.js';
-import { recordWire, forbiddenAutomaticCommands } from '../fixtures/wire.js';
-import { poll } from '../../src/utils.js';
+} from '../../src/mcp/socket.ts';
+import { fixtureServer } from '../fixtures/server.ts';
+import { recordWire, forbiddenAutomaticCommands } from '../fixtures/wire.ts';
+import { poll } from '../../src/utils.ts';
 
 const token = 'a'.repeat(40),
   bob = 'b'.repeat(40);
@@ -41,7 +43,7 @@ async function call(client: Client, name: string, args: Record<string, unknown> 
 }
 for (const version of ['2026-07-28']) {
   test(`socket ${version}: official client, Unicode, refs, PNG, reconnect and principal isolation`, async () => {
-    const fixture = fixtureServer(),
+    const fixture = await fixtureServer(),
       audit = recordWire('pipe');
     const server = await startBrowserMcpSocketServer({
       tokens: { [token]: 'alice', [bob]: 'bob' },
@@ -86,7 +88,7 @@ for (const version of ['2026-07-28']) {
       expect(
         (await current.callTool({ name: 'browser_fill', arguments: { tabId, ref, text: 'stale' } }))
           .isError,
-      ).toBeTrue();
+      ).toBe(true);
       expect(audit.messages.filter((m) => forbiddenAutomaticCommands.includes(m.method))).toEqual(
         [],
       );
@@ -97,7 +99,7 @@ for (const version of ['2026-07-28']) {
     } finally {
       await current?.close();
       await server.close();
-      fixture.server.stop(true);
+      await fixture.server.stop();
       audit.restore();
     }
     expect(server.manager.stats().browsers).toBe(0);
@@ -106,7 +108,7 @@ for (const version of ['2026-07-28']) {
 
 for (const version of ['2026-07-28'])
   test(`socket ${version}: cancellation and EOF stop pending actions, preserve the lease and drain locks`, async () => {
-    const fixture = fixtureServer();
+    const fixture = await fixtureServer();
     const server = await startBrowserMcpSocketServer({
       browser: { launch: { headless: process.env.NODRIVER_HEADFUL !== '1' } },
       tokens: { [token]: 'alice' },
@@ -166,7 +168,7 @@ for (const version of ['2026-07-28'])
     } finally {
       await client?.close();
       await server.close();
-      fixture.server.stop(true);
+      await fixture.server.stop();
     }
   });
 
@@ -200,7 +202,7 @@ for (const version of ['2026-07-28'])
       expect(progress).toEqual([0, 1, 2]);
       const before = updates;
       await call(other.client, 'browser_open');
-      await Bun.sleep(50);
+      await sleep(50);
       expect(updates).toBe(before);
       await subscription?.close();
     } finally {
@@ -211,7 +213,7 @@ for (const version of ['2026-07-28'])
   });
 
 test('socket pending-request and output limits close the exchange without unbounded queues', async () => {
-  const fixture = fixtureServer();
+  const fixture = await fixtureServer();
   const server = await startBrowserMcpSocketServer({
     browser: { launch: { headless: process.env.NODRIVER_HEADFUL !== '1' } },
     tokens: { [token]: 'alice' },
@@ -225,7 +227,7 @@ test('socket pending-request and output limits close the exchange without unboun
       selector: '#never',
       timeout: 10000,
     }).catch((e) => e);
-    await Bun.sleep(50);
+    await sleep(50);
     const failure = call(client, 'browser_fill', { tabId, ref: 'unused', text: 'unused' }).catch(
       (e) => e,
     );
@@ -234,7 +236,7 @@ test('socket pending-request and output limits close the exchange without unboun
   } finally {
     await client.close();
     await server.close();
-    fixture.server.stop(true);
+    await fixture.server.stop();
   }
   const limited = await startBrowserMcpSocketServer({
     browser: { launch: { headless: process.env.NODRIVER_HEADFUL !== '1' } },

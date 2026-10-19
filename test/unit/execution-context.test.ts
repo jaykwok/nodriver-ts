@@ -1,9 +1,10 @@
-import { expect, test } from 'bun:test';
-import { Connection } from '../../src/protocol/connection.js';
-import { Frame, type FrameManager } from '../../src/page/frames.js';
-import { parseRemoteObjectId, resolveMainContext } from '../../src/page/execution-context.js';
-import { StaleElementError, UnsupportedError } from '../../src/errors.js';
-import type { Transport } from '../../src/transport/transport.js';
+import { test } from 'node:test';
+import { expect } from '../fixtures/expect.ts';
+import { Connection } from '../../src/protocol/connection.ts';
+import { Frame, type FrameManager } from '../../src/page/frames.ts';
+import { parseRemoteObjectId, resolveMainContext } from '../../src/page/execution-context.ts';
+import { StaleElementError, UnsupportedError } from '../../src/errors.ts';
+import type { Transport } from '../../src/transport/transport.ts';
 
 class ContextTransport implements Transport {
   onmessage?: (message: string) => void;
@@ -90,7 +91,7 @@ test('wrong context/document fails closed and always releases temporary objects'
         UnsupportedError,
       );
       expect(transport.messages.at(-1)?.method).toBe('Runtime.releaseObjectGroup');
-      expect(transport.messages.some((m) => m.method === 'Runtime.enable')).toBeFalse();
+      expect(transport.messages.some((m) => m.method === 'Runtime.enable')).toBe(false);
       expect(connection.pendingCount).toBe(0);
     } finally {
       await connection.close();
@@ -108,7 +109,7 @@ test('navigation during discovery cannot run user script; fresh document can rec
   transport.onRelease = () => frame.invalidate();
   try {
     await expect(frame.evaluate('sideEffect()')).rejects.toBeInstanceOf(StaleElementError);
-    expect(transport.messages.some((m) => m.params?.expression === 'sideEffect()')).toBeFalse();
+    expect(transport.messages.some((m) => m.params?.expression === 'sideEffect()')).toBe(false);
     transport.onRelease = undefined;
     expect(await frame.evaluate('sideEffect()')).toBe(5);
     expect(transport.messages.filter((m) => m.params?.expression === 'sideEffect()').length).toBe(

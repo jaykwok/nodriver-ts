@@ -1,5 +1,5 @@
 import { rm } from 'node:fs/promises';
-import { TimeoutError } from './errors.js';
+import { TimeoutError } from './errors.ts';
 export interface WaitOptions {
   timeout?: number;
   signal?: AbortSignal;
@@ -105,7 +105,10 @@ export async function poll<T>(
 export type Listener<T> = (event: T) => void | Promise<void>;
 export class EventHub<T> {
   private listeners = new Set<Listener<T>>();
-  constructor(private readonly report: (error: unknown) => void = () => {}) {}
+  private readonly report: (error: unknown) => void;
+  constructor(report: (error: unknown) => void = () => {}) {
+    this.report = report;
+  }
   private reportSafely(error: unknown): void {
     try {
       this.report(error);

@@ -1,15 +1,18 @@
-import { expect, test } from 'bun:test';
+import { serve } from '../fixtures/serve.ts';
+import { setTimeout as sleep } from 'node:timers/promises';
+import { test } from 'node:test';
+import { expect } from '../fixtures/expect.ts';
 import { Client, type CallToolResult } from '@modelcontextprotocol/client';
 import { InMemoryTransport } from '@modelcontextprotocol/server';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createBrowserMcpServer } from '../../src/mcp/server.js';
-import { fixtureServer } from '../fixtures/server.js';
+import { createBrowserMcpServer } from '../../src/mcp/server.ts';
+import { fixtureServer } from '../fixtures/server.ts';
 
 for (const transport of ['pipe', 'websocket'] as const)
   test(`${transport}: MCP snapshots, action waits, response capture and named storage state`, async () => {
-    const fixture = fixtureServer();
+    const fixture = await fixtureServer();
     const directory = await mkdtemp(join(tmpdir(), 'nodriver-mcp-additions-'));
     const server = createBrowserMcpServer({
       launch: { transport, headless: process.env.NODRIVER_HEADFUL !== '1' },
@@ -67,7 +70,7 @@ for (const transport of ['pipe', 'websocket'] as const)
         waitFor: 'load',
         timeout: 500,
       });
-      expect(failed.isError).toBeTrue();
+      expect(failed.isError).toBe(true);
       expect(JSON.stringify(failed.content)).toContain('navigation did not start');
       const hash = await call('browser_click', {
         tabId,
@@ -76,8 +79,8 @@ for (const transport of ['pipe', 'websocket'] as const)
         snapshot: true,
         timeout: 1500,
       });
-      expect(hash.navigated).toBeTrue();
-      expect(hash.url).toEndWith('#next');
+      expect(hash.navigated).toBe(true);
+      expect(hash.url).toMatch(/#next$/);
       expect(hash.snapshot.nodes.length).toBeGreaterThan(0);
       await evaluate('if (globalThis.clicks !== 1) throw new Error("action replayed");');
       await call('browser_network', { tabId, action: 'start' });
@@ -103,14 +106,14 @@ for (const transport of ['pipe', 'websocket'] as const)
     } finally {
       await client.close();
       await server.close();
-      fixture.server.stop(true);
+      await fixture.server.stop();
       await rm(directory, { recursive: true, force: true });
     }
   });
 
 test('MCP download wait runs beside the triggering click, before or after it', async () => {
   const attachment = { 'content-disposition': 'attachment; filename=f.txt' };
-  const files = Bun.serve({
+  const files = await serve({
     hostname: '127.0.0.1',
     port: 0,
     fetch(request) {
@@ -122,7 +125,7 @@ test('MCP download wait runs beside the triggering click, before or after it', a
             async start(controller) {
               for (let i = 0; i < 8; i++) {
                 controller.enqueue(new Uint8Array(1024));
-                await Bun.sleep(150);
+                await sleep(150);
               }
               controller.close();
             },
@@ -163,14 +166,14 @@ test('MCP download wait runs beside the triggering click, before or after it', a
     // Wait first: the click must not queue behind it.
     const started = performance.now();
     const waiting = call('browser_downloads', { tabId, action: 'wait', timeout: 10_000 });
-    await Bun.sleep(50);
+    await sleep(50);
     await click('#file');
     expect(performance.now() - started).toBeLessThan(5_000);
     expect((await waiting).download).toMatchObject({ sequence: 1, state: 'completed' });
 
     // Click first: a download that began before the wait is still returned.
     await click('#file');
-    await Bun.sleep(300);
+    await sleep(300);
     expect(
       (await call('browser_downloads', { tabId, action: 'wait', timeout: 5_000 })).download,
     ).toMatchObject({ sequence: 2, state: 'completed' });
@@ -178,7 +181,7 @@ test('MCP download wait runs beside the triggering click, before or after it', a
     // A slow download reports a timeout, and the next wait resumes the same download.
     await click('#slow');
     const early = await tool('browser_downloads', { tabId, action: 'wait', timeout: 200 });
-    expect(early.isError).toBeTrue();
+    expect(early.isError).toBe(true);
     expect(JSON.stringify(early.content)).toContain('still in progress');
     expect(
       (await call('browser_downloads', { tabId, action: 'wait', timeout: 10_000 })).download,
@@ -201,16 +204,16 @@ test('MCP download wait runs beside the triggering click, before or after it', a
       () => false,
       () => true,
     );
-    await Bun.sleep(100);
+    await sleep(100);
     const abortAt = performance.now();
     controller.abort(new Error('caller cancelled'));
-    expect(await cancelled).toBeTrue();
+    expect(await cancelled).toBe(true);
     expect(performance.now() - abortAt).toBeLessThan(1_000);
     expect((await call('browser_downloads', { action: 'list' })).latestSequence).toBe(3);
   } finally {
     await client.close();
     await server.close();
-    files.stop(true);
+    await files.stop();
     await rm(directory, { recursive: true, force: true });
   }
 });

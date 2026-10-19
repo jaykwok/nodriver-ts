@@ -1,7 +1,8 @@
-import { expect, test } from 'bun:test';
-import { BrowserMcpSession } from '../../src/mcp/session.js';
-import type { Tab } from '../../src/page/tab.js';
-import { EventHub } from '../../src/utils.js';
+import { test } from 'node:test';
+import { expect } from '../fixtures/expect.ts';
+import { BrowserMcpSession } from '../../src/mcp/session.ts';
+import type { Tab } from '../../src/page/tab.ts';
+import { EventHub } from '../../src/utils.ts';
 
 test('load waits fail when navigation never starts or completes, without replaying the action', async () => {
   const events = new EventHub<{ method: string; frameId: string }>();
@@ -39,7 +40,7 @@ test('load waits fail when navigation never starts or completes, without replayi
   const sameDocument = await session.act(tab, options, async () => {
     changes.emit({ frame: tab.mainFrame, sameDocument: true });
   });
-  expect(sameDocument.summary.loading).toBeFalse();
+  expect(sameDocument.summary.loading).toBe(false);
   expect(changes.size).toBe(0);
   await session.dispose();
 });

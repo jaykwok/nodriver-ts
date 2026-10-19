@@ -1,7 +1,7 @@
 # 长稳测试
 
 ```sh
-bun run test:soak -- --hours 24 --output dev/soak-my-run
+npm run test:soak -- --hours 24 --output dev/soak-my-run
 ```
 
 任务在前台运行，默认每 15 秒一轮，使用两个独立的临时 Chrome：本地 Streamable HTTP + Chrome Pipe，以及本地 socket + Chrome WebSocket。浏览器、HTTP fixture 和协议服务都是本地资源，HTTP 只监听 loopback，不访问外部站点。

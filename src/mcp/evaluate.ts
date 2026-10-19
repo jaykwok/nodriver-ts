@@ -1,6 +1,6 @@
-import type { Frame, World } from '../page/frames.js';
-import { EvaluationError } from '../errors.js';
-import type { WaitOptions } from '../utils.js';
+import type { Frame, World } from '../page/frames.ts';
+import { EvaluationError } from '../errors.ts';
+import type { WaitOptions } from '../utils.ts';
 
 export const MAX_SCRIPT_LENGTH = 32_768;
 export const MAX_ARGUMENT_LENGTH = 32_768;

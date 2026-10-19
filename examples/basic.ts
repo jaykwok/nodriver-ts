@@ -1,4 +1,4 @@
-import { Browser } from '../src/index.js';
+import { Browser } from '../src/index.ts';
 // CHROME_PATH can select a browser on Windows or Linux. Chrome sandbox stays enabled.
 await using browser = await Browser.launch();
 await using context = await browser.newContext();

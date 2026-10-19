@@ -1,8 +1,9 @@
-import { expect, test } from 'bun:test';
+import { test } from 'node:test';
+import { expect } from '../fixtures/expect.ts';
 import { link, mkdtemp, readFile, readdir, rm, writeFile, stat, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { readState, writeState } from '../../src/mcp/state.js';
+import { readState, writeState } from '../../src/mcp/state.ts';
 
 test('storage state rejects traversal and hard links, and replaces regular files atomically', async () => {
   const root = await mkdtemp(join(tmpdir(), 'nodriver-state-'));

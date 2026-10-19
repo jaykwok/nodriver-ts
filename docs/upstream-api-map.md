@@ -12,7 +12,7 @@
 | `browser.Browser.tabs`                       | Browser.tabs                                                      |
 | `browser.Browser.cookies`                    | Browser.defaultContext.cookies                                    |
 | `browser.Browser.stopped`                    | Browser.closed                                                    |
-| `browser.Browser.wait`                       | 显式条件等待 / Bun.sleep                                          |
+| `browser.Browser.wait`                       | 显式条件等待 / `setTimeout`（node:timers/promises）               |
 | `browser.Browser.get`                        | Browser.newTab / Tab.goto                                         |
 | `browser.Browser.create_context`             | Browser.newContext                                                |
 | `browser.Browser.start`                      | Browser.launch                                                    |
@@ -55,7 +55,7 @@
 | `tab.Tab.select`                             | waitForSelector(css)                                              |
 | `tab.Tab.find_all`                           | queryAll({text})                                                  |
 | `tab.Tab.select_all`                         | queryAll(css)                                                     |
-| `tab.Tab.sleep`                              | Bun.sleep                                                         |
+| `tab.Tab.sleep`                              | `setTimeout`（node:timers/promises）                              |
 | `tab.Tab.xpath`                              | queryAll({xpath})                                                 |
 | `tab.Tab.query_selector_all`                 | queryAll(css)                                                     |
 | `tab.Tab.query_selector`                     | query(css)                                                        |
@@ -79,7 +79,7 @@
 | `tab.Tab.set_window_state`                   | Tab.windowBounds                                                  |
 | `tab.Tab.scroll_down`                        | Tab.mouse.wheel                                                   |
 | `tab.Tab.scroll_up`                          | Tab.mouse.wheel                                                   |
-| `tab.Tab.wait`                               | 显式条件等待 / Bun.sleep                                          |
+| `tab.Tab.wait`                               | 显式条件等待 / `setTimeout`（node:timers/promises）               |
 | `tab.Tab.wait_for`                           | waitForSelector / waitForFunction / waitForNavigation             |
 | `tab.Tab.download_file`                      | Browser 下载流程 waitForDownload；或显式 fetch（Cookie 语义不同） |
 | `tab.Tab.save_screenshot`                    | screenshot                                                        |

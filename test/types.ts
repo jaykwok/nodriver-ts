@@ -1,4 +1,4 @@
-import type { Session } from '../src/index.js';
+import type { Session } from '../src/index.ts';
 function compileTimeContract(session: Session) {
   void session.send('Browser.getVersion');
   void session.send('Page.navigate', { url: 'about:blank' });

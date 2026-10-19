@@ -2,10 +2,12 @@ import { Server } from 'proxy-chain';
 /** Authenticated HTTP(S)/SOCKS upstreams are delegated to a maintained proxy implementation. */
 export class ProxyForwarder {
   private closing?: Promise<void>;
-  private constructor(
-    readonly server: Server,
-    readonly url: string,
-  ) {}
+  readonly server: Server;
+  readonly url: string;
+  private constructor(server: Server, url: string) {
+    this.server = server;
+    this.url = url;
+  }
   static async create(upstream: string): Promise<ProxyForwarder> {
     const parsed = new URL(upstream);
     if (!['http:', 'https:', 'socks:', 'socks4:', 'socks5:', 'socks5h:'].includes(parsed.protocol))

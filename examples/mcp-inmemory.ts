@@ -1,5 +1,5 @@
 import { Client, InMemoryTransport } from '@modelcontextprotocol/client';
-import { BrowserSessionManager, createBrowserMcpServer } from '../src/mcp/server.js';
+import { BrowserSessionManager, createBrowserMcpServer } from '../src/mcp/server.ts';
 
 const manager = new BrowserSessionManager();
 const lease = manager.create('trusted-local-application');

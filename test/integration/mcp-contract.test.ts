@@ -1,4 +1,6 @@
-import { expect, test, spyOn } from 'bun:test';
+import { test } from 'node:test';
+import { expect } from '../fixtures/expect.ts';
+import { spyOn } from 'jest-mock';
 import {
   Client,
   StreamableHTTPClientTransport,
@@ -11,14 +13,14 @@ import {
   type JSONRPCMessage,
 } from '@modelcontextprotocol/server';
 import { fileURLToPath } from 'node:url';
-import { createBrowserMcpServer, MCP_PROTOCOL_VERSION } from '../../src/mcp/server.js';
-import { startBrowserMcpHttpServer } from '../../src/mcp/http.js';
+import { createBrowserMcpServer, MCP_PROTOCOL_VERSION } from '../../src/mcp/server.ts';
+import { startBrowserMcpHttpServer } from '../../src/mcp/http.ts';
 import {
   startBrowserMcpSocketServer,
   BrowserMcpSocketClientTransport,
-} from '../../src/mcp/socket.js';
-import { fixtureServer } from '../fixtures/server.js';
-import { forbiddenAutomaticCommands, recordWire } from '../fixtures/wire.js';
+} from '../../src/mcp/socket.ts';
+import { fixtureServer } from '../fixtures/server.ts';
+import { forbiddenAutomaticCommands, recordWire } from '../fixtures/wire.ts';
 
 const cli = fileURLToPath(new URL('../../src/mcp/cli.ts', import.meta.url));
 const token = 'contract-secret-'.repeat(4);
@@ -44,14 +46,14 @@ function stdio() {
 }
 async function call(client: Client, name: string, args: Record<string, unknown> = {}) {
   const reply: CallToolResult = await client.callTool({ name, arguments: args });
-  expect(reply.isError).not.toBeTrue();
+  expect(reply.isError).not.toBe(true);
   return reply.structuredContent as Record<string, any>;
 }
 let schemas: string | undefined;
 async function browserContract(client: Client, base: string) {
   const tools = (await client.listTools()).tools;
   expect(tools).toHaveLength(26);
-  expect(tools.find((t) => t.name === 'browser_evaluate')?.annotations?.readOnlyHint).toBeFalse();
+  expect(tools.find((t) => t.name === 'browser_evaluate')?.annotations?.readOnlyHint).toBe(false);
   const actual = JSON.stringify(tools);
   if (schemas) expect(actual).toBe(schemas);
   else schemas = actual;
@@ -137,15 +139,15 @@ async function browserContract(client: Client, base: string) {
         arguments: { tabId, ref: oldRef, text: 'stale' },
       })
     ).isError,
-  ).toBeTrue();
+  ).toBe(true);
   expect(
     (await client.callTool({ name: 'browser_snapshot', arguments: { tabId: 'unauthorized' } }))
       .isError,
-  ).toBeTrue();
+  ).toBe(true);
 }
 for (const mode of ['http', 'stdio'] as const) {
   test(`shared browser contract: ${mode} schema, four frames, closed shadow, input, navigation and PNG`, async () => {
-    const fixture = fixtureServer();
+    const fixture = await fixtureServer();
     const client = new Client(
       { name: 'contract', version: '1' },
       { versionNegotiation: { mode: { pin: MCP_PROTOCOL_VERSION } } },
@@ -181,7 +183,7 @@ for (const mode of ['http', 'stdio'] as const) {
     } finally {
       await client.close();
       await service?.close();
-      fixture.server.stop(true);
+      await fixture.server.stop();
       audit.restore();
     }
   });
@@ -394,7 +396,7 @@ test('modern MRTR uses per-request capabilities without consulting the legacy co
     await server.connect(b);
     await client.connect(a);
     const { tabId } = await call(client, 'browser_open');
-    expect((await call(client, 'browser_handoff', { tabId })).completed).toBeTrue();
+    expect((await call(client, 'browser_handoff', { tabId })).completed).toBe(true);
     expect(prompts).toBe(1);
     expect(cached).not.toHaveBeenCalled();
   } finally {
@@ -405,7 +407,7 @@ test('modern MRTR uses per-request capabilities without consulting the legacy co
 });
 
 test('HTTP host-provisioned diagnostics/resolver and partial input reports use the shared core', async () => {
-  const fixture = fixtureServer();
+  const fixture = await fixtureServer();
   let lookups = 0;
   const service = await startBrowserMcpHttpServer({
     tokens: { [token]: 'contract' },
@@ -446,7 +448,7 @@ test('HTTP host-provisioned diagnostics/resolver and partial input reports use t
     });
     expect(lookups).toBe(1);
     expect(alignment.alignment.after.http.status).toBe('observed');
-    expect(alignment.alignment.after.webrtc.value.complete).toBeTrue();
+    expect(alignment.alignment.after.webrtc.value.complete).toBe(true);
     expect(alignment.alignment.after.frames[0].document.timezone).toBe('Europe/Paris');
     await call(client, 'browser_input_policy', {
       tabId,
@@ -457,13 +459,13 @@ test('HTTP host-provisioned diagnostics/resolver and partial input reports use t
       name: 'browser_type',
       arguments: { tabId, ref: elements[0].ref, text: '甲乙丙', timeout: 80 },
     });
-    expect(reply.isError).toBeTrue();
+    expect(reply.isError).toBe(true);
     const partial = reply.structuredContent as any;
     expect(partial.partialInput.status).toBe('interrupted');
     expect(partial.partialInput.completedSegments).toBe(1);
   } finally {
     await client.close();
     await service.close();
-    fixture.server.stop(true);
+    await fixture.server.stop();
   }
 });

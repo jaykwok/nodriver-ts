@@ -1,34 +1,34 @@
 import type { Protocol } from 'devtools-protocol';
 import { writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
-import type { Session } from '../protocol/connection.js';
-import type { Browser } from '../browser/browser.js';
-import type { BrowserContext } from '../browser/context.js';
+import type { Session } from '../protocol/connection.ts';
+import type { Browser } from '../browser/browser.ts';
+import type { BrowserContext } from '../browser/context.ts';
 import {
   FrameManager,
   type Frame,
   type EvaluateOptions,
   type JSHandle,
   type EvaluationInput,
-} from './frames.js';
-import { NavigationWatcher, type NavigationOptions } from './navigation.js';
-import { Network } from './network.js';
-import { Keyboard, Mouse } from '../input/input.js';
-import { InputBehavior, type InputPolicy } from '../input/behavior.js';
-import { StaleElementError } from '../errors.js';
-import type { Selector, QueryOptions } from '../dom/query.js';
-import type { Element } from '../dom/element.js';
-import { EventHub, type WaitOptions } from '../utils.js';
-import type { Download } from '../browser/download.js';
-import { NodriverError } from '../errors.js';
-import type { EnvironmentReport, InspectEnvironmentOptions } from './environment.js';
+} from './frames.ts';
+import { NavigationWatcher, type NavigationOptions } from './navigation.ts';
+import { Network } from './network.ts';
+import { Keyboard, Mouse } from '../input/input.ts';
+import { InputBehavior, type InputPolicy } from '../input/behavior.ts';
+import { StaleElementError } from '../errors.ts';
+import type { Selector, QueryOptions } from '../dom/query.ts';
+import type { Element } from '../dom/element.ts';
+import { EventHub, type WaitOptions } from '../utils.ts';
+import type { Download } from '../browser/download.ts';
+import { NodriverError } from '../errors.ts';
+import type { EnvironmentReport, InspectEnvironmentOptions } from './environment.ts';
 import {
   diagnoseEnvironment,
   alignEnvironment,
   type DiagnoseEnvironmentOptions,
   type AlignEnvironmentOptions,
   type GeoIPResolver,
-} from './diagnostics.js';
+} from './diagnostics.ts';
 export interface Environment {
   viewport?: {
     width: number;
@@ -70,12 +70,15 @@ export class Tab {
   private readonly scriptWorld = randomUUID();
   private closing?: Promise<void>;
   private disposed = false;
-  constructor(
-    readonly browser: Browser,
-    readonly context: BrowserContext,
-    readonly id: string,
-    readonly session: Session,
-  ) {
+  readonly browser: Browser;
+  readonly context: BrowserContext;
+  readonly id: string;
+  readonly session: Session;
+  constructor(browser: Browser, context: BrowserContext, id: string, session: Session) {
+    this.browser = browser;
+    this.context = context;
+    this.id = id;
+    this.session = session;
     this.environment = structuredClone(browser.baseEnvironment);
     this.framesManager = new FrameManager(this, session);
     this.framesManager.changes.on(({ frame, sameDocument }) => {

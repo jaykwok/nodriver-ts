@@ -1,7 +1,9 @@
-import { expect, spyOn, test } from 'bun:test';
-import { Frame, type FrameManager } from '../../src/page/frames.js';
-import { Connection } from '../../src/protocol/connection.js';
-import { StaleElementError, TimeoutError } from '../../src/errors.js';
+import { test } from 'node:test';
+import { expect } from '../fixtures/expect.ts';
+import { spyOn } from 'jest-mock';
+import { Frame, type FrameManager } from '../../src/page/frames.ts';
+import { Connection } from '../../src/protocol/connection.ts';
+import { StaleElementError, TimeoutError } from '../../src/errors.ts';
 
 test('environment sampling rejects navigation between document and Worker without replay', async () => {
   const connection = new Connection({ send() {}, close() {} });

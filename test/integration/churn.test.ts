@@ -1,9 +1,11 @@
-import { expect, spyOn, test } from 'bun:test';
-import { Browser, StaleElementError } from '../../src/index.js';
-import { PipeTransport } from '../../src/transport/pipe.js';
-import { WebSocketTransport } from '../../src/transport/websocket.js';
-import { poll } from '../../src/utils.js';
-import { fixtureServer } from '../fixtures/server.js';
+import { test } from 'node:test';
+import { expect } from '../fixtures/expect.ts';
+import { spyOn } from 'jest-mock';
+import { Browser, StaleElementError } from '../../src/index.ts';
+import { PipeTransport } from '../../src/transport/pipe.ts';
+import { WebSocketTransport } from '../../src/transport/websocket.ts';
+import { poll } from '../../src/utils.ts';
+import { fixtureServer } from '../fixtures/server.ts';
 
 for (const transport of ['websocket', 'pipe'] as const) {
   test(`${transport}: repeated frame/session/navigation churn stays bounded`, async () => {
@@ -33,7 +35,7 @@ for (const transport of ['websocket', 'pipe'] as const) {
         forbidden.push(method);
       return send.call(this, message);
     });
-    const fixture = fixtureServer();
+    const fixture = await fixtureServer();
     const errors: unknown[] = [];
     let browser: Browser | undefined;
     let completed = 0;
@@ -172,7 +174,7 @@ for (const transport of ['websocket', 'pipe'] as const) {
       throw error;
     } finally {
       await browser?.close();
-      fixture.server.stop(true);
+      await fixture.server.stop();
       spy.mockRestore();
     }
   });

@@ -1,10 +1,12 @@
-import { abortReason } from '../utils.js';
+import { abortReason } from '../utils.ts';
 
 /** Cancellation removes queued work; running work retains the lock until settled. */
 export class OperationQueue {
   private running = false;
   private waiting: Array<() => void> = [];
-  constructor(readonly limit = 32) {
+  readonly limit: number;
+  constructor(limit = 32) {
+    this.limit = limit;
     if (!Number.isSafeInteger(limit) || limit < 1) throw new RangeError('Invalid queue limit');
   }
   get size(): number {

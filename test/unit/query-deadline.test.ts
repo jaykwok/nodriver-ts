@@ -1,9 +1,10 @@
-import { expect, test } from 'bun:test';
-import { Connection } from '../../src/protocol/connection.js';
-import { Frame, FrameManager } from '../../src/page/frames.js';
-import type { Tab } from '../../src/page/tab.js';
-import { TimeoutError } from '../../src/errors.js';
-import type { Transport } from '../../src/transport/transport.js';
+import { test } from 'node:test';
+import { expect } from '../fixtures/expect.ts';
+import { Connection } from '../../src/protocol/connection.ts';
+import { Frame, FrameManager } from '../../src/page/frames.ts';
+import type { Tab } from '../../src/page/tab.ts';
+import { TimeoutError } from '../../src/errors.ts';
+import type { Transport } from '../../src/transport/transport.ts';
 
 // A renderer that answers only the listed methods; everything else stalls until the
 // connection deadline (deliberately far beyond the caller's own budget).
