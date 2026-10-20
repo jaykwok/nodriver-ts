@@ -2,7 +2,11 @@
 
 All notable changes are recorded here. The project follows [Semantic Versioning](https://semver.org/); before 1.0, minor versions may contain breaking changes.
 
-## Unreleased
+## 0.2.0 — 2026-10-20
+
+- `Browser.launch()` accepts the same `trace` callback/boolean as `connect()`, including startup commands, duration, failures and cancellation.
+- Add `nodriver-ts/testing`: `ScriptedChrome` provides a strict loopback CDP peer with startup replies, real Browser/Tab/Session objects, typed scripts, command records, target events, crashes and disconnection.
+- Add `ProfileInUseError` for verified live controller/endpoint ownership and Windows Chrome's native `lockfile` sharing conflict, including browsers without a debugging port. Unlocked leftover files do not count as ownership; native Unix singleton inspection is not added.
 
 - Add opt-in `detached: true` WebSocket launch and `Browser.release()` for handing Chrome to a later process, including on Windows. Release returns the endpoint, drops process ownership and signal hooks, removes the controller profile lock, and retains the profile; later close/disposal only disconnects. Pipe handoff and host-dependent proxy contexts are rejected. Detached launch discards stderr and documents the pre-release crash window.
 

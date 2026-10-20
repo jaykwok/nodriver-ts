@@ -13,6 +13,8 @@
 
 ## 对象
 
+测试入口 `nodriver-ts/testing` 导出 `ScriptedChrome`、`NO_REPLY` 及相关类型，见[脚本化测试](testing.md)。它不通过主入口导出。
+
 | 对象           | 高层入口                                                                                                                                                                                                |
 | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Browser        | `launch`, `connect`, `newTab`, `newContext`, `tabs`, `contexts`, `defaultContext`, `version`, `owned`, `endpoint`, `close`, `disconnect`, `release`, `waitForTab`, `errors`, `cdp`                      |
@@ -83,10 +85,13 @@
 | `userDataDir`                     | 持久 profile，由 `acquireProfileLock()` 加锁（见下文）                                                                                         |
 | `handleSignals`                   | 默认不接管宿主信号；`true` 时为自有进程注册 SIGINT/SIGTERM 清理                                                                                |
 | `detached`                        | 默认 `false`；`true` 允许 Windows/Unix 独立启动与 `release()`，仅支持 WebSocket，丢弃 Chrome stderr                                            |
+| `trace`                           | 与 `connect` 一致：布尔值或回调，接收方法、会话、耗时与错误；`false` 覆盖 `NODRIVER_TRACE`，不记录参数或结果                                   |
 
 持久 profile 的锁文件记录 PID 与主机名，只有确认本机持有进程已退出时才回收陈旧锁；回收过程由独立的 `.nodriver.lock.reclaim` 文件互斥。若回收期间进程被强杀而留下该文件，会明确报错，确认记录的进程已退出后再手动删除。profile 中残留的 `DevToolsActivePort`（Chrome 未正常退出时留下，例如 MCP 宿主强制结束了服务进程）会被探测：记录的端口上仍有同一浏览器在服务时拒绝启动，无响应时删除该文件后继续。启动失败且 Chrome 已退出时，错误包含退出码与 stderr。
 
 `Browser.connect({ endpoint, attach })` 连接已有浏览器：`'all'`（默认）附加全部标签页，`'created'` 只附加本客户端创建的标签页及其弹出页。启动参数对已连接的浏览器无效，`close()` 只断开连接。
+
+确认同机 `.nodriver.lock` 持有进程仍存活，或 `DevToolsActivePort` 仍提供原浏览器服务时，抛出带 `profile` 路径的 `ProfileInUseError`。Windows 另探测 Chrome 原生 `lockfile` 的共享冲突（`EBUSY`），因此未开放调试端口的已运行 Chrome 也会得到该类型错误；仅存在但未锁定的残留文件不视为占用，权限错误不误报为占用。Unix 原生 `SingletonLock`/`SingletonSocket` 暂不额外解析，未开放调试端口时仍可能报告普通启动退出错误。
 
 `await using` 在正常退出和异常展开时关闭资源，`close()` 幂等。宿主被强制终止或断电时，JavaScript 无法保证清理。
 

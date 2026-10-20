@@ -16,7 +16,8 @@ import type { Readable, Writable } from 'node:stream';
 import { WebSocketTransport } from '../transport/websocket.ts';
 import { PipeTransport } from '../transport/pipe.ts';
 import type { Transport } from '../transport/transport.ts';
-import { DisconnectedError, NodriverError } from '../errors.ts';
+import type { ConnectionOptions } from '../protocol/connection.ts';
+import { DisconnectedError, NodriverError, ProfileInUseError } from '../errors.ts';
 import {
   abortReason,
   CONNECT_TIMEOUT,
@@ -26,7 +27,7 @@ import {
   timeoutValue,
   type WaitOptions,
 } from '../utils.ts';
-export interface LaunchOptions extends WaitOptions {
+export interface LaunchOptions extends WaitOptions, ConnectionOptions {
   executablePath?: string;
   /** False by default. Set true when running without a graphical desktop. */
   headless?: boolean;
@@ -51,7 +52,6 @@ export interface LaunchOptions extends WaitOptions {
     | 'default_public_interface_only'
     | 'default_public_and_private_interfaces'
     | 'disable_non_proxied_udp';
-  onError?: (error: unknown) => void;
   /** Browser-wide User-Agent (`--user-agent`). Prefer it to per-tab overrides when possible. */
   userAgent?: string;
   /** Browser UI and default Accept-Language (`--lang`), e.g. "en-US". */
@@ -247,6 +247,7 @@ export class BrowserProcess {
         lock = await acquireProfileLock(profile);
         // Never accidentally connect to a different Chrome already using this profile.
         await removeStaleActivePort(profile);
+        await checkNativeProfileLock(profile);
       }
       const extraArgs = [...(options.args ?? [])];
       if (options.automationControlled !== true) {
@@ -488,10 +489,34 @@ async function removeStaleActivePort(profile: string): Promise<void> {
     () => false,
   );
   if (live)
-    throw new NodriverError(
+    throw new ProfileInUseError(
+      profile,
       `Chrome is serving this profile on port ${port}; use connect(), or close that Chrome first`,
     );
   await rm(path, { force: true });
+}
+
+/**
+ * Windows Chrome holds lockfile with exclusive sharing. Node reports EBUSY for the sharing
+ * violation. Mere existence (including an unlocked file left after a crash) is not ownership.
+ * Do not classify EACCES/EPERM as an owner: they can be filesystem permissions.
+ * Unix SingletonLock/SingletonSocket need separate platform-specific validation.
+ */
+async function checkNativeProfileLock(profile: string): Promise<void> {
+  if (process.platform !== 'win32') return;
+  let handle: FileHandle;
+  try {
+    handle = await open(join(profile, 'lockfile'), 'r+');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+    if ((error as NodeJS.ErrnoException).code === 'EBUSY')
+      throw new ProfileInUseError(
+        profile,
+        'Chrome holds this profile lock; connect to its debugging endpoint, or close that Chrome first',
+      );
+    throw error;
+  }
+  await handle.close();
 }
 
 const LOCK = '.nodriver.lock';
@@ -548,10 +573,12 @@ export async function acquireProfileLock(profile: string): Promise<FileHandle> {
     }
     const [pid, host] = contents.split('\n');
     const owner = Number(pid);
-    if (!Number.isSafeInteger(owner) || owner <= 0 || host !== hostname() || alive(owner))
-      throw new NodriverError(
-        `Profile is locked by ${owner > 0 ? `PID ${owner} on ${host || 'an unknown host'}` : 'another process'}; remove ${path} only after confirming it has exited`,
-      );
+    if (!Number.isSafeInteger(owner) || owner <= 0 || host !== hostname() || alive(owner)) {
+      const message = `Profile is locked by ${owner > 0 ? `PID ${owner} on ${host || 'an unknown host'}` : 'another process'}; remove ${path} only after confirming it has exited`;
+      if (host === hostname() && Number.isSafeInteger(owner) && owner > 0 && alive(owner))
+        throw new ProfileInUseError(profile, message);
+      throw new NodriverError(message);
+    }
     await rm(path, { force: true });
     return await create();
   } finally {

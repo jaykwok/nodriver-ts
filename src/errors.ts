@@ -7,6 +7,15 @@ export class TimeoutError extends NodriverError {
 export class DisconnectedError extends NodriverError {
   override name = 'DisconnectedError';
 }
+/** A profile has a live controller/browser owner; connect to it or close it before launching. */
+export class ProfileInUseError extends NodriverError {
+  override name = 'ProfileInUseError';
+  readonly profile: string;
+  constructor(profile: string, message: string) {
+    super(message);
+    this.profile = profile;
+  }
+}
 export class StaleElementError extends NodriverError {
   override name = 'StaleElementError';
 }

@@ -24,7 +24,13 @@ The verified platforms and versions are listed in [docs/support.md](docs/support
 
 ## Install
 
-The package is not published to npm yet. To build from source:
+Install from npm:
+
+```sh
+npm install nodriver-ts
+```
+
+Or build from source:
 
 ```sh
 git clone https://github.com/jaykwok/nodriver-ts.git
@@ -56,7 +62,8 @@ await tab.screenshot({ path: 'page.png', fullPage: true });
 - **Network.** `tab.network.route()` intercepts and fulfils requests, `authenticate()` answers auth challenges, and `responses` subscribes to responses. `Network.enable` is only sent when you subscribe to responses or set headers/cache/offline.
 - **Input policy.** `tab.setInputPolicy({ mode: 'human', seed })` switches on reproducible trajectories, key-event typing for US-layout characters, and wheel scrolling. Other text, such as CJK or emoji, goes through `insertText`.
 - **Existing browsers.** `Browser.connect({ endpoint, attach: 'created' })` attaches only to tabs that this client opens or that they open (the default, `'all'`, attaches to every tab). `close()` only disconnects.
-- **CDP tracing.** Set `NODRIVER_TRACE=1` to log one line per CDP command (method, session, duration, error code) to stderr; parameters and results are never logged.
+- **CDP tracing.** Pass `trace: (entry) => ...` to `launch` or `connect` to collect method, session, duration, and error code. `trace: true` or `NODRIVER_TRACE=1` logs to stderr; parameters and results are never logged.
+- **Scripted tests.** `nodriver-ts/testing` provides a fake CDP peer that builds real Browser/Tab/Session objects, scripts replies and events, and records commands with parameters. See [testing](docs/testing.md).
 
 See [docs/api.md](docs/api.md) and the [examples](examples/).
 

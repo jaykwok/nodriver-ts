@@ -78,6 +78,7 @@ export class Browser {
     const connection = new Connection(launched.transport, {
       timeout: options.timeout,
       onError: options.onError,
+      trace: options.trace,
     });
     try {
       const version = await connection.root.sendWith('Browser.getVersion', {
