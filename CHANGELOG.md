@@ -4,6 +4,8 @@ All notable changes are recorded here. The project follows [Semantic Versioning]
 
 ## Unreleased
 
+- Add opt-in `detached: true` WebSocket launch and `Browser.release()` for handing Chrome to a later process, including on Windows. Release returns the endpoint, drops process ownership and signal hooks, removes the controller profile lock, and retains the profile; later close/disposal only disconnects. Pipe handoff and host-dependent proxy contexts are rejected. Detached launch discards stderr and documents the pre-release crash window.
+
 - Without a `timeout`, `Browser.launch()` and `Browser.connect()` wait up to 30 seconds for Chrome to start or answer and complete the CDP handshake (was 15 s for launch, 10 s for connect and the WebSocket handshake). A first start on a fresh CI runner can exceed 15 seconds. The MCP server uses the same default for launching and for `--endpoint`, and its per-command deadline rises from 10 to 30 seconds; operations stay bounded by the operation deadline.
 
 ## 0.1.0 — 2026-10-20

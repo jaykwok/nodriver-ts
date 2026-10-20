@@ -35,6 +35,12 @@ export interface LaunchOptions extends WaitOptions {
   userDataDir?: string;
   args?: string[];
   transport?: 'websocket' | 'pipe';
+  /**
+   * Allow release() to leave Chrome running independently, including on Windows.
+   * Requires WebSocket; stderr is discarded so no parent-owned pipe survives handoff.
+   * A host crash before release can leave Chrome running. Defaults to false.
+   */
+  detached?: boolean;
   env?: NodeJS.ProcessEnv;
   handleSignals?: boolean;
   proxyServer?: string;
@@ -146,6 +152,8 @@ export async function findExecutable(explicit?: string): Promise<string> {
 }
 export class BrowserProcess {
   private closing?: Promise<void>;
+  private releasing?: Promise<void>;
+  private handedOff = false;
   private exited = false;
   private exitCode: number | null = null;
   private stderr = '';
@@ -153,11 +161,19 @@ export class BrowserProcess {
   readonly child: ChildProcess;
   readonly profile: string;
   readonly temporary: boolean;
+  readonly detached: boolean;
   private lock?: FileHandle;
-  private constructor(child: ChildProcess, profile: string, temporary: boolean, lock?: FileHandle) {
+  private constructor(
+    child: ChildProcess,
+    profile: string,
+    temporary: boolean,
+    detached: boolean,
+    lock?: FileHandle,
+  ) {
     this.child = child;
     this.profile = profile;
     this.temporary = temporary;
+    this.detached = detached;
     this.lock = lock;
     child.stderr?.on('data', (b: Buffer) => {
       this.stderr = (this.stderr + b.toString()).slice(-16_384);
@@ -183,6 +199,10 @@ export class BrowserProcess {
   ): Promise<{ process: BrowserProcess; transport: Transport; endpoint?: string }> {
     timeoutValue(options.timeout ?? CONNECT_TIMEOUT);
     if (options.signal?.aborted) throw abortReason(options.signal);
+    if (options.detached && options.transport === 'pipe')
+      throw new TypeError(
+        'detached requires WebSocket transport; Chrome exits when CDP pipes close',
+      );
     const executable = await findExecutable(options.executablePath);
     if (
       options.webRtcIPHandlingPolicy &&
@@ -274,12 +294,20 @@ export class BrowserProcess {
       );
       args.push(...extraArgs, 'about:blank');
       const child = spawn(executable, args, {
-        stdio: pipe ? ['ignore', 'ignore', 'pipe', 'pipe', 'pipe'] : ['ignore', 'ignore', 'pipe'],
+        stdio: pipe
+          ? ['ignore', 'ignore', 'pipe', 'pipe', 'pipe']
+          : ['ignore', 'ignore', options.detached ? 'ignore' : 'pipe'],
         env: options.env ? { ...process.env, ...options.env } : process.env,
         windowsHide: true,
-        detached: process.platform !== 'win32',
+        detached: options.detached === true || process.platform !== 'win32',
       });
-      processHandle = new BrowserProcess(child, profile, temporary, lock);
+      processHandle = new BrowserProcess(
+        child,
+        profile,
+        temporary,
+        options.detached === true,
+        lock,
+      );
       if (options.handleSignals)
         for (const signal of ['SIGINT', 'SIGTERM'] as const) {
           const listener = () => {
@@ -334,7 +362,30 @@ export class BrowserProcess {
     return this.exited;
   }
   close(): Promise<void> {
+    if (this.releasing) return this.releasing;
     return (this.closing ??= this.closeOwned());
+  }
+  get released(): boolean {
+    return this.handedOff;
+  }
+  /** Relinquish process/profile ownership without terminating Chrome or deleting its profile. */
+  release(): Promise<void> {
+    if (this.releasing) return this.releasing;
+    if (this.closing) return Promise.reject(new NodriverError('Chrome is already closing'));
+    if (!this.detached)
+      return Promise.reject(new NodriverError('release() requires launch({ detached: true })'));
+    // Commit before any await: signal cleanup and close() must never kill a handed-off child.
+    this.handedOff = true;
+    for (const [signal, listener] of this.signalListeners) process.off(signal, listener);
+    this.signalListeners = [];
+    this.child.unref();
+    return (this.releasing = (async () => {
+      if (this.lock) {
+        await this.lock.close();
+        this.lock = undefined;
+        await rm(join(this.profile, '.nodriver.lock'), { force: true });
+      }
+    })());
   }
   private signalGroup(signal: NodeJS.Signals): void {
     try {

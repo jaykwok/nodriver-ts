@@ -60,6 +60,13 @@ await tab.screenshot({ path: 'page.png', fullPage: true });
 
 See [docs/api.md](docs/api.md) and the [examples](examples/).
 
+To keep Chrome open after the Node host exits, launch with `detached: true` and WebSocket,
+then persist the endpoint returned by `await browser.release()`. Later, use
+`Browser.connect({ endpoint })`. Release removes the controller's profile lock, retains the
+profile, and makes subsequent `close()` / async disposal disconnect only. Pipe handoff is
+rejected. Detached launch discards Chrome stderr; a host crash before release can leave Chrome
+running. See [handoff and CDP event usage](docs/browser-handoff.md) for lifecycle limits.
+
 ## MCP server
 
 Point a stdio MCP client at the CLI:

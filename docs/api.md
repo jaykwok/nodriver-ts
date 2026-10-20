@@ -15,7 +15,7 @@
 
 | 对象           | 高层入口                                                                                                                                                                                                |
 | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Browser        | `launch`, `connect`, `newTab`, `newContext`, `tabs`, `contexts`, `defaultContext`, `version`, `owned`, `endpoint`, `close`, `disconnect`, `waitForTab`, `errors`, `cdp`                                 |
+| Browser        | `launch`, `connect`, `newTab`, `newContext`, `tabs`, `contexts`, `defaultContext`, `version`, `owned`, `endpoint`, `close`, `disconnect`, `release`, `waitForTab`, `errors`, `cdp`                      |
 | BrowserContext | `newTab`, `tabs`, `cookies`, `setCookies`, `clearCookies`, `saveCookies`, `loadCookies`, `storageState`, `restoreStorage`, `grantPermissions`, `resetPermissions`, `setDownloadDirectory`, `close`      |
 | Tab            | `goto`, `reload`, `go(delta)`, `waitForNavigation`, `stopLoading`, `bringToFront`, `activate`, `windowBounds`, `mainFrame`, `frames`, `waitForPopup`, `handleDialog`, `setInputPolicy`                  |
 | Tab 文件/环境  | `setContent`, `screenshot`, `pdf`, `resources`, `resourceContent`, `setEnvironment`, `addInitScript`, `waitForDownload`, `inspectEnvironment`, `diagnoseEnvironment`, `alignEnvironment`                |
@@ -82,12 +82,15 @@
 | `userAgent`、`lang`、`windowSize` | 启动时设置 UA、BCP 47 语言和窗口尺寸                                                                                                           |
 | `userDataDir`                     | 持久 profile，由 `acquireProfileLock()` 加锁（见下文）                                                                                         |
 | `handleSignals`                   | 默认不接管宿主信号；`true` 时为自有进程注册 SIGINT/SIGTERM 清理                                                                                |
+| `detached`                        | 默认 `false`；`true` 允许 Windows/Unix 独立启动与 `release()`，仅支持 WebSocket，丢弃 Chrome stderr                                            |
 
 持久 profile 的锁文件记录 PID 与主机名，只有确认本机持有进程已退出时才回收陈旧锁；回收过程由独立的 `.nodriver.lock.reclaim` 文件互斥。若回收期间进程被强杀而留下该文件，会明确报错，确认记录的进程已退出后再手动删除。profile 中残留的 `DevToolsActivePort`（Chrome 未正常退出时留下，例如 MCP 宿主强制结束了服务进程）会被探测：记录的端口上仍有同一浏览器在服务时拒绝启动，无响应时删除该文件后继续。启动失败且 Chrome 已退出时，错误包含退出码与 stderr。
 
 `Browser.connect({ endpoint, attach })` 连接已有浏览器：`'all'`（默认）附加全部标签页，`'created'` 只附加本客户端创建的标签页及其弹出页。启动参数对已连接的浏览器无效，`close()` 只断开连接。
 
 `await using` 在正常退出和异常展开时关闭资源，`close()` 幂等。宿主被强制终止或断电时，JavaScript 无法保证清理。
+
+`await browser.release()` 返回 WebSocket endpoint 并放弃进程所有权，之后 `owned` 为 `false`，`close()` 与异步析构只断开连接。自有浏览器必须以 `detached: true` 启动；pipe 会明确拒绝交接且不改变连接。交接保留 profile 与 `DevToolsActivePort`，移除记录宿主 PID 的 `.nodriver.lock`。`disconnect()` 不放弃所有权，pipe Chrome 在管道断开时会退出。独立启动的 stderr 不可用，交接前宿主崩溃可能遗留 Chrome。完整示例、清理责任和事件接口见[浏览器交接与事件](browser-handoff.md)。
 
 ## 输入与元素操作
 

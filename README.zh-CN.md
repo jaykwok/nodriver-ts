@@ -32,6 +32,8 @@ console.log(await (await tab.waitForSelector('h1')).text());
 
 `await using` 在正常退出和异常展开时关闭资源。也可使用 `try/finally` 调用幂等 `close()`。库默认不接管宿主信号；`handleSignals: true` 可启用拥有进程的 SIGINT/SIGTERM 清理。强制终止控制器或机器断电无法由 JavaScript 保证清理。
 
+需要宿主退出后保留 Chrome 时，使用 `Browser.launch({ detached: true, transport: 'websocket' })`，保存 `await browser.release()` 返回的 endpoint，下次用 `Browser.connect({ endpoint })` 重连。交接后 `close()` 和异步析构只断开连接，profile 保留，宿主锁移除；pipe 交接明确报错。独立启动会丢弃 Chrome stderr，宿主在交接前崩溃可能留下 Chrome。详见[浏览器交接与事件](docs/browser-handoff.md)。
+
 启动选项还包括 `lang`、`windowSize`、`userAgent`、`preset: 'agent'`（关闭首次运行/搜索引擎选择界面与后台节流）。持久 `userDataDir` 使用带 PID/主机名的锁文件，仅在确认本机持有进程已退出时回收陈旧锁；Chrome 未正常退出留下的 `DevToolsActivePort` 在其端口无响应时自动清理。
 
 ## 页面、元素与 frame

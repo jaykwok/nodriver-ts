@@ -46,6 +46,7 @@ export class Browser {
   private attaching = new Map<string, Promise<Tab>>();
   private downloads = new Map<string, Download>();
   private closing?: Promise<void>;
+  private releasing?: Promise<string>;
   private disconnected = false;
   readonly connection: Connection;
   readonly process?: BrowserProcess;
@@ -195,7 +196,7 @@ export class Browser {
     return this.disconnected || this.connection.closed;
   }
   get owned(): boolean {
-    return !!this.process;
+    return !!this.process && !this.process.released;
   }
   reportError(error: unknown): void {
     try {
@@ -391,22 +392,55 @@ export class Browser {
       options.signal?.addEventListener('abort', abort, { once: true });
     });
   }
+  /** Disconnect CDP without relinquishing process ownership. Pipe Chrome exits on disconnect. */
   async disconnect(): Promise<void> {
     await this.connection.close();
+  }
+  /**
+   * Leave Chrome running and return its WebSocket endpoint for Browser.connect().
+   * Launched browsers require detached: true. Profiles are retained, including temporary ones.
+   * Idempotent; subsequent close()/async disposal only disconnects.
+   */
+  release(): Promise<string> {
+    if (this.releasing) return this.releasing;
+    if (this.closing) return Promise.reject(new NodriverError('Browser is already closing'));
+    if (!this.endpoint)
+      return Promise.reject(
+        new NodriverError(
+          'release() requires WebSocket transport; Chrome exits when CDP pipes close',
+        ),
+      );
+    if (this.process && !this.process.detached)
+      return Promise.reject(new NodriverError('release() requires launch({ detached: true })'));
+    if (this.contexts.some((context) => context.proxy))
+      return Promise.reject(
+        new NodriverError('release() cannot hand off an in-process proxy; close its context first'),
+      );
+    return (this.releasing = this.releaseInternal());
+  }
+  private async releaseInternal(): Promise<string> {
+    try {
+      await this.process?.release();
+    } finally {
+      await this.disconnect();
+      this.downloads.clear();
+    }
+    return this.endpoint!;
   }
   close(): Promise<void> {
     return (this.closing ??= this.closeInternal());
   }
   private async closeInternal(): Promise<void> {
+    await this.releasing?.catch(() => {});
     try {
-      if (this.process && !this.closed) {
+      if (this.owned && !this.closed) {
         await this.cdp.sendWith('Browser.close', { timeout: 3000 }).catch(() => {});
-        await this.process.waitForExit(3000);
+        await this.process!.waitForExit(3000);
       }
     } finally {
       await this.connection.close();
       try {
-        await this.process?.close();
+        if (this.owned) await this.process!.close();
       } finally {
         for (const context of this.contexts) await context.proxy?.close();
         this.downloads.clear();
