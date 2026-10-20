@@ -110,7 +110,7 @@ BrowserContext 之间的 Cookie 与存储相互隔离；这不等于独立的操
 
 `storageState(path?)` 保存 Cookie，以及该上下文中任一 frame 访问过的 HTTP(S) origin 的第一方 localStorage，包括 iframe 和已关闭标签页用过的 origin；空存储不导出。跨站 iframe 在其他顶层站点下的分区 localStorage、sessionStorage 和 IndexedDB 不在快照内。仍打开的主页面原地读取，其余 origin 在一个临时标签页中读取。
 
-`restoreStorage(state)` 先设置 Cookie，再在临时标签页中替换列出的各 origin 的 localStorage。临时标签页拦截文档请求、返回空白页并绕过 Service Worker，因此不访问站点、不跟随重定向、不运行站点脚本。
+`restoreStorage(state)` 先设置 Cookie，再替换列出的各 origin 的 localStorage：该 origin 仍打开的主页面原地写入，返回时即可读到；其余 origin 在一个临时标签页中写入。临时标签页拦截文档请求、返回空白页并绕过 Service Worker，因此不访问站点、不跟随重定向、不运行站点脚本。同一 origin 的其他已打开文档与浏览器中跨标签页写入一样，异步收到变更。
 
 `Frame.storage(kind = 'local', origin?)` 与 `Frame.setStorage(values, kind = 'local', clear = false, origin?)` 可指定预期 origin：读取、清空与写入和 `location.origin` 检查在同一段脚本中执行，不匹配时抛出 `EvaluationError`，页面存储保持不变。
 

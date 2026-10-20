@@ -168,7 +168,11 @@ export class BrowserContext {
     if (path) await writeFile(path, JSON.stringify(state, null, 2));
     return state;
   }
-  /** Sets the cookies, then replaces the localStorage of each listed origin. */
+  /**
+   * Sets the cookies, then replaces the localStorage of each listed origin. An open top-level
+   * document of the origin sees the values on return; other open documents of that origin receive
+   * the change asynchronously, as with a write from another tab.
+   */
   async restoreStorage(state: StorageState): Promise<void> {
     const entries = new Map<string, Record<string, string>>();
     for (const entry of state.origins) {
@@ -177,6 +181,19 @@ export class BrowserContext {
       entries.set(origin, entry.localStorage);
     }
     await this.setCookies(state.cookies);
+    // Write through a live top-level document of the origin where one exists: a write from the
+    // temporary tab reaches other renderers asynchronously, after this method has returned.
+    for (const tab of this.tabs) {
+      const origin = httpOrigin(tab.url);
+      const values = origin && entries.get(origin);
+      if (!origin || !values || tab.crashed) continue;
+      try {
+        await tab.mainFrame.setStorage(values, 'local', true, origin);
+        entries.delete(origin);
+      } catch {
+        // Navigated, sandboxed or closed meanwhile: write it from the temporary tab instead.
+      }
+    }
     await this.atOrigins(entries.keys(), (frame, origin) =>
       frame.setStorage(entries.get(origin)!, 'local', true, origin),
     );

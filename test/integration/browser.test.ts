@@ -191,6 +191,8 @@ describe('browser and page', () => {
       expect(await q.mainFrame.storage()).toEqual({});
       const state = await a.storageState();
       await b.restoreStorage(state);
+      // The open document of the origin is written in place, so no reload is needed to see it.
+      expect(await q.mainFrame.storage()).toEqual({ key: 'A' });
       await q.reload();
       expect(await q.mainFrame.storage()).toEqual({ key: 'A' });
       expect((await b.cookies())[0]!.value).toBe('A');
