@@ -35,6 +35,8 @@ chrome.assertDone();
 Use `try/finally` and `close()` in runtimes without `await using` syntax. Dispose the Browser
 before the fixture. `chrome.close()` also terminates any client still connected and is idempotent.
 
+For raw clients use `chrome.connect({ attach: 'none' })` and `browser.attachSession(targetId)`. `chrome.detachSession(sessionId)` ends one modeled attachment; `attachReplyDelayMs` delays attach responses after attachment creation. See [raw-session tests and lifetimes](raw-sessions.md).
+
 ## Replies and command records
 
 - `replyOnce(method, resultOrHandler)` queues one result or handler per method. Queued replies

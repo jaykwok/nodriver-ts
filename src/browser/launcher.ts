@@ -17,6 +17,7 @@ import { WebSocketTransport } from '../transport/websocket.ts';
 import { PipeTransport } from '../transport/pipe.ts';
 import type { Transport } from '../transport/transport.ts';
 import type { ConnectionOptions } from '../protocol/connection.ts';
+import type { AttachPolicy } from './browser.ts';
 import { DisconnectedError, NodriverError, ProfileInUseError } from '../errors.ts';
 import {
   abortReason,
@@ -36,6 +37,8 @@ export interface LaunchOptions extends WaitOptions, ConnectionOptions {
   userDataDir?: string;
   args?: string[];
   transport?: 'websocket' | 'pipe';
+  /** Defaults to all. none discovers targets without constructing Tab/Frame models. */
+  attach?: AttachPolicy;
   /**
    * Allow release() to leave Chrome running independently, including on Windows.
    * Requires WebSocket; stderr is discarded so no parent-owned pipe survives handoff.
@@ -441,6 +444,7 @@ export class BrowserProcess {
         const killer = spawn('taskkill', ['/pid', String(this.pid), '/t', '/f'], {
           windowsHide: true,
           stdio: 'ignore',
+          timeout: 5000,
         });
         await new Promise<void>((resolve, reject) => {
           killer.once('error', reject);

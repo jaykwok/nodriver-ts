@@ -38,6 +38,8 @@ jobs:
           echo "::error::Browser regression has not passed on $GITHUB_SHA"
           exit 1
       - run: npm ci
+      - name: Disable piped core dumps for crash acceptance
+        run: sudo sysctl -w kernel.core_pattern=core
       # The browser suites ran in the regression workflow; repeat the fast checks here and test
       # the built package that is about to be published.
       - run: npm test

@@ -179,6 +179,7 @@ const sources: Record<string, string> = {
   Keyboard: 'src/input/input.ts',
   Connection: 'src/protocol/connection.ts',
   Session: 'src/protocol/connection.ts',
+  TargetSession: 'src/protocol/connection.ts',
   WebSocketTransport: 'src/transport/websocket.ts',
   PipeTransport: 'src/transport/pipe.ts',
   PipeDecoder: 'src/transport/pipe.ts',

@@ -4,6 +4,8 @@
 
 除只读属性和事件订阅外，所有操作都是异步的。公开类型从根入口 `nodriver-ts` 导出，构建产物附带 `.d.ts`；CDP 类型来自随包安装的 `devtools-protocol`。
 
+自行管理 CDP 的应用可用 `attach: 'none'` 和 `browser.attachSession(targetId, options)`。`TargetSession` 继承 `Session`，新增 `targetId`、`ended`、`endReason`、`detach()`。生命周期、取消及 `observe.onSend` / `onSettle` 见 [raw-session 契约](raw-sessions.md)。
+
 ## 入口
 
 | 入口                     | 导出                                                                                                                          |

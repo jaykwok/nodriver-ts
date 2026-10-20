@@ -29,6 +29,8 @@ chrome.assertDone();
 
 不支持 `await using` 语法的运行时请使用 `try/finally` 与 `close()`。先释放 Browser，再释放 fixture。`chrome.close()` 也会终止仍连着的客户端，并且是幂等的。
 
+raw 客户端使用 `chrome.connect({ attach: 'none' })` 和 `browser.attachSession(targetId)`。`chrome.detachSession(sessionId)` 结束一个模拟 attachment；`attachReplyDelayMs` 在 attachment 建立后延迟回应。详见 [raw-session 测试与生命周期](raw-sessions.md)。
+
 ## 回复与命令记录
 
 - `replyOnce(method, resultOrHandler)` 为某个方法排队一个结果或处理函数。排队的回复按到达顺序跨所有 session 消费，优先于持久处理函数和内置默认值。

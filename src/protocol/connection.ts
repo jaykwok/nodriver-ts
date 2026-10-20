@@ -19,6 +19,23 @@ export interface TraceEntry {
   durationMs: number;
   error?: string;
 }
+export type EndReason =
+  'detach-requested' | 'detached' | 'target-destroyed' | 'target-crashed' | 'disconnected';
+export class SessionEndedError extends DisconnectedError {
+  override name = 'SessionEndedError';
+  readonly reason: EndReason;
+  readonly targetId: string;
+  constructor(reason: EndReason, targetId: string) {
+    super(`Target session ended: ${reason} (${targetId})`);
+    this.reason = reason;
+    this.targetId = targetId;
+  }
+}
+export interface ConnectionObserver {
+  /** Synchronous transport-send observation. at is performance.now(), not wall-clock time. */
+  onSend?(event: { seq: number; method: string; sessionId?: string; at: number }): void;
+  onSettle?(event: { seq: number; durationMs: number; error?: string }): void;
+}
 export interface ConnectionOptions {
   timeout?: number;
   onError?: (error: unknown) => void;
@@ -27,6 +44,7 @@ export interface ConnectionOptions {
    * Defaults to on when the NODRIVER_TRACE environment variable is "1" or "true".
    */
   trace?: boolean | ((entry: TraceEntry) => void);
+  observe?: ConnectionObserver;
 }
 function tracer(option: ConnectionOptions['trace']): ((entry: TraceEntry) => void) | undefined {
   const enabled = option ?? /^(1|true)$/i.test(process.env.NODRIVER_TRACE ?? '');
@@ -47,12 +65,22 @@ interface Pending {
   resolve: (v: unknown) => void;
   reject: (e: Error) => void;
   cleanup: () => void;
+  hooks?: RequestHooks;
 }
+interface RequestHooks {
+  targetId: string;
+  accept: (result: unknown) => void;
+}
+const ATTACH_CLEANUP_TIMEOUT = 5000;
 export class Connection {
   private nextId = 0;
   private pending = new Map<number, Pending>();
   private sessions = new Map<string, Session>();
   private sessionParents = new Map<string, string>();
+  private abandoned = new Map<number, ReturnType<typeof setTimeout>>();
+  private attachingIds = new Map<string, EndReason | undefined>();
+  private sendQueue: Array<() => void> = [];
+  private sending = false;
   /** Per-session listeners in registration order, so dispatch cost tracks one session only. */
   private routes = new Map<string, Set<Route>>();
   private readonly trace?: (entry: TraceEntry) => void;
@@ -130,36 +158,100 @@ export class Connection {
     }
     return session;
   }
+  /** @internal Used by Browser.attachSession; no page initialization or deduplication. */
+  attachSession(targetId: string, options: WaitOptions = {}): Promise<TargetSession> {
+    let session: TargetSession;
+    return this.requestCommand(
+      undefined,
+      'Target.attachToTarget',
+      [{ targetId, flatten: true }],
+      options,
+      {
+        targetId,
+        accept: (result) => {
+          const id = (result as { sessionId?: string }).sessionId;
+          if (!id) throw new DisconnectedError('Attach response has no sessionId');
+          const ended = this.attachingIds.get(id);
+          this.attachingIds.delete(id);
+          if (ended) throw new SessionEndedError(ended, targetId);
+          session = new TargetSession(this, id, targetId);
+          this.sessions.set(id, session);
+        },
+      },
+    ).then(() => session);
+  }
+  /** @internal Cleanup has its own deadline and never uses the cancelled operation signal. */
+  async cleanupAttachment(id: string): Promise<void> {
+    if (this.closed) return;
+    try {
+      await this.root.sendWith(
+        'Target.detachFromTarget',
+        { timeout: ATTACH_CLEANUP_TIMEOUT },
+        { sessionId: id },
+      );
+    } catch (error) {
+      // A missing attachment is already clean. Other failures cannot establish ownership.
+      if (
+        error instanceof ProtocolError &&
+        /session.*(not found|not exist)|no session/i.test(error.message)
+      )
+        return;
+      if (!this.closed) {
+        this.reportError(error);
+        await this.close();
+      }
+    }
+  }
   request<M extends Command>(
     sessionId: string | undefined,
     method: M,
     params: Params<M>,
     options: WaitOptions = {},
   ): Promise<Result<M>> {
+    return this.requestCommand(sessionId, method, params, options);
+  }
+  private requestCommand<M extends Command>(
+    sessionId: string | undefined,
+    method: M,
+    params: Params<M>,
+    options: WaitOptions,
+    hooks?: RequestHooks,
+  ): Promise<Result<M>> {
     if (this.failure) return Promise.reject(this.failure);
     if (options.signal?.aborted) return Promise.reject(abortReason(options.signal));
     const timeout = timeoutValue(options.timeout ?? this.timeout);
     const id = ++this.nextId;
     const trace = this.trace;
-    const started = trace ? performance.now() : 0;
-    const record = trace
-      ? (error?: Error) => {
-          try {
-            trace({
-              method,
-              sessionId,
-              durationMs: performance.now() - started,
-              error: error && (error instanceof ProtocolError ? `${error.code}` : error.name),
-            });
-          } catch {}
-        }
-      : undefined;
+    const observer = this.options.observe;
+    let started = performance.now();
+    let sentOnWire = false;
+    const record =
+      trace || observer?.onSettle
+        ? (error?: Error) => {
+            const durationMs = performance.now() - started;
+            const code = error && (error instanceof ProtocolError ? `${error.code}` : error.name);
+            try {
+              trace?.({
+                method,
+                sessionId,
+                durationMs,
+                error: code,
+              });
+            } catch {}
+            if (sentOnWire) {
+              try {
+                observer?.onSettle?.({ seq: id, durationMs, error: code });
+              } catch {}
+            }
+          }
+        : undefined;
     const pending = new Promise<Result<M>>((resolve, reject) => {
       const cancel = (error: Error) => {
         const p = this.pending.get(id);
         if (p) {
           this.pending.delete(id);
           p.cleanup();
+          if (hooks && sentOnWire) this.abandonAttach(id);
           reject(error);
         }
       };
@@ -178,20 +270,53 @@ export class Connection {
         resolve: resolve as (v: unknown) => void,
         reject,
         cleanup,
+        hooks,
       });
       options.signal?.addEventListener('abort', abort, { once: true });
-      try {
-        const sent = this.transport.send(
-          JSON.stringify({ id, method, params: params[0], sessionId }),
-        );
-        if (sent)
-          void sent.catch((e) => cancel(e instanceof Error ? e : new DisconnectedError(String(e))));
-      } catch (e) {
-        cancel(e as Error);
+      // Queue reentrant sends made by observers so seq also describes transport invocation order.
+      this.sendQueue.push(() => {
+        if (!this.pending.has(id) || this.closed) return;
+        try {
+          const message = JSON.stringify({ id, method, params: params[0], sessionId });
+          started = performance.now();
+          sentOnWire = true;
+          try {
+            observer?.onSend?.({ seq: id, method, sessionId, at: started });
+          } catch {}
+          // The observer describes this send attempt. Its cancellation cannot unsend it.
+          const sent = this.transport.send(message);
+          if (sent)
+            void sent.catch((e) =>
+              cancel(e instanceof Error ? e : new DisconnectedError(String(e))),
+            );
+        } catch (e) {
+          cancel(e as Error);
+        }
+      });
+      if (!this.sending) {
+        this.sending = true;
+        try {
+          while (this.sendQueue.length) this.sendQueue.shift()!();
+        } finally {
+          this.sending = false;
+        }
       }
     });
     if (record) void pending.then(() => record(), record);
     return pending;
+  }
+  private abandonAttach(id: number): void {
+    if (this.closed || this.abandoned.has(id)) return;
+    const timer = setTimeout(() => {
+      this.abandoned.delete(id);
+      this.reportError(new TimeoutError('Cancelled attach cleanup timed out; disconnecting CDP'));
+      void this.close();
+    }, ATTACH_CLEANUP_TIMEOUT);
+    this.abandoned.set(id, timer);
+  }
+  private pruneAttachingIds(): void {
+    if (!this.abandoned.size && ![...this.pending.values()].some((p) => p.hooks))
+      this.attachingIds.clear();
   }
   private receive(message: string): void {
     if (this.failure) return;
@@ -206,7 +331,20 @@ export class Connection {
       };
       if (m.id !== undefined) {
         const p = this.pending.get(m.id);
-        if (!p) return;
+        if (!p) {
+          const timer = this.abandoned.get(m.id);
+          if (timer) {
+            clearTimeout(timer);
+            this.abandoned.delete(m.id);
+            const id = (m.result as { sessionId?: string } | undefined)?.sessionId;
+            if (id) {
+              this.attachingIds.delete(id);
+              void this.cleanupAttachment(id);
+            } else if (!m.error) void this.close();
+            this.pruneAttachingIds();
+          }
+          return;
+        }
         // Chrome answers a command for an already-detached session at browser level (no
         // sessionId, "Session with given id not found"); fail that command, not the connection.
         const detached = p.sessionId !== undefined && m.sessionId === undefined && !!m.error;
@@ -221,15 +359,52 @@ export class Connection {
           p.reject(new DisconnectedError(`Session detached: ${p.sessionId} (${m.error!.message})`));
         else if (m.error)
           p.reject(new ProtocolError(p.method, m.error.code, m.error.message, m.error.data));
-        else p.resolve(m.result ?? {});
+        else {
+          try {
+            p.hooks?.accept(m.result ?? {});
+            p.resolve(m.result ?? {});
+          } catch (error) {
+            p.reject(error as Error);
+            if (!(error instanceof SessionEndedError)) void this.close();
+          }
+        }
+        this.pruneAttachingIds();
       } else if (typeof m.method === 'string') {
+        if (m.method === 'Target.attachedToTarget' && !m.sessionId) {
+          const event = m.params as { sessionId: string; targetInfo: { targetId: string } };
+          if (
+            this.abandoned.size ||
+            [...this.pending.values()].some((p) => p.hooks?.targetId === event.targetInfo.targetId)
+          )
+            this.attachingIds.set(event.sessionId, undefined);
+        }
         if (m.method === 'Target.attachedToTarget' && m.sessionId) {
           if (!this.sessions.has(m.sessionId)) return;
           this.sessionParents.set((m.params as { sessionId: string }).sessionId, m.sessionId);
         }
         if (m.method === 'Target.detachedFromTarget') {
           const id = (m.params as { sessionId: string }).sessionId;
+          if (this.attachingIds.has(id)) this.attachingIds.set(id, 'detached');
           this.detach(id, new DisconnectedError(`Session detached: ${id}`));
+        }
+        if (m.method === 'Target.targetDestroyed' || m.method === 'Target.targetCrashed') {
+          const targetId = (m.params as { targetId: string }).targetId;
+          const reason =
+            m.method === 'Target.targetDestroyed' ? 'target-destroyed' : 'target-crashed';
+          for (const [id, pending] of this.pending)
+            if (pending.hooks?.targetId === targetId) {
+              this.pending.delete(id);
+              pending.cleanup();
+              this.abandonAttach(id);
+              pending.reject(new SessionEndedError(reason, targetId));
+            }
+          for (const session of [...this.sessions.values()])
+            if (session instanceof TargetSession && session.targetId === targetId)
+              session.end(reason);
+        }
+        if (m.method === 'Inspector.targetCrashed' && m.sessionId) {
+          const session = this.sessions.get(m.sessionId);
+          if (session instanceof TargetSession) session.end('target-crashed');
         }
         this.dispatch({ method: m.method, params: m.params ?? {}, sessionId: m.sessionId });
       } else throw new Error('Invalid CDP message');
@@ -239,6 +414,9 @@ export class Connection {
     }
   }
   detach(id: string, reason = new DisconnectedError('Session detached')): void {
+    const session = this.sessions.get(id);
+    if (session instanceof TargetSession && !(reason instanceof SessionEndedError))
+      reason = new SessionEndedError('detached', session.targetId);
     // Parent detach can suppress descendant detach events (notably BFCache
     // OOPIFs when their tab/context closes). Retire the whole ownership tree.
     this.sessionParents.delete(id);
@@ -250,7 +428,7 @@ export class Connection {
         p.cleanup();
         p.reject(reason);
       }
-    this.sessions.get(id)?.invalidate(reason);
+    session?.invalidate(reason);
     this.sessions.delete(id);
     this.routes.delete(id);
   }
@@ -259,9 +437,17 @@ export class Connection {
     this.failure = reason;
     for (const p of this.pending.values()) {
       p.cleanup();
-      p.reject(reason);
+      const session = p.sessionId && this.sessions.get(p.sessionId);
+      p.reject(
+        session instanceof TargetSession
+          ? new SessionEndedError('disconnected', session.targetId)
+          : reason,
+      );
     }
     this.pending.clear();
+    for (const timer of this.abandoned.values()) clearTimeout(timer);
+    this.abandoned.clear();
+    this.attachingIds.clear();
     this.root.invalidate(reason);
     for (const s of this.sessions.values()) s.invalidate(reason);
     this.sessions.clear();
@@ -368,5 +554,51 @@ export class Session {
     this.disconnected.clear();
     for (const off of this.subscriptions) off();
     this.subscriptions.clear();
+  }
+}
+
+/** One explicit raw attachment. Crash ends this logical lifetime; recovery requires a new one. */
+export class TargetSession extends Session {
+  readonly targetId: string;
+  private reason?: EndReason;
+  private resolveEnded!: (reason: EndReason) => void;
+  readonly ended = new Promise<EndReason>((resolve) => {
+    this.resolveEnded = resolve;
+  });
+  private detaching?: Promise<void>;
+  constructor(connection: Connection, id: string, targetId: string) {
+    super(connection, id);
+    this.targetId = targetId;
+  }
+  get endReason(): EndReason | undefined {
+    return this.reason;
+  }
+  override invalidate(error: Error): void {
+    if (this.reason) return;
+    this.reason = error instanceof SessionEndedError ? error.reason : 'disconnected';
+    super.invalidate(new SessionEndedError(this.reason, this.targetId));
+    this.resolveEnded(this.reason);
+  }
+  /** @internal */
+  end(reason: EndReason): void {
+    if (this.closed) return;
+    this.connection.detach(this.id!, new SessionEndedError(reason, this.targetId));
+    if (reason === 'target-crashed') void this.connection.cleanupAttachment(this.id!);
+  }
+  detach(options: WaitOptions = {}): Promise<void> {
+    if (this.detaching) return this.detaching;
+    if (this.closed) return Promise.resolve();
+    if (options.signal?.aborted) return Promise.reject(abortReason(options.signal));
+    timeoutValue(options.timeout ?? this.connection.timeout);
+    this.end('detach-requested');
+    return (this.detaching = this.connection.root
+      .sendWith('Target.detachFromTarget', options, { sessionId: this.id! })
+      .then(
+        () => {},
+        (error) => {
+          void this.connection.cleanupAttachment(this.id!);
+          throw error;
+        },
+      ));
   }
 }

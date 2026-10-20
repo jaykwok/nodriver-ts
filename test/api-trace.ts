@@ -70,6 +70,7 @@ const classes: Record<string, { prototype: object }> = {
   Keyboard: api.Keyboard,
   Connection: api.Connection,
   Session: api.Session,
+  TargetSession: api.TargetSession,
   WebSocketTransport: api.WebSocketTransport,
   PipeTransport: api.PipeTransport,
   PipeDecoder: api.PipeDecoder,

@@ -44,6 +44,8 @@ export class ScriptedChrome {
   private readonly contexts = new Set<string>();
   private sequence = 0;
   private discovering = false;
+  /** Delay modeled attach replies (not attachment creation) to exercise cancelled late replies. */
+  attachReplyDelayMs = 0;
 
   private constructor(server: Server, options: ScriptedChromeOptions) {
     this.server = server;
@@ -144,6 +146,16 @@ export class ScriptedChrome {
     if (this.discovering) this.emit('Target.targetDestroyed', { targetId });
   }
 
+  /** Detach one modeled attachment, leaving its target and sibling attachments alive. */
+  detachSession(sessionId: string): void {
+    const targetId = this.sessions.get(sessionId);
+    if (!targetId) throw new ProtocolError('Target.detachFromTarget', -32000, 'Session not found');
+    this.sessions.delete(sessionId);
+    const info = this.pages.get(targetId);
+    if (info) info.attached = [...this.sessions.values()].includes(targetId);
+    this.emit('Target.detachedFromTarget', { sessionId, targetId });
+  }
+
   crashTarget(targetId: string): void {
     if (!this.pages.has(targetId)) throw new Error(`Unknown scripted target ${targetId}`);
     for (const [sessionId, target] of this.sessions)
@@ -190,6 +202,16 @@ export class ScriptedChrome {
     try {
       const handler = this.queued.get(command.method)?.shift() ?? this.handlers.get(command.method);
       const result = await (handler ? handler(command) : this.defaultReply(command));
+      if (command.method === 'Target.attachToTarget' && this.attachReplyDelayMs > 0)
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(done, this.attachReplyDelayMs);
+          function done() {
+            clearTimeout(timer);
+            socket.off('close', done);
+            resolve();
+          }
+          socket.once('close', done);
+        });
       if (result !== NO_REPLY && socket.readyState === WebSocket.OPEN)
         socket.send(JSON.stringify({ id: command.id, sessionId: command.sessionId, result }));
     } catch (error) {
@@ -239,8 +261,16 @@ export class ScriptedChrome {
         const sessionId = `session-${++this.sequence}`;
         this.sessions.set(sessionId, info.targetId);
         info.attached = true;
+        this.emit('Target.attachedToTarget', {
+          sessionId,
+          targetInfo: info,
+          waitingForDebugger: false,
+        });
         return { sessionId };
       }
+      case 'Target.detachFromTarget':
+        this.detachSession(String(p.sessionId));
+        return {};
       case 'Page.getFrameTree': {
         const info = this.pages.get(targetId!);
         if (!info) throw new Error('Page.getFrameTree requires a page session');

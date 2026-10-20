@@ -4,6 +4,8 @@
 
 Every operation is asynchronous except read-only properties and event subscriptions. Public types are exported from the root entry point `nodriver-ts`, and the build ships `.d.ts` files. CDP types come from `devtools-protocol`, which is installed with the package.
 
+Raw CDP applications can use `attach: 'none'` and `browser.attachSession(targetId, options)`. `TargetSession` extends `Session` with `targetId`, `ended`, `endReason`, and `detach()`. See [the raw-session contract](raw-sessions.md) for lifecycle, cancellation and `observe.onSend` / `onSettle`.
+
 ## Entry points
 
 | Entry point              | Exports                                                                                                                                                          |

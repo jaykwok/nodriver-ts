@@ -2,6 +2,15 @@
 
 All notable changes are recorded here. The project follows [Semantic Versioning](https://semver.org/); before 1.0, minor versions may contain breaking changes.
 
+## 0.3.0 — 2026-10-21
+
+- Add `attach: 'none'` to launch/connect and independent `Browser.attachSession()` attachments without Tab/Frame initialization. Raw mode skips headless UA masking and rejects high-level Tab creation.
+- Add `TargetSession.ended`, `endReason`, `detach()` and typed `SessionEndedError`. Detach, target destruction/crash and connection loss immediately reject pending requests and event waits and clear subscriptions.
+- Cancelled attaches clean up late responses with independent bounded detach requests; unconfirmed cleanup disconnects the connection. Crash ends raw sessions; recovery requires reattachment.
+- Apply a single initialization deadline and AbortSignal across endpoint discovery and the complete browser handshake, with owned-process cleanup on launch failure.
+- Add payload-free synchronous send observation (`observe.onSend`) and correlated settlement (`onSettle`), preserving existing trace behavior.
+- Extend ScriptedChrome with modeled detach and delayed attach replies. Add raw-session unit and real Chrome acceptance, including Node 22.19 built-package coverage.
+
 ## 0.2.1 — 2026-10-21
 
 - CI and platform workflows now run only Node.js, with Node.js 24 source tests and Node.js 22 package smoke tests. Runtime guidance and validation documentation focus on Node.js.

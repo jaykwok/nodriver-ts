@@ -33,6 +33,8 @@ console.log(await (await tab.waitForSelector('h1')).text());
 
 `await using` 在正常退出和异常展开时关闭资源。也可使用 `try/finally` 调用幂等 `close()`。库默认不接管宿主信号；`handleSignals: true` 可启用拥有进程的 SIGINT/SIGTERM 清理。强制终止控制器或机器断电无法由 JavaScript 保证清理。
 
+- **Raw session。** `attach: 'none'` 只发现 target，不创建 Tab。`attachSession()` 提供独立 session、明确的生命周期、取消清理及发送时观察，详见 [raw session](docs/zh-CN/raw-sessions.md)。
+
 `launch()` 和 `connect()` 均接受 `trace: (entry) => ...`，可记录 CDP 方法、会话、耗时和错误，不含参数或结果。`nodriver-ts/testing` 提供能完成启动握手的 `ScriptedChrome`，可使用真实 Browser/Tab/Session 编写脚本化回复、事件和故障测试，详见[测试接口](docs/zh-CN/testing.md)。
 
 需要宿主退出后保留 Chrome 时，使用 `Browser.launch({ detached: true, transport: 'websocket' })`，保存 `await browser.release()` 返回的 endpoint，下次用 `Browser.connect({ endpoint })` 重连。交接后 `close()` 和异步析构只断开连接，profile 保留，宿主锁移除；pipe 交接明确报错。独立启动会丢弃 Chrome stderr，宿主在交接前崩溃可能留下 Chrome。详见[浏览器交接与事件](docs/zh-CN/browser-handoff.md)。

@@ -2,6 +2,8 @@
 
 [简体中文](zh-CN/support.md)
 
+0.3.0 raw-session acceptance passed locally on Windows, Chrome 155.0.8059.85, Node.js 24.22.0 and Node.js 22.19.0 (built package). The full Node 24 run passed 88 unit tests and 98 integration tests, plus build-output tests. The background-window test ran headful using `--no-startup-window --keep-alive-for-test`. The Node 22 CI job is pinned to 22.19.0. See [raw sessions](raw-sessions.md).
+
 ## Runtime environment
 
 - **Runtime**: the package supports Node.js ≥ 22, and the tests use `node:test` and `expect`. Node.js ≥ 24 runs the TypeScript sources directly, so developing and testing from source needs Node.js 24 or newer; Node.js 22 is covered by smoke tests of the build output. npm is the package manager.

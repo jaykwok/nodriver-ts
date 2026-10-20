@@ -2,6 +2,8 @@
 
 [English](../support.md)
 
+0.3.0 raw-session 验收已在本机 Windows、Chrome 155.0.8059.85、Node.js 24.22.0 和 Node.js 22.19.0（构建产物）通过。Node 24 全量通过 88 个单测、98 个集成测试及构建产物测试；后台最后窗口测试在有窗口模式下使用 `--no-startup-window --keep-alive-for-test`。Node 22 CI 固定为 22.19.0。详见 [raw session](raw-sessions.md)。
+
 ## 运行环境
 
 - **运行时**：包支持 Node.js ≥ 22，测试使用 `node:test` 与 `expect`；Node.js ≥ 24 直接运行 TypeScript 源码，因此从源码开发和测试需要 Node.js 24 及以上，Node.js 22 以构建产物的冒烟测试覆盖。包管理使用 npm。

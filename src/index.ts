@@ -32,7 +32,7 @@ export type { Selector, QueryOptions } from './dom/query.ts';
 export { Mouse, Keyboard, keyDefinition, parseChord } from './input/input.ts';
 export { InputActionError } from './input/behavior.ts';
 export type { InputPolicy, InputReport, InputOptions } from './input/behavior.ts';
-export { Connection, Session } from './protocol/connection.ts';
+export { Connection, Session, TargetSession, SessionEndedError } from './protocol/connection.ts';
 export type {
   Command,
   Event,
@@ -42,6 +42,8 @@ export type {
   CdpEvent,
   ConnectionOptions,
   TraceEntry,
+  EndReason,
+  ConnectionObserver,
 } from './protocol/connection.ts';
 export type { Transport } from './transport/transport.ts';
 export { WebSocketTransport } from './transport/websocket.ts';

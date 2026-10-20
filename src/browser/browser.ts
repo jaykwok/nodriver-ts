@@ -1,5 +1,10 @@
 import type { Protocol } from 'devtools-protocol';
-import { Connection, type ConnectionOptions, type Session } from '../protocol/connection.ts';
+import {
+  Connection,
+  type ConnectionOptions,
+  type Session,
+  type TargetSession,
+} from '../protocol/connection.ts';
 import { BrowserProcess, type LaunchOptions } from './launcher.ts';
 import { BrowserContext, type ContextOptions } from './context.ts';
 import { Tab, type Environment } from '../page/tab.ts';
@@ -8,6 +13,8 @@ import { ProxyForwarder } from '../optional/proxy.ts';
 import { WebSocketTransport } from '../transport/websocket.ts';
 import {
   abortReason,
+  budget,
+  bounded,
   CONNECT_TIMEOUT,
   EventHub,
   poll,
@@ -18,12 +25,12 @@ import { DisconnectedError, NodriverError, TimeoutError } from '../errors.ts';
 import { InputCoordinator } from '../input/behavior.ts';
 /**
  * Which page targets a Browser attaches to. "all" adopts every page; "created" adopts only tabs
- * opened through this client and popups they open, leaving a user's existing tabs untouched.
+ * opened through this client and popups they open. "none" discovers targets only and forbids Tabs.
  */
-export type AttachPolicy = 'all' | 'created';
+export type AttachPolicy = 'all' | 'created' | 'none';
 export interface ConnectOptions extends ConnectionOptions, WaitOptions {
   endpoint: string;
-  /** Defaults to "all". Use "created" when sharing a user's everyday browser. */
+  /** Defaults to "all". "created" adopts this client's tabs; "none" allows raw sessions only. */
   attach?: AttachPolicy;
 }
 export class Browser {
@@ -74,75 +81,97 @@ export class Browser {
     });
   }
   static async launch(options: LaunchOptions = {}): Promise<Browser> {
-    const launched = await BrowserProcess.start(options);
-    const connection = new Connection(launched.transport, {
-      timeout: options.timeout,
-      onError: options.onError,
-      trace: options.trace,
-    });
-    try {
-      const version = await connection.root.sendWith('Browser.getVersion', {
-        timeout: options.timeout ?? CONNECT_TIMEOUT,
-        signal: options.signal,
-      });
-      const browser = new Browser(connection, version, launched.process, launched.endpoint);
-      browser.networkPolicy = {
-        proxyConfigured: !!(
-          options.proxyServer || options.args?.some((a) => a.startsWith('--proxy-server'))
-        ),
-        webRtcIPHandlingPolicy: options.webRtcIPHandlingPolicy ?? 'native',
-      };
-      await browser.initialize();
-      // With Pipe, CDP can answer before Chrome has created its startup window.
-      // Let the command-line about:blank target finish attaching before callers
-      // create another tab, otherwise late startup work can abort its navigation.
-      await poll(
-        async () => {
-          const tab = browser.tabs.find((t) => t.mainFrame?.url === 'about:blank');
-          if (!tab) return undefined;
-          await browser.attaching.get(tab.id);
-          return tab.closed ? undefined : true;
-        },
-        { timeout: options.timeout ?? CONNECT_TIMEOUT, signal: options.signal },
-        'Chrome startup tab',
-      );
-      if ((options.maskHeadless ?? options.headless === true) && !options.userAgent)
-        await browser.maskHeadless();
-      return browser;
-    } catch (e) {
-      await connection.close();
-      const { exited, exitCode, stderr } = launched.process.diagnostics;
-      await launched.process.close();
-      if (exited)
-        throw new NodriverError(
-          `Chrome ${exited ? `exited (${exitCode})` : 'failed'} during startup: ${e instanceof Error ? e.message : String(e)}${stderr.trim() ? `\n${stderr.trim()}` : ''}`,
-          { cause: e },
+    return initializeWithin(options, async (step) => {
+      if (options.attach === 'none' && options.maskHeadless === true)
+        throw new TypeError(
+          "attach: 'none' does not support maskHeadless; configure raw sessions explicitly",
         );
-      throw e;
-    }
+      const launched = await BrowserProcess.start({ ...options, ...step() });
+      const connection = new Connection(launched.transport, {
+        timeout: options.timeout,
+        onError: options.onError,
+        trace: options.trace,
+        observe: options.observe,
+      });
+      try {
+        const version = await connection.root.sendWith('Browser.getVersion', step());
+        const browser = new Browser(
+          connection,
+          version,
+          launched.process,
+          launched.endpoint,
+          options.attach,
+        );
+        browser.networkPolicy = {
+          proxyConfigured: !!(
+            options.proxyServer || options.args?.some((a) => a.startsWith('--proxy-server'))
+          ),
+          webRtcIPHandlingPolicy: options.webRtcIPHandlingPolicy ?? 'native',
+        };
+        const initializing = step();
+        await bounded(browser.initialize(step), initializing, 'Browser initialization');
+        // With Pipe, CDP can answer before Chrome has created its startup window.
+        // Let the command-line about:blank target finish attaching before callers
+        // create another tab, otherwise late startup work can abort its navigation.
+        if (browser.attachPolicy === 'all')
+          await poll(
+            async () => {
+              const tab = browser.tabs.find((t) => t.mainFrame?.url === 'about:blank');
+              if (!tab) return undefined;
+              await browser.attaching.get(tab.id);
+              return tab.closed ? undefined : true;
+            },
+            step(),
+            'Chrome startup tab',
+          );
+        if (
+          browser.attachPolicy !== 'none' &&
+          (options.maskHeadless ?? options.headless === true) &&
+          !options.userAgent
+        ) {
+          const configuring = step();
+          await bounded(browser.maskHeadless(), configuring, 'Headless configuration');
+        }
+        step();
+        return browser;
+      } catch (e) {
+        await connection.close();
+        const { exited, exitCode, stderr } = launched.process.diagnostics;
+        await launched.process.close();
+        if (exited)
+          throw new NodriverError(
+            `Chrome ${exited ? `exited (${exitCode})` : 'failed'} during startup: ${e instanceof Error ? e.message : String(e)}${stderr.trim() ? `\n${stderr.trim()}` : ''}`,
+            { cause: e },
+          );
+        throw e;
+      }
+    });
   }
   static async connect(options: ConnectOptions): Promise<Browser> {
-    let endpoint = options.endpoint;
-    if (/^https?:/.test(endpoint)) {
-      const signal = options.signal
-        ? AbortSignal.any([options.signal, AbortSignal.timeout(options.timeout ?? CONNECT_TIMEOUT)])
-        : AbortSignal.timeout(options.timeout ?? CONNECT_TIMEOUT);
-      const response = await fetch(`${endpoint.replace(/\/$/, '')}/json/version`, { signal });
-      if (!response.ok)
-        throw new DisconnectedError(`Endpoint discovery returned HTTP ${response.status}`);
-      endpoint = ((await response.json()) as { webSocketDebuggerUrl: string }).webSocketDebuggerUrl;
-    }
-    const transport = await WebSocketTransport.connect(endpoint, options);
-    const connection = new Connection(transport, options);
-    try {
-      const version = await connection.root.send('Browser.getVersion');
-      const browser = new Browser(connection, version, undefined, endpoint, options.attach);
-      await browser.initialize();
-      return browser;
-    } catch (e) {
-      await connection.close();
-      throw e;
-    }
+    return initializeWithin(options, async (step) => {
+      let endpoint = options.endpoint;
+      if (/^https?:/.test(endpoint)) {
+        const { signal } = step();
+        const response = await fetch(`${endpoint.replace(/\/$/, '')}/json/version`, { signal });
+        if (!response.ok)
+          throw new DisconnectedError(`Endpoint discovery returned HTTP ${response.status}`);
+        endpoint = ((await response.json()) as { webSocketDebuggerUrl: string })
+          .webSocketDebuggerUrl;
+      }
+      const transport = await WebSocketTransport.connect(endpoint, step());
+      const connection = new Connection(transport, options);
+      try {
+        const version = await connection.root.sendWith('Browser.getVersion', step());
+        const browser = new Browser(connection, version, undefined, endpoint, options.attach);
+        const initializing = step();
+        await bounded(browser.initialize(step), initializing, 'Browser initialization');
+        step();
+        return browser;
+      } catch (e) {
+        await connection.close();
+        throw e;
+      }
+    });
   }
   /**
    * Replaces "HeadlessChrome" with "Chrome" in the UA string and UA-CH brands through a base
@@ -205,12 +234,13 @@ export class Browser {
     } catch {}
     this.errors.emit(error);
   }
-  private async initialize(): Promise<void> {
+  private async initialize(step: () => WaitOptions): Promise<void> {
+    let initializing = true;
     this.cdp.on('Target.targetCreated', (e) => {
       this.targetInfo.set(e.targetInfo.targetId, e.targetInfo);
       if (e.targetInfo.type === 'page') this.frontTab = undefined;
       if (e.targetInfo.type === 'page' && this.shouldAttach(e.targetInfo))
-        void this.attach(e.targetInfo).catch((error) => {
+        void this.attach(e.targetInfo, initializing ? step : undefined).catch((error) => {
           // A page that closes while it is being set up (short-lived popups) is not an error.
           if (!this.closed && !(error instanceof DisconnectedError)) this.reportError(error);
         });
@@ -241,18 +271,20 @@ export class Browser {
       download?.progress(e.state);
       if (e.state !== 'inProgress') this.downloads.delete(e.guid);
     });
-    const { browserContextIds } = await this.cdp.send('Target.getBrowserContexts');
+    const { browserContextIds } = await this.cdp.sendWith('Target.getBrowserContexts', step());
     for (const id of browserContextIds) this.contextMap.set(id, new BrowserContext(this, id));
-    await this.cdp.send('Target.setDiscoverTargets', { discover: true });
-    const { targetInfos } = await this.cdp.send('Target.getTargets');
+    await this.cdp.sendWith('Target.setDiscoverTargets', step(), { discover: true });
+    const { targetInfos } = await this.cdp.sendWith('Target.getTargets', step());
     for (const info of targetInfos) this.targetInfo.set(info.targetId, info);
     await Promise.all(
       targetInfos
         .filter((t) => t.type === 'page' && this.shouldAttach(t))
-        .map((t) => this.attach(t)),
+        .map((t) => this.attach(t, step)),
     );
+    initializing = false;
   }
   private shouldAttach(info: Protocol.Target.TargetInfo): boolean {
+    if (this.attachPolicy === 'none') return false;
     if (this.attachPolicy === 'all') return true;
     if (info.openerId && this.tabMap.has(info.openerId)) return true;
     return (
@@ -266,19 +298,33 @@ export class Browser {
   }
   /** Explicitly adopts an existing page target, e.g. one listed by pageTargets. */
   async attachTarget(targetId: string): Promise<Tab> {
+    this.requireHighLevel();
     const info =
       this.targetInfo.get(targetId) ??
       (await this.cdp.send('Target.getTargetInfo', { targetId })).targetInfo;
     if (info.type !== 'page') throw new TypeError(`Target ${targetId} is not a page`);
     return this.attach(info);
   }
-  private attach(info: Protocol.Target.TargetInfo): Promise<Tab> {
+  /** Attach one independent raw session, without enabling domains or configuring the page. */
+  attachSession(targetId: string, options: WaitOptions = {}): Promise<TargetSession> {
+    return this.connection.attachSession(targetId, options);
+  }
+  private requireHighLevel(): void {
+    if (this.attachPolicy === 'none')
+      throw new NodriverError(
+        "attach: 'none' forbids Tab creation; use attachSession() and raw CDP",
+      );
+  }
+  private attach(
+    info: Protocol.Target.TargetInfo,
+    step: () => WaitOptions = () => ({}),
+  ): Promise<Tab> {
     const existing = this.attaching.get(info.targetId);
     if (existing) return existing;
     const ready = this.tabMap.get(info.targetId);
     if (ready) return Promise.resolve(ready);
     const task = (async () => {
-      const { sessionId } = await this.cdp.send('Target.attachToTarget', {
+      const { sessionId } = await this.cdp.sendWith('Target.attachToTarget', step(), {
         targetId: info.targetId,
         flatten: true,
       });
@@ -287,7 +333,7 @@ export class Browser {
       if (!context) {
         // Chrome reports an internal ID even for the default context, although
         // getBrowserContexts intentionally lists only non-default contexts.
-        const { browserContextIds } = await this.cdp.send('Target.getBrowserContexts');
+        const { browserContextIds } = await this.cdp.sendWith('Target.getBrowserContexts', step());
         context =
           info.browserContextId && browserContextIds.includes(info.browserContextId)
             ? new BrowserContext(this, info.browserContextId)
@@ -297,7 +343,8 @@ export class Browser {
       const tab = new Tab(this, context, info.targetId, this.connection.session(sessionId));
       this.tabMap.set(info.targetId, tab);
       try {
-        await tab.initialize();
+        const initializing = step();
+        await bounded(tab.initialize(), initializing, 'Tab initialization');
         this.tabCreated.emit(tab);
         return tab;
       } catch (e) {
@@ -311,6 +358,7 @@ export class Browser {
     return task;
   }
   async newTab(url = 'about:blank', context = this.defaultContext): Promise<Tab> {
+    this.requireHighLevel();
     const { targetId } = await this.cdp.send('Target.createTarget', {
       url: 'about:blank',
       browserContextId: context.id,
@@ -450,5 +498,26 @@ export class Browser {
   }
   async [Symbol.asyncDispose](): Promise<void> {
     await this.close();
+  }
+}
+
+/** A single deadline covers discovery and initialization, not each command separately. */
+async function initializeWithin<T>(
+  options: WaitOptions,
+  run: (step: () => WaitOptions) => Promise<T>,
+): Promise<T> {
+  const timeout = timeoutValue(options.timeout ?? CONNECT_TIMEOUT);
+  const controller = new AbortController();
+  const signal = options.signal
+    ? AbortSignal.any([options.signal, controller.signal])
+    : controller.signal;
+  const timer = setTimeout(
+    () => controller.abort(new TimeoutError('Browser initialization timed out')),
+    timeout,
+  );
+  try {
+    return await run(budget({ timeout, signal }, 'Browser initialization'));
+  } finally {
+    clearTimeout(timer);
   }
 }

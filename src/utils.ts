@@ -58,7 +58,12 @@ export function bounded<T>(
 ): Promise<T> {
   const { signal } = options;
   if (options.timeout === undefined && !signal) return promise;
-  if (signal?.aborted) return Promise.reject(abortReason(signal));
+  if (signal?.aborted) {
+    // Starting the operation may synchronously abort its signal (e.g. a send observer).
+    // Its eventual rejection must still be consumed.
+    void promise.catch(() => {});
+    return Promise.reject(abortReason(signal));
+  }
   return new Promise((resolve, reject) => {
     const timer =
       options.timeout === undefined
