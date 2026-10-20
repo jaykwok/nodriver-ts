@@ -46,7 +46,7 @@ export class BrowserPool {
     }
   }
   private launchOptions() {
-    const launch = { timeout: 10000, transport: 'pipe' as const, ...this.options.launch };
+    const launch = { transport: 'pipe' as const, ...this.options.launch };
     // A persistent profile has no per-lease context, so its proxy is browser-wide.
     if (this.options.proxy && this.exclusive) launch.proxyServer ??= this.options.proxy;
     return launch;

@@ -1,6 +1,6 @@
 import type { Protocol } from 'devtools-protocol';
 import { Connection, type ConnectionOptions, type Session } from '../protocol/connection.ts';
-import { BrowserProcess, type LaunchOptions } from './launcher.ts';
+import { BrowserProcess, LAUNCH_TIMEOUT, type LaunchOptions } from './launcher.ts';
 import { BrowserContext, type ContextOptions } from './context.ts';
 import { Tab, type Environment } from '../page/tab.ts';
 import { Download } from './download.ts';
@@ -73,7 +73,7 @@ export class Browser {
     });
     try {
       const version = await connection.root.sendWith('Browser.getVersion', {
-        timeout: options.timeout ?? 15_000,
+        timeout: options.timeout ?? LAUNCH_TIMEOUT,
         signal: options.signal,
       });
       const browser = new Browser(connection, version, launched.process, launched.endpoint);
@@ -94,7 +94,7 @@ export class Browser {
           await browser.attaching.get(tab.id);
           return tab.closed ? undefined : true;
         },
-        { timeout: options.timeout ?? 15_000, signal: options.signal },
+        { timeout: options.timeout ?? LAUNCH_TIMEOUT, signal: options.signal },
         'Chrome startup tab',
       );
       if ((options.maskHeadless ?? options.headless === true) && !options.userAgent)

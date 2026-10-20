@@ -2,6 +2,10 @@
 
 All notable changes are recorded here. The project follows [Semantic Versioning](https://semver.org/); before 1.0, minor versions may contain breaking changes.
 
+## Unreleased
+
+- `Browser.launch()` waits up to 30 seconds (was 15) for Chrome to start and complete the CDP handshake when no `timeout` is given. A first start on a fresh CI runner can exceed 15 seconds.
+
 ## 0.1.0 — 2026-10-20
 
 First public release.

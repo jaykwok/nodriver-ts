@@ -222,7 +222,7 @@ export class BrowserMcpSession {
               this.options.connect.attach ?? (this.options.exposeExistingTabs ? 'all' : 'created'),
             signal: combined,
           })
-        : Browser.launch({ timeout: 10_000, ...this.options.launch, signal: combined });
+        : Browser.launch({ ...this.options.launch, signal: combined });
     this.opening = opening;
     try {
       const browser = await opening;
