@@ -17,7 +17,15 @@ import { WebSocketTransport } from '../transport/websocket.ts';
 import { PipeTransport } from '../transport/pipe.ts';
 import type { Transport } from '../transport/transport.ts';
 import { DisconnectedError, NodriverError } from '../errors.ts';
-import { abortReason, delay, poll, removeTree, timeoutValue, type WaitOptions } from '../utils.ts';
+import {
+  abortReason,
+  CONNECT_TIMEOUT,
+  delay,
+  poll,
+  removeTree,
+  timeoutValue,
+  type WaitOptions,
+} from '../utils.ts';
 export interface LaunchOptions extends WaitOptions {
   executablePath?: string;
   /** False by default. Set true when running without a graphical desktop. */
@@ -53,8 +61,6 @@ export interface LaunchOptions extends WaitOptions {
   /** "agent" adds flags that remove first-run UI and background throttling; see AGENT_ARGS. */
   preset?: 'default' | 'agent';
 }
-/** Default deadline for starting Chrome and completing the CDP handshake, in milliseconds. */
-export const LAUNCH_TIMEOUT = 30_000;
 /** Flags added by preset "agent": no first-run dialogs or bubbles, no background throttling. */
 export const AGENT_ARGS = [
   '--disable-search-engine-choice-screen',
@@ -175,7 +181,7 @@ export class BrowserProcess {
   static async start(
     options: LaunchOptions = {},
   ): Promise<{ process: BrowserProcess; transport: Transport; endpoint?: string }> {
-    timeoutValue(options.timeout ?? LAUNCH_TIMEOUT);
+    timeoutValue(options.timeout ?? CONNECT_TIMEOUT);
     if (options.signal?.aborted) throw abortReason(options.signal);
     const executable = await findExecutable(options.executablePath);
     if (
@@ -305,7 +311,7 @@ export class BrowserProcess {
           }
           return undefined;
         },
-        { timeout: options.timeout ?? LAUNCH_TIMEOUT, signal: options.signal },
+        { timeout: options.timeout ?? CONNECT_TIMEOUT, signal: options.signal },
         'Chrome CDP endpoint',
       );
       const transport = await WebSocketTransport.connect(endpoint, options);

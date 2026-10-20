@@ -112,7 +112,7 @@ export function parse(args: string[]): Parsed {
     if (args.some((v) => LAUNCH_ONLY.includes(v)))
       throw new TypeError('--endpoint cannot be combined with launch options');
     delete options.launch;
-    options.connect = { endpoint, timeout: 10000 };
+    options.connect = { endpoint };
   }
   return { browser: { ...options, ...limits }, transport, socketPath, port, tokenEnv };
 }

@@ -2,7 +2,7 @@ import { WebSocket } from './ws-runtime.ts';
 import type { RawData } from 'ws';
 import type { Transport } from './transport.ts';
 import { DisconnectedError, TimeoutError } from '../errors.ts';
-import { abortReason, timeoutValue, type WaitOptions } from '../utils.ts';
+import { abortReason, CONNECT_TIMEOUT, timeoutValue, type WaitOptions } from '../utils.ts';
 export class WebSocketTransport implements Transport {
   onmessage?: (message: string) => void;
   onclose?: (reason: Error) => void;
@@ -36,7 +36,7 @@ export class WebSocketTransport implements Transport {
     options: WaitOptions & { maxMessageBytes?: number } = {},
   ): Promise<WebSocketTransport> {
     if (!/^wss?:\/\//.test(url)) throw new TypeError('Expected a ws:// or wss:// browser endpoint');
-    timeoutValue(options.timeout ?? 10_000);
+    timeoutValue(options.timeout ?? CONNECT_TIMEOUT);
     const maxPayload = options.maxMessageBytes ?? 256 * 1024 * 1024;
     if (!Number.isSafeInteger(maxPayload) || maxPayload < 1)
       throw new RangeError('maxMessageBytes must be a positive integer');
@@ -58,7 +58,7 @@ export class WebSocketTransport implements Transport {
       const abort = () => fail(abortReason(options.signal!));
       const timer = setTimeout(
         () => fail(new TimeoutError('WebSocket connection timed out')),
-        options.timeout ?? 10_000,
+        options.timeout ?? CONNECT_TIMEOUT,
       );
       options.signal?.addEventListener('abort', abort, { once: true });
       // Retain through aborted handshakes to consume late EventEmitter errors.

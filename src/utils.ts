@@ -1,5 +1,7 @@
 import { rm } from 'node:fs/promises';
 import { TimeoutError } from './errors.ts';
+/** Default deadline for starting or reaching Chrome and completing the CDP handshake, in ms. */
+export const CONNECT_TIMEOUT = 30_000;
 export interface WaitOptions {
   timeout?: number;
   signal?: AbortSignal;

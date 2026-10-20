@@ -1,12 +1,19 @@
 import type { Protocol } from 'devtools-protocol';
 import { Connection, type ConnectionOptions, type Session } from '../protocol/connection.ts';
-import { BrowserProcess, LAUNCH_TIMEOUT, type LaunchOptions } from './launcher.ts';
+import { BrowserProcess, type LaunchOptions } from './launcher.ts';
 import { BrowserContext, type ContextOptions } from './context.ts';
 import { Tab, type Environment } from '../page/tab.ts';
 import { Download } from './download.ts';
 import { ProxyForwarder } from '../optional/proxy.ts';
 import { WebSocketTransport } from '../transport/websocket.ts';
-import { abortReason, EventHub, poll, timeoutValue, type WaitOptions } from '../utils.ts';
+import {
+  abortReason,
+  CONNECT_TIMEOUT,
+  EventHub,
+  poll,
+  timeoutValue,
+  type WaitOptions,
+} from '../utils.ts';
 import { DisconnectedError, NodriverError, TimeoutError } from '../errors.ts';
 import { InputCoordinator } from '../input/behavior.ts';
 /**
@@ -73,7 +80,7 @@ export class Browser {
     });
     try {
       const version = await connection.root.sendWith('Browser.getVersion', {
-        timeout: options.timeout ?? LAUNCH_TIMEOUT,
+        timeout: options.timeout ?? CONNECT_TIMEOUT,
         signal: options.signal,
       });
       const browser = new Browser(connection, version, launched.process, launched.endpoint);
@@ -94,7 +101,7 @@ export class Browser {
           await browser.attaching.get(tab.id);
           return tab.closed ? undefined : true;
         },
-        { timeout: options.timeout ?? LAUNCH_TIMEOUT, signal: options.signal },
+        { timeout: options.timeout ?? CONNECT_TIMEOUT, signal: options.signal },
         'Chrome startup tab',
       );
       if ((options.maskHeadless ?? options.headless === true) && !options.userAgent)
@@ -116,8 +123,8 @@ export class Browser {
     let endpoint = options.endpoint;
     if (/^https?:/.test(endpoint)) {
       const signal = options.signal
-        ? AbortSignal.any([options.signal, AbortSignal.timeout(options.timeout ?? 10_000)])
-        : AbortSignal.timeout(options.timeout ?? 10_000);
+        ? AbortSignal.any([options.signal, AbortSignal.timeout(options.timeout ?? CONNECT_TIMEOUT)])
+        : AbortSignal.timeout(options.timeout ?? CONNECT_TIMEOUT);
       const response = await fetch(`${endpoint.replace(/\/$/, '')}/json/version`, { signal });
       if (!response.ok)
         throw new DisconnectedError(`Endpoint discovery returned HTTP ${response.status}`);

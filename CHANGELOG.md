@@ -4,7 +4,7 @@ All notable changes are recorded here. The project follows [Semantic Versioning]
 
 ## Unreleased
 
-- `Browser.launch()` waits up to 30 seconds (was 15) for Chrome to start and complete the CDP handshake when no `timeout` is given. A first start on a fresh CI runner can exceed 15 seconds.
+- Without a `timeout`, `Browser.launch()` and `Browser.connect()` wait up to 30 seconds for Chrome to start or answer and complete the CDP handshake (was 15 s for launch, 10 s for connect and the WebSocket handshake). A first start on a fresh CI runner can exceed 15 seconds. The MCP server uses the same default for launching and for `--endpoint`, and its per-command deadline rises from 10 to 30 seconds; operations stay bounded by the operation deadline.
 
 ## 0.1.0 — 2026-10-20
 
