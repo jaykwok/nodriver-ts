@@ -10,7 +10,7 @@
 
 安装：`npm install nodriver-ts`。源码开发与测试使用下列命令。
 
-包需要 Node.js 22+；从源码构建和测试需要 Node.js 24+（直接运行 TypeScript 源码）。另需本机 Chrome/Chromium/Edge（Windows、macOS、Linux 常见路径与 `PATH` 自动探测，也可用 `CHROME_PATH` 或 `executablePath` 指定）。已验证的系统和版本见 [支持范围](docs/support.md)。
+包需要 Node.js 22+；从源码构建和测试需要 Node.js 24+（直接运行 TypeScript 源码）。另需本机 Chrome/Chromium/Edge（Windows、macOS、Linux 常见路径与 `PATH` 自动探测，也可用 `CHROME_PATH` 或 `executablePath` 指定）。已验证的系统和版本见 [支持范围](docs/zh-CN/support.md)。
 
 ```sh
 npm ci
@@ -33,9 +33,9 @@ console.log(await (await tab.waitForSelector('h1')).text());
 
 `await using` 在正常退出和异常展开时关闭资源。也可使用 `try/finally` 调用幂等 `close()`。库默认不接管宿主信号；`handleSignals: true` 可启用拥有进程的 SIGINT/SIGTERM 清理。强制终止控制器或机器断电无法由 JavaScript 保证清理。
 
-`launch()` 和 `connect()` 均接受 `trace: (entry) => ...`，可记录 CDP 方法、会话、耗时和错误，不含参数或结果。`nodriver-ts/testing` 提供能完成启动握手的 `ScriptedChrome`，可使用真实 Browser/Tab/Session 编写脚本化回复、事件和故障测试，详见[测试接口](docs/testing.md)。
+`launch()` 和 `connect()` 均接受 `trace: (entry) => ...`，可记录 CDP 方法、会话、耗时和错误，不含参数或结果。`nodriver-ts/testing` 提供能完成启动握手的 `ScriptedChrome`，可使用真实 Browser/Tab/Session 编写脚本化回复、事件和故障测试，详见[测试接口](docs/zh-CN/testing.md)。
 
-需要宿主退出后保留 Chrome 时，使用 `Browser.launch({ detached: true, transport: 'websocket' })`，保存 `await browser.release()` 返回的 endpoint，下次用 `Browser.connect({ endpoint })` 重连。交接后 `close()` 和异步析构只断开连接，profile 保留，宿主锁移除；pipe 交接明确报错。独立启动会丢弃 Chrome stderr，宿主在交接前崩溃可能留下 Chrome。详见[浏览器交接与事件](docs/browser-handoff.md)。
+需要宿主退出后保留 Chrome 时，使用 `Browser.launch({ detached: true, transport: 'websocket' })`，保存 `await browser.release()` 返回的 endpoint，下次用 `Browser.connect({ endpoint })` 重连。交接后 `close()` 和异步析构只断开连接，profile 保留，宿主锁移除；pipe 交接明确报错。独立启动会丢弃 Chrome stderr，宿主在交接前崩溃可能留下 Chrome。详见[浏览器交接与事件](docs/zh-CN/browser-handoff.md)。
 
 启动选项还包括 `lang`、`windowSize`、`userAgent`、`preset: 'agent'`（关闭首次运行/搜索引擎选择界面与后台节流）。持久 `userDataDir` 使用带 PID/主机名的锁文件，仅在确认本机持有进程已退出时回收陈旧锁；Chrome 未正常退出留下的 `DevToolsActivePort` 在其端口无响应时自动清理。
 
@@ -90,7 +90,7 @@ off();
 - human 输入策略对 US 布局字符发送成对 keyDown/keyUp（含 Shift），其他文本（中日韩、emoji、换行）使用 insertText；按下时指针 pressure 为 0.5；首次指针位置随机，不从 (0,0) 起步；只在需要时把标签页置前。
 - 不伪造字体、WebGL、canvas、音频或硬件，也不解验证码。时区、locale、UA/Client Hints、视口和地理位置只能通过 `tab.setEnvironment()` 显式设置。
 
-更多边界、复现方法与已知信号见 [自动化痕迹审计](docs/automation-audit.md)。
+更多边界、复现方法与已知信号见 [自动化痕迹审计](docs/zh-CN/automation-audit.md)。
 
 ## 状态、网络与文件
 
@@ -119,7 +119,7 @@ await using proxied = await browser.newContext({
 });
 ```
 
-`proxy` 使用本机转发器支持认证 HTTP(S)/SOCKS 上游；`proxyServer` 直接传给 Chrome。环境观测与诊断见 [环境采样](docs/environment.md)。
+`proxy` 使用本机转发器支持认证 HTTP(S)/SOCKS 上游；`proxyServer` 直接传给 Chrome。环境观测与诊断见 [环境采样](docs/zh-CN/environment.md)。
 
 ## 连接现有浏览器
 
@@ -148,20 +148,24 @@ node dist/mcp/cli.js --mcp-transport http --port 3100
 
 ## 文档
 
-| 文档                                       | 内容                                          |
-| ------------------------------------------ | --------------------------------------------- |
-| [API](docs/api.md)                         | 对象、期限与取消、查询、求值、存储            |
-| [输入](docs/input.md)                      | human 输入策略、文本与按键、点击检查、取消    |
-| [环境](docs/environment.md)                | 环境采样、诊断、显式对齐、代理与 WebRTC       |
-| [自动化痕迹审计](docs/automation-audit.md) | 默认协议行为、回归证据、检测结果              |
-| [MCP](docs/mcp.md)                         | CLI、工具、引用、页面 JavaScript、嵌入        |
-| [HTTP 接入](docs/mcp-http.md)              | 租约、认证、限额、资源、人工交互              |
-| [socket 接入](docs/mcp-socket.md)          | Unix socket / 命名管道服务与客户端            |
-| [支持范围](docs/support.md)                | 已验证平台、能力、限制                        |
-| [性能](docs/performance.md)                | 基准方法与基线                                |
-| [长稳测试](docs/soak.md)                   | 长时间资源回收测试                            |
-| [上游映射](docs/upstream-api-map.md)       | nodriver 成员与 TypeScript 对应项             |
-| [API 测试映射](docs/test-map.md)           | 每个公开成员与 MCP 工具对应的测试（自动生成） |
+以下为简体中文译本；英文版位于 [docs/](docs/)，内容有出入时以英文版为准。
+
+| 文档                                             | 内容                                                 |
+| ------------------------------------------------ | ---------------------------------------------------- |
+| [API](docs/zh-CN/api.md)                         | 对象、期限与取消、查询、求值、存储                   |
+| [浏览器交接](docs/zh-CN/browser-handoff.md)      | 分离启动、交接与重连、CDP 事件订阅                   |
+| [输入](docs/zh-CN/input.md)                      | human 输入策略、文本与按键、点击检查、取消           |
+| [环境](docs/zh-CN/environment.md)                | 环境采样、诊断、显式对齐、代理与 WebRTC              |
+| [自动化痕迹审计](docs/zh-CN/automation-audit.md) | 默认协议行为、回归证据、检测结果                     |
+| [MCP](docs/zh-CN/mcp.md)                         | CLI、工具、引用、页面 JavaScript、嵌入               |
+| [HTTP 接入](docs/zh-CN/mcp-http.md)              | 租约、认证、限额、资源、人工交互                     |
+| [socket 接入](docs/zh-CN/mcp-socket.md)          | Unix socket / 命名管道服务与客户端                   |
+| [支持范围](docs/zh-CN/support.md)                | 已验证平台、能力、限制                               |
+| [性能](docs/zh-CN/performance.md)                | 基准方法与基线                                       |
+| [长稳测试](docs/zh-CN/soak.md)                   | 长时间资源回收测试                                   |
+| [脚本化测试](docs/zh-CN/testing.md)              | 用 `ScriptedChrome` 在不启动 Chrome 的情况下测试代码 |
+| [上游映射](docs/zh-CN/upstream-api-map.md)       | nodriver 成员与 TypeScript 对应项                    |
+| [API 测试映射](docs/zh-CN/test-map.md)           | 每个公开成员与 MCP 工具对应的测试（自动生成）        |
 
 变更记录见 [CHANGELOG.md](CHANGELOG.md)。
 

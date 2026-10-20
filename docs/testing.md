@@ -1,5 +1,7 @@
 # Scripted Chrome for library tests
 
+[简体中文](zh-CN/testing.md)
+
 Import `ScriptedChrome` from **`nodriver-ts/testing`** to test code against real `Browser`, `Tab`,
 `Frame`, and `Session` instances without launching Chrome or casting a handwritten mock to a
 class with private fields.

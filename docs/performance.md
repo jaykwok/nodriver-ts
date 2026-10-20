@@ -1,53 +1,55 @@
-# 性能基准
+# Performance benchmarks
 
-`npm run bench:mcp` 运行 `benchmarks/mcp.ts`：原始 JSON 结果写 stdout，进度写 stderr。基准使用本地 fixture、全新临时 profile、显式 headless 和默认 sandbox，不访问外部站点。请在没有并行测试或其他高负载任务时运行；功能测试的耗时不能代替基准。
+[简体中文](zh-CN/performance.md)
 
-## 工作负载
+`npm run bench:mcp` runs `benchmarks/mcp.ts`: raw JSON results go to stdout and progress to stderr. The benchmark uses local fixtures, a fresh temporary profile, explicit headless mode and the default sandbox, and never contacts external sites. Run it when no tests or other heavy workloads are running in parallel; timings from functional tests are no substitute for the benchmark.
 
-- **传输**：Chrome Pipe 与 WebSocket 各冷启动 3 次；预热 10 次后测 100 次 `Browser.getVersion` 往返，报告 p50/p95/p99 与全部样本。
-- **快照**：100 / 1000 / 10000 个按钮的页面，AX 预热一次后各快照 7 次。输出 limit 固定 200，分别记录完整 CDP AX 响应的节点数与 JSON 字节、实际返回的 JSON 字节和端到端耗时。插桩的 JSON 解析开销计入结果，字节数不含传输分隔符与帧头。
-- **并发 context**：1 / 5 / 20 个独立 context 经官方 InMemory MCP 执行 fill → click → snapshot 并校验文字。每进程最多 4 个 context，基准池上限提高到 5 个进程、20 个租约；预先创建引用、预热一轮后默认测量 5 轮，保留浏览器级串行锁。报告任务分布、吞吐、错误、控制器与 Chrome 的 CPU 和内存，以及全部释放后的池状态。
+## Workloads
 
-环境变量 `BENCH_SAMPLES`、`BENCH_ROUNDS`、`BENCH_NODES`、`BENCH_LEASES` 调整样本数和逗号分隔的规模。输出包含运行时、Chrome、操作系统、CPU、内存与方法说明；任务出错、池未释放或发送了默认禁止的命令都会使脚本失败。
+- **Transport**: 3 cold launches each for Chrome Pipe and WebSocket; after 10 warm-up runs, 100 `Browser.getVersion` round trips, reporting p50/p95/p99 and all samples.
+- **Snapshots**: pages with 100 / 1000 / 10000 buttons; after one AX warm-up, 7 snapshots each. The output limit is fixed at 200. It records the node count and JSON bytes of the full CDP AX response, the JSON bytes actually returned and the end-to-end time. The instrumentation's JSON parsing cost is included in the results, and byte counts exclude transport delimiters and frame headers.
+- **Concurrent contexts**: 1 / 5 / 20 independent contexts run fill → click → snapshot through the official InMemory MCP and check the text. Each process holds at most 4 contexts, and the benchmark pool limit is raised to 5 processes and 20 leases. Refs are created in advance; after one warm-up round, 5 rounds are measured by default, with the browser-level serial lock kept. It reports the task distribution, throughput, errors, controller and Chrome CPU and memory, and the pool state after everything is released.
 
-## 指标口径
+The environment variables `BENCH_SAMPLES`, `BENCH_ROUNDS`, `BENCH_NODES` and `BENCH_LEASES` adjust the sample count and the comma-separated sizes. The output includes the runtime, Chrome, OS, CPU, memory and a description of the method. A failed task, an unreleased pool or a default-forbidden command makes the script fail.
 
-- **控制器内存**：`process.memoryUsage()`。
-- **Chrome 内存**：CDP `SystemInfo.getProcessInfo` 列出的进程 RSS 之和（Linux 读 `/proc/PID/status` 的 VmRSS，Windows 读 WorkingSet64）。共享页会被重复计算，不含未列出的 crash handler，不等于 PSS 或峰值。采样前已退出的进程记为 missing，不当作零。
-- **CPU**：控制器和该 Chrome 进程集合的累计 CPU 时间差；期间退出的进程可能未计入。
-- **尾延迟**：低样本量下 p99 接近最大样本，不代表稳定尾延迟。
+## Metrics
 
-端点采样只描述有限工作负载下的状态，不能证明不存在内存泄漏。
+- **Controller memory**: `process.memoryUsage()`.
+- **Chrome memory**: the sum of RSS for the processes listed by CDP `SystemInfo.getProcessInfo` (VmRSS from `/proc/PID/status` on Linux, WorkingSet64 on Windows). Shared pages are counted more than once, unlisted crash handlers are excluded, and this is neither PSS nor a peak. Processes that exited before sampling are recorded as missing, not as zero.
+- **CPU**: the difference in cumulative CPU time for the controller and that set of Chrome processes; processes that exit in the meantime may not be counted.
+- **Tail latency**: with few samples, p99 is close to the largest sample and does not represent a stable tail latency.
 
-历史 MCP 基线见 [0.2.0 发布文档](https://github.com/jaykwok/nodriver-ts/blob/v0.2.0/docs/performance.md#基线结果)。
+Endpoint sampling only describes the state under a limited workload; it cannot prove the absence of memory leaks.
 
-## 与 Python nodriver 对照
+Historical MCP baselines are in the [0.2.0 release documentation](https://github.com/jaykwok/nodriver-ts/blob/v0.2.0/docs/performance.md#基线结果) (Chinese).
 
-`npm run bench:compare` 运行 `benchmarks/compare.ts`：同一台机器、同一个 Chrome、headless、WebSocket、全新临时 profile 和同一个本地 fixture，两侧执行相同的工作负载。Python 侧通过 `uv` 以隔离模式运行 nodriver 0.50.6（Python 3.12，websockets 17.2），脚本位于 `benchmarks/compare/nodriver_bench.py`。默认先运行 TypeScript，`BENCH_PYTHON_FIRST=1` 时先运行 Python；`BENCH_SAMPLES` 调整往返样本数（默认 200）。
+## Comparison with Python nodriver
 
-- **冷启动**：启动浏览器并打开空白页，各 5 次。headless 启动默认用探测页去除 UA 中的 HeadlessChrome，nodriver 不做这一步，因此另测 `maskHeadless: false` 作为对等口径。
-- **往返**：预热 20 次后测 200 次 `Browser.getVersion` 与 200 次 `evaluate("1+1")`。
-- **查询**：1000 个按钮的页面上 100 次 `#b500`（nodriver 为 `tab.select`，本项目为 `tab.query`）。
-- **导航**：20 次同源导航到新 URL。本项目 `goto` 等待 load 事件；nodriver 的 `get` 在 load 前返回，脚本以 5 ms 间隔轮询 `document.readyState` 至 complete。
-- **AX 树**：10000 个按钮的页面上 5 次 `Accessibility.getFullAXTree`（30003 个节点），含响应解析。
-- **内存**：运行结束时控制器进程的 RSS。不同运行时的内存模型不同，只作参考。
+`npm run bench:compare` runs `benchmarks/compare.ts`: the same machine, the same Chrome, headless, WebSocket, a fresh temporary profile and the same local fixture, with both sides running the same workload. The Python side runs nodriver 0.50.6 in isolated mode through `uv` (Python 3.12, websockets 17.2); its script is `benchmarks/compare/nodriver_bench.py`. TypeScript runs first by default, and Python first with `BENCH_PYTHON_FIRST=1`. `BENCH_SAMPLES` adjusts the number of round-trip samples (200 by default).
 
-Ryzen 5 5600X、Windows 11、Chrome 155.0.8059.80，nodriver-ts 运行在 Node.js 24.22.0 上，两种顺序各运行一次，表中为中位数 / p95（ms）：
+- **Cold launch**: launch the browser and open a blank page, 5 times each. A headless launch uses a probe page by default to remove HeadlessChrome from the UA, which nodriver does not do, so `maskHeadless: false` is measured separately as the like-for-like figure.
+- **Round trips**: after 20 warm-up runs, 200 `Browser.getVersion` and 200 `evaluate("1+1")` calls.
+- **Query**: 100 lookups of `#b500` on a page with 1000 buttons (`tab.select` in nodriver, `tab.query` in this project).
+- **Navigation**: 20 same-origin navigations to new URLs. This project's `goto` waits for the load event; nodriver's `get` returns before load, so the script polls `document.readyState` every 5 ms until it is complete.
+- **AX tree**: 5 `Accessibility.getFullAXTree` calls (30003 nodes) on a page with 10000 buttons, including response parsing.
+- **Memory**: the controller process's RSS at the end of the run. Memory models differ between runtimes, so this is for reference only.
 
-| 指标                 | nodriver-ts，TS 先行 | nodriver-ts，Python 先行 | nodriver，TS 先行 | nodriver，Python 先行 |
-| -------------------- | -------------------: | -----------------------: | ----------------: | --------------------: |
-| 冷启动（默认）       |       577.3 / 1033.6 |            442.0 / 539.1 |     374.4 / 801.6 |         342.7 / 354.3 |
-| 冷启动（不处理 UA）  |        333.6 / 347.9 |            329.3 / 333.5 |                 — |                     — |
-| `Browser.getVersion` |          0.18 / 0.44 |              0.18 / 0.39 |       0.24 / 0.34 |           0.29 / 0.41 |
-| `evaluate("1+1")`    |          0.24 / 0.31 |              0.24 / 0.33 |       0.34 / 0.61 |           0.34 / 0.73 |
-| CSS 查询             |          1.01 / 1.46 |              1.04 / 1.38 |     19.93 / 48.76 |         20.34 / 50.78 |
-| 导航                 |        11.22 / 15.56 |            11.05 / 11.73 |     12.69 / 14.59 |         12.68 / 14.68 |
-| AX 树，30003 节点    |        627.3 / 652.0 |            603.7 / 696.1 |   1401.0 / 1604.3 |       1418.4 / 1541.5 |
-| 控制器 RSS，MiB      |                  241 |                      206 |               494 |                   495 |
+Ryzen 5 5600X, Windows 11, Chrome 155.0.8059.80, nodriver-ts on Node.js 24.22.0, one run in each order; the table shows median / p95 (ms):
 
-单次运行，结果只描述此工作负载在此机器上的表现；5 次冷启动的 p95 即最大样本，受偶发慢启动影响。查询差异来自实现方式不同（nodriver 的 `select` 每次以 `DOM.getDocument(depth=-1, pierce=true)` 取回完整 DOM 树，再在 Python 中递归查找节点），不代表 CDP 通信本身的差距；导航一项两侧的完成判定方式不同。
+| Metric                     | nodriver-ts, TS first | nodriver-ts, Python first | nodriver, TS first | nodriver, Python first |
+| -------------------------- | --------------------: | ------------------------: | -----------------: | ---------------------: |
+| Cold launch (default)      |        577.3 / 1033.6 |             442.0 / 539.1 |      374.4 / 801.6 |          342.7 / 354.3 |
+| Cold launch (UA untouched) |         333.6 / 347.9 |             329.3 / 333.5 |                  — |                      — |
+| `Browser.getVersion`       |           0.18 / 0.44 |               0.18 / 0.39 |        0.24 / 0.34 |            0.29 / 0.41 |
+| `evaluate("1+1")`          |           0.24 / 0.31 |               0.24 / 0.33 |        0.34 / 0.61 |            0.34 / 0.73 |
+| CSS query                  |           1.01 / 1.46 |               1.04 / 1.38 |      19.93 / 48.76 |          20.34 / 50.78 |
+| Navigation                 |         11.22 / 15.56 |             11.05 / 11.73 |      12.69 / 14.59 |          12.68 / 14.68 |
+| AX tree, 30003 nodes       |         627.3 / 652.0 |             603.7 / 696.1 |    1401.0 / 1604.3 |        1418.4 / 1541.5 |
+| Controller RSS, MiB        |                   241 |                       206 |                494 |                    495 |
 
-## 未覆盖
+These are single runs and describe only this workload on this machine. With 5 cold launches, p95 is the largest sample and is affected by occasional slow launches. The query difference comes from different implementations (nodriver's `select` fetches the full DOM tree with `DOM.getDocument(depth=-1, pierce=true)` every time and then searches the nodes recursively in Python); it does not reflect a difference in CDP communication itself. For navigation, the two sides decide completion differently.
 
-- 大页面高频查询的长期成本和多日资源曲线（长稳运行见 [长稳测试](soak.md)）。
-- 任何内存下降或吞吐提升比例的结论。
+## Not covered
+
+- The long-term cost of high-frequency queries on large pages, and resource curves over several days (for long runs see the [soak test](soak.md)).
+- Any conclusion about percentages of memory reduction or throughput gains.

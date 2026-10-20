@@ -1,76 +1,78 @@
-# 自动化痕迹审计
+# Automation audit
 
-默认架构不自动发送 `Runtime.enable`，也不向页面主世界注入任何东西。这减少了一类常见的 CDP 检测面，但不等于隐藏全部浏览器自动化行为，也不承诺任何站点放行。
+[简体中文](zh-CN/automation-audit.md)
 
-## 默认行为
+By default the library never sends `Runtime.enable` and injects nothing into the page's main world. This removes one common class of CDP detection. It does not hide all signs of browser automation, and it does not promise that any site will let you through.
 
-| 检查项              | 行为                                                                                                                                                                                                                                                                                         |
-| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Runtime.enable      | 主页面、popup、同进程 iframe、嵌套 OOPIF 和重连都不自动发送，也不先 enable 再 disable；Console、Debugger 域同样不启用                                                                                                                                                                        |
-| 主世界定位          | `Page.createIsolatedWorld` 获取精确 frame；隔离世界 Document → `DOM.describeNode` → `DOM.resolveNode`（省略 executionContextId）得到同一 Document 的主世界对象                                                                                                                               |
-| objectId 校验       | 严格检查 V8 格式、上下文范围、隔离世界官方 ID、isolate 一致性和主世界 Document 的 backendNodeId；不兼容时抛 `UnsupportedError`，不退回启用 Runtime                                                                                                                                           |
-| 上下文生命周期      | 缓存绑定 frame、session 与文档代次；导航、BFCache、进程切换、崩溃、`setContent` 后失效。上下文消失使下一次调用重新发现，当前用户脚本不重放                                                                                                                                                   |
-| 临时对象            | 发现过程产生的对象以 objectGroup 在 finally 中释放，调用者取消后仍尝试清理                                                                                                                                                                                                                   |
-| 主世界注入          | 无 `Runtime.addBinding`、postMessage 通道、插入 script 或框架全局对象，没有固定 sourceURL。用户显式的 evaluate/addInitScript 保留各自语义；init script 使用每个标签页随机的 world 名称                                                                                                       |
-| DOM 辅助            | 查询与动作检查在随机命名的隔离世界执行，不申请跨源通用访问权限                                                                                                                                                                                                                               |
-| navigator.webdriver | 通过 Chromium 的 AutomationControlled 启动开关关闭，getter 保持原生实现，navigator 上不增加属性                                                                                                                                                                                              |
-| Headless UA         | `maskHeadless`（headless 默认开启，显式 `userAgent` 时不生效）在所有目标上用 `Emulation.setUserAgentOverride` 去掉 HeadlessChrome，并附上从 `chrome://version` 读取的原生 UA-CH，避免 Client Hints 消失。文档、HTTP 请求头与专用 Worker 一致；Shared/Service Worker 是独立目标，可能保留原值 |
-| 协议面              | `Network.enable` 按需发送；路由与认证只用 Fetch 域。默认穿透查询用 `DOM.getDocument` 识别 closed shadow root，这会让该 session 收到 DOM 结构事件                                                                                                                                             |
-| 输入                | human 模式下 US 布局字符发送成对 keyDown/keyUp（大写与上档符号自动按 Shift），修饰键与无文本键用 rawKeyDown；按下及按住移动时 pointer pressure 为 0.5；首个指针位置在视口 15–85% 随机；只在其他标签页可能处于前台时调用 `Page.bringToFront`                                                  |
-| 浏览器机制          | 保留 sandbox、站点隔离和 CSP。Pipe 不监听调试 TCP 端口，WebSocket 仍支持本地与远程连接。agent 预设只关闭首次运行、搜索引擎选择、崩溃恢复气泡和后台节流                                                                                                                                       |
+## Default behaviour
 
-Chromium 在未指定上下文时把 DOM 节点包装到所属 frame 的主世界，见 [ResolveNode 源码](https://github.com/chromium/chromium/blob/main/third_party/blink/renderer/core/inspector/resolve_node.cc)。[V8 的 objectId 格式](https://github.com/v8/v8/blob/main/src/inspector/remote-object-id.cc)是内部实现，CDP 不保证其稳定，因此支持范围限定在已实测的 Chrome 154/155。
+| Check                  | Behaviour                                                                                                                                                                                                                                                                                                                                                                                               |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Runtime.enable         | Never sent automatically for main pages, popups, same-process iframes, nested OOPIFs or reconnects, and never enabled then disabled. The Console and Debugger domains are not enabled either                                                                                                                                                                                                            |
+| Finding the main world | `Page.createIsolatedWorld` targets the exact frame; isolated-world Document → `DOM.describeNode` → `DOM.resolveNode` (without executionContextId) yields the main-world object for the same Document                                                                                                                                                                                                    |
+| objectId validation    | Strict checks of the V8 format, context scope, the isolated world's official ID, isolate identity and the main-world Document's backendNodeId. An incompatible format throws `UnsupportedError`; there is no fallback to enabling Runtime                                                                                                                                                               |
+| Context lifecycle      | The cache is bound to the frame, session and document generation, and is invalidated by navigation, BFCache, process swaps, crashes and `setContent`. A vanished context is rediscovered on the next call; the current user script is not replayed                                                                                                                                                      |
+| Temporary objects      | Objects created during discovery are released by objectGroup in `finally`, and cleanup is still attempted after the caller cancels                                                                                                                                                                                                                                                                      |
+| Main-world injection   | No `Runtime.addBinding`, postMessage channel, inserted script or library global, and no fixed sourceURL. Explicit user evaluate/addInitScript calls keep their own semantics; init scripts use a random world name per tab                                                                                                                                                                              |
+| DOM helpers            | Queries and action checks run in a randomly named isolated world without requesting universal cross-origin access                                                                                                                                                                                                                                                                                       |
+| navigator.webdriver    | Turned off with Chromium's AutomationControlled launch switch. The getter stays native, and no property is added to navigator                                                                                                                                                                                                                                                                           |
+| Headless UA            | `maskHeadless` (on by default when headless, ignored when `userAgent` is set) uses `Emulation.setUserAgentOverride` on every target to remove HeadlessChrome, and attaches the native UA-CH read from `chrome://version` so Client Hints do not disappear. Documents, HTTP request headers and dedicated workers agree; shared and service workers are separate targets and may keep the original value |
+| Protocol surface       | `Network.enable` is sent on demand; routing and authentication use only the Fetch domain. Piercing queries (the default) use `DOM.getDocument` to find closed shadow roots, which makes that session receive DOM structure events                                                                                                                                                                       |
+| Input                  | In human mode, US-layout characters are sent as keyDown/keyUp pairs (Shift is added for capitals and shifted symbols), and modifiers and keys without text use rawKeyDown. Pointer pressure is 0.5 while pressed and while moving with a button held. The first pointer position is random within 15–85% of the viewport. `Page.bringToFront` is called only when another tab may be in front           |
+| Browser mechanisms     | The sandbox, site isolation and CSP stay on. Pipe does not listen on a debugging TCP port; WebSocket still supports local and remote connections. The agent preset only disables first-run UI, the search engine choice screen, the crash-restore bubble and background throttling                                                                                                                      |
 
-AX 快照使用 Accessibility 域，页面无法直接观察，但会让渲染进程构建可访问性树，带来轻微的时序与内存变化，未做专项测量。
+When no context is specified, Chromium wraps a DOM node in the main world of the frame it belongs to; see the [ResolveNode source](https://github.com/chromium/chromium/blob/main/third_party/blink/renderer/core/inspector/resolve_node.cc). [V8's objectId format](https://github.com/v8/v8/blob/main/src/inspector/remote-object-id.cc) is an internal implementation detail that CDP does not promise to keep stable, so support is limited to the Chrome 154/155 versions that have been tested.
 
-## 回归验证
+The AX snapshot uses the Accessibility domain. Pages cannot observe it directly, but it makes the renderer build the accessibility tree, which causes slight timing and memory changes. These have not been measured specifically.
+
+## Regression checks
 
 ```sh
 npm run test:audit
 npm run test:all
 ```
 
-- `test/integration/runtime.test.ts` 在浏览器启动前截取 `Transport.send` 的真实消息，覆盖双传输、四类 frame（含嵌套 OOPIF）、中文输入、closed shadow root、JSHandle、导航、BFCache、popup 与 WebSocket 重连，断言禁用域、绑定和自动 init script 命令为零。另用独立浏览器显式启用 Runtime 作阳性对照，证明采集器能看到这些命令及 executionContextCreated/consoleAPICalled 事件。
-- 所有集成测试、HTTP/socket/嵌入 MCP 测试和长稳测试同样断言自动发送的禁用命令为零。
-- 页面自有探针比较操作前后的主世界全局属性、元素属性、DOM 结构与属性变更、console 函数和 webdriver getter；查询与输入没有留下这些痕迹，四类 frame 的 webdriver 均为 false 且 getter 为原生。页面仍能观察鼠标事件、表单值和滚动。
-- Chrome 155 中 Error.stack getter 在启用 Runtime 的阳性对照里也不被读取，Error.name 会在 console 调用本身被读取。因此以协议命令与事件为主要证据，老式 stack 探针的结果不能说明 CDP 检测已消除。
-- `test/integration/stealth.test.ts` 固化 UA/UA-CH、pointer pressure 与按键序列；单元测试覆盖不兼容 objectId、错误的世界或文档、临时句柄清理、发现期间导航和上下文消失后的恢复。
+- `test/integration/runtime.test.ts` captures the real messages passed to `Transport.send` from before the browser starts. It covers both transports, four kinds of frame (including nested OOPIFs), Chinese text input, closed shadow roots, JSHandle, navigation, BFCache, popups and WebSocket reconnection, and asserts that there are zero disabled domains, bindings and automatic init-script commands. As a positive control, a separate browser enables Runtime explicitly, proving that the collector does see those commands and the executionContextCreated/consoleAPICalled events.
+- Every integration test, the HTTP/socket/embedded MCP tests and the soak test also assert that no disabled command is sent automatically.
+- A probe owned by the page compares main-world globals, element properties, DOM structure and attribute mutations, console functions and the webdriver getter before and after each operation. Queries and input leave none of these traces; in all four kinds of frame, webdriver is false and the getter is native. The page can still observe mouse events, form values and scrolling.
+- In Chrome 155, the Error.stack getter is not read even in the positive control with Runtime enabled, and Error.name is read by the console call itself. Protocol commands and events are therefore the primary evidence; an old-style stack probe's result cannot show that CDP detection has been removed.
+- `test/integration/stealth.test.ts` pins the UA/UA-CH, pointer pressure and key sequences. Unit tests cover incompatible objectIds, wrong worlds or documents, cleanup of temporary handles, navigation during discovery, and recovery after a context disappears.
 
-## 第三方检测
+## Third-party detectors
 
-### 固定提交的检测器
+### Detectors pinned to a commit
 
-在 Windows Chrome 155.0.8059.80 与 WSLg Chrome for Testing 155.0.8059.79 上，以有界面/无界面 × Pipe/WebSocket 四种组合运行，不打开 DevTools，不修改 UA、字体、时区或网络出口；检测器源码按 Git blob SHA1 校验，未改动检测逻辑。
+Run on Windows Chrome 155.0.8059.80 and WSLg Chrome for Testing 155.0.8059.79, in four combinations of headful/headless × Pipe/WebSocket, without opening DevTools and without changing the UA, fonts, timezone or network egress. Detector sources were verified by Git blob SHA1, and their detection logic was not modified.
 
-- [rebrowser-bot-detector e1a25b1](https://github.com/rebrowser/rebrowser-bot-detector/tree/e1a25b1ff264cc9a5b5ea7fe8a6dfc26e3b1c718)：Windows 四种组合无正向命中；WSL 的 UA 检查提示 Chrome for Testing 的品牌集合缺少 Google Chrome。exposeFunction 检查不适用；runtimeEnableLeak 的有效性受上文阳性对照的限制。
-- [Brotector 98b3309](https://github.com/ttlns/brotector/tree/98b330999e9928a226ca0c8254dddf909d1583bd)：每种组合分别在 crash 探针关闭与开启时运行，CSP 允许所需的同源和 Blob Worker；均无检测回调，开启 crash 探针时未崩溃。
+- [rebrowser-bot-detector e1a25b1](https://github.com/rebrowser/rebrowser-bot-detector/tree/e1a25b1ff264cc9a5b5ea7fe8a6dfc26e3b1c718): no positive hits in any of the four Windows combinations. On WSL, the UA check notes that Chrome for Testing's brand list lacks Google Chrome. The exposeFunction check does not apply; the validity of runtimeEnableLeak is limited by the positive-control finding above.
+- [Brotector 98b3309](https://github.com/ttlns/brotector/tree/98b330999e9928a226ca0c8254dddf909d1583bd): each combination was run with the crash probe off and on, with a CSP that allows the required same-origin and Blob workers. No detection callback fired, and nothing crashed with the crash probe on.
 
-### 在线检测页
+### Online detection pages
 
-经授权访问 CreepJS、BrowserScan 与 Pixelscan 的实际检测页，Windows Chrome 155.0.8059.80 / Pipe，每格使用新的临时 profile，不拦截请求、不覆盖 UA 或环境、不配置代理或 WebRTC 限制。结果早于 `maskHeadless` 默认开启，headless 列对应原生 HeadlessChrome UA。
+With authorization, the live detection pages of CreepJS, BrowserScan and Pixelscan were visited on Windows Chrome 155.0.8059.80 / Pipe. Each cell used a new temporary profile, with no request interception, no UA or environment overrides, and no proxy or WebRTC restrictions. These results predate `maskHeadless` being on by default, so the headless column reflects the native HeadlessChrome UA.
 
-| 检测项                                      | 有界面，instant  | headless，instant | 有界面，human（seed=42） |
-| ------------------------------------------- | ---------------- | ----------------- | ------------------------ |
-| CreepJS：like-headless / headless / stealth | 19% / 0% / 0%    | 25% / 67% / 0%    | 19% / 0% / 0%            |
-| BrowserScan                                 | Normal           | Robot             | Normal                   |
-| Pixelscan：Bot check                        | 未报告自动化行为 | 报告自动化行为    | 未报告自动化行为         |
-| Pixelscan：指纹一致性                       | inconsistent     | inconsistent      | inconsistent             |
+| Check                                       | Headful, instant       | Headless, instant   | Headful, human (seed=42) |
+| ------------------------------------------- | ---------------------- | ------------------- | ------------------------ |
+| CreepJS: like-headless / headless / stealth | 19% / 0% / 0%          | 25% / 67% / 0%      | 19% / 0% / 0%            |
+| BrowserScan                                 | Normal                 | Robot               | Normal                   |
+| Pixelscan: Bot check                        | No automation reported | Automation reported | No automation reported   |
+| Pixelscan: fingerprint consistency          | inconsistent           | inconsistent        | inconsistent             |
 
-- WSLg Linux 上（拦截了非授权的第三方子请求）结论相同：headless 为 Robot 并报告自动化行为，有界面为 Normal；CreepJS like-headless 有界面 44%、headless 50%。
-- Pixelscan 另显示 Timezone spoofed、Proxy detected。原生 JS 时区与站点推断的出口时区不同，这些标签不说明库伪造了环境。
-- human 列在两次移动和两次滚动中分别产生 9/8/7/4 个事件（instant 为各 1 个），判定未变化。没有点击或打字检测、物理输入对照；页面可能缓存首次判定，不能据此认定 human 策略有效或无效。
-- 九格的协议禁止命令均为零，webdriver 均为 false，临时 profile 全部清理。CreepJS 分数不是检测概率。
+- On WSLg Linux (with unauthorized third-party subrequests blocked) the conclusions were the same: headless was Robot and reported as automated, and headful was Normal. CreepJS like-headless was 44% headful and 50% headless.
+- Pixelscan also showed Timezone spoofed and Proxy detected. The native JS timezone differed from the timezone the site inferred from the egress address; these labels do not mean the library spoofed the environment.
+- The human column produced 9/8/7/4 events for two moves and two scrolls (instant produced 1 each), and the verdicts did not change. There was no click or typing detection and no physical-input control, and pages may cache their first verdict, so this neither shows that the human policy works nor that it does not.
+- In all nine cells, zero forbidden protocol commands were sent, webdriver was false, and every temporary profile was cleaned up. CreepJS scores are not detection probabilities.
 
-第三方源码、原始结果、截图和出口地址保存在维护者本地，不进入仓库或安装包。
+Third-party sources, raw results, screenshots and egress addresses are kept locally by the maintainer and are not part of the repository or the package.
 
-## 仍可观察的特征
+## Signals that remain observable
 
-1. **Headless**：`maskHeadless` 只改 UA 与 UA-CH，屏幕尺寸（如 800×600）等其他 headless 信号不变，有界面模式也不保证隐藏全部特征。推荐有界面模式；无图形桌面时须显式选择 headless，不自动降级。
-2. **执行世界**：`evaluate()` 默认在 main world 运行，以便访问页面业务对象，页面可以 hook 自己的方法。通用 DOM 读取可用 `query()` 或 `evaluate(fn, arg, { world: 'isolated' })`；隔离世界也共享 DOM。
-3. **环境一致性**：UA、Client Hints、语言、时区、屏幕、字体、GPU、Worker 信息和代理出口需要分别测量。有界面模式保留浏览器原始值；headless 只把 HeadlessChrome 换成 Chrome，不套用其他系统的 UA。只改一个字段会造成不一致，`setEnvironment()` 不负责完整的 Worker/设备一致性。
-4. **输入**：点击和文字经 CDP Input 派发，页面仍能观察时序与轨迹；select 等 DOM 改值派发合成事件。不承诺所有操作都像物理设备输入。
-5. **外部因素**：连接前已存在的 DevTools 或其他 CDP 客户端、调用者手动启用的域、TLS/IP 信誉、代理与 WebRTC 出口都不在默认行为的覆盖范围内。Pipe 只减少本机调试端口暴露。
+1. **Headless**: `maskHeadless` changes only the UA and UA-CH. Other headless signals such as the screen size (for example 800×600) are unchanged, and headful mode does not hide every signal either. Headful mode is recommended; without a graphical desktop, choose headless explicitly — there is no automatic fallback.
+2. **Execution world**: `evaluate()` runs in the main world by default so that it can reach the page's own objects, which means the page can hook its own methods. For generic DOM reads use `query()` or `evaluate(fn, arg, { world: 'isolated' })`; isolated worlds still share the DOM.
+3. **Environment consistency**: the UA, Client Hints, language, timezone, screen, fonts, GPU, worker values and proxy egress each need to be measured. Headful mode keeps the browser's original values; headless only replaces HeadlessChrome with Chrome and never applies another system's UA. Changing a single field creates inconsistencies, and `setEnvironment()` does not take care of full worker/device consistency.
+4. **Input**: clicks and text are dispatched through CDP Input, and the page can still observe timing and trajectories. DOM value changes such as select dispatch synthetic events. There is no promise that every action looks like input from a physical device.
+5. **External factors**: DevTools or other CDP clients that were already attached, domains the caller enables manually, TLS/IP reputation, and proxy and WebRTC egress are outside what the defaults cover. Pipe only reduces exposure of a local debugging port.
 
-## 未覆盖
+## Not covered
 
-当前版本的在线检测页复测、普通物理浏览器操作或 Python nodriver 的同机对照、外部业务登录与长期对抗测试。
+Re-running the online detection pages against the current version, side-by-side comparisons with an ordinary physically operated browser or with Python nodriver on the same machine, logins to external services, and long-term adversarial testing.

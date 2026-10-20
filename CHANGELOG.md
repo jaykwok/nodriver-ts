@@ -2,9 +2,10 @@
 
 All notable changes are recorded here. The project follows [Semantic Versioning](https://semver.org/); before 1.0, minor versions may contain breaking changes.
 
-## Unreleased
+## 0.2.1 — 2026-10-21
 
 - CI and platform workflows now run only Node.js, with Node.js 24 source tests and Node.js 22 package smoke tests. Runtime guidance and validation documentation focus on Node.js.
+- Documentation under `docs/` is now in English; the Simplified Chinese versions move to `docs/zh-CN/` and ship in the package. `npm run test:map` writes both language versions of the API test map.
 
 ## 0.2.0 — 2026-10-20
 

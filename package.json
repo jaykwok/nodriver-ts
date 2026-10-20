@@ -1,6 +1,6 @@
 {
   "name": "nodriver-ts",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Unofficial TypeScript redesign of nodriver: Chrome automation over CDP without Runtime.enable, with a native MCP server (Streamable HTTP and stdio)",
   "keywords": [
     "nodriver",
@@ -61,7 +61,8 @@
     "README.zh-CN.md",
     "CHANGELOG.md",
     "LICENSE",
-    "docs/*.md"
+    "docs/*.md",
+    "docs/zh-CN/*.md"
   ],
   "scripts": {
     "mcp": "node src/mcp/cli.ts",
@@ -83,8 +84,8 @@
     "example": "node examples/basic.ts",
     "bench:mcp": "node benchmarks/mcp.ts",
     "bench:compare": "node benchmarks/compare.ts",
-    "format": "prettier --write src test examples benchmarks \"*.md\" \"docs/*.md\"",
-    "format:check": "prettier --check src test examples benchmarks \"*.md\" \"docs/*.md\"",
+    "format": "prettier --write src test examples benchmarks \"*.md\" \"docs/*.md\" \"docs/zh-CN/*.md\"",
+    "format:check": "prettier --check src test examples benchmarks \"*.md\" \"docs/*.md\" \"docs/zh-CN/*.md\"",
     "prepack": "npm run check && npm run build"
   },
   "dependencies": {

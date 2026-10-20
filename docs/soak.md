@@ -1,54 +1,56 @@
-# 长稳测试
+# Soak test
+
+[简体中文](zh-CN/soak.md)
 
 ```sh
 npm run test:soak -- --hours 24 --output dev/soak-my-run
 ```
 
-任务在前台运行，默认每 15 秒一轮，使用两个独立的临时 Chrome：本地 Streamable HTTP + Chrome Pipe，以及本地 socket + Chrome WebSocket。浏览器、HTTP fixture 和协议服务都是本地资源，HTTP 只监听 loopback，不访问外部站点。
+The task runs in the foreground, one cycle every 15 s by default, using two independent temporary Chromes: local Streamable HTTP + Chrome Pipe, and local socket + Chrome WebSocket. The browsers, HTTP fixture and protocol services are all local; HTTP listens only on loopback, and no external sites are contacted.
 
-## 每轮检查
+## Checks in each cycle
 
-- MCP 中文输入、实际点击计数恰好增加一次、AX 快照、引用和事件缓冲上限。
-- 创建第二个隔离租约，加载四个 frame，验证 Cookie 隔离、导航后句柄失效和 context 关闭。
-- 等待 tab、context、session、监听器和 pending 请求回到基线。
+- MCP Chinese text input, a real click counter that increases by exactly one, an AX snapshot, refs, and the event buffer limit.
+- Create a second, isolated lease, load four frames, and verify cookie isolation, handle invalidation after navigation and context closing.
+- Wait for tabs, contexts, sessions, listeners and pending requests to return to their baseline.
 
-主租约和浏览器在整个运行期间保持存活，不通过每轮重启进程来规避资源增长。默认禁止 `Runtime.enable/disable/addBinding`、`Console.enable`、`Debugger.enable` 和自动 init script，并记录真实 CDP 命令计数。
+The main lease and browser stay alive for the whole run; processes are not restarted each cycle to hide resource growth. By default `Runtime.enable/disable/addBinding`, `Console.enable`, `Debugger.enable` and automatic init scripts are forbidden, and real CDP command counts are recorded.
 
-每分钟采样控制器 RSS/heap/CPU、Chrome 进程 RSS/CPU、Windows handle 或 Linux fd、目标页面 JS heap/DOM、引用数和内部资源计数。RSS 会重复计算共享页，判断泄漏需要结合时间曲线与资源基线，单个采样点不能说明问题。
+Every minute the test samples controller RSS/heap/CPU, Chrome process RSS/CPU, Windows handles or Linux fds, the target page's JS heap/DOM, ref counts and internal resource counts. RSS counts shared pages more than once; judging a leak needs the curve over time and the resource baselines, and no single sample says anything on its own.
 
-## 输出与控制
+## Output and control
 
-输出目录中不能已有 `status.json`，以免覆盖之前的结果。目录包含：
+The output directory must not already contain `status.json`, so earlier results are never overwritten. The directory contains:
 
-- `status.json`：状态、PID、开始与预计结束时间（ISO UTC）、轮数、心跳间隔、源码哈希和资源归属。
-- `samples.jsonl`：逐分钟的内存、CPU 与资源样本。
-- `stdout.log`：后台启动时保存的逐轮进度。
-- `STOP`：创建此文件后，任务在当前轮收尾时停止，关闭所有自有浏览器与租约，并验证临时 profile 已删除。
+- `status.json`: state, PID, start and expected end times (ISO UTC), cycle count, heartbeat interval, source hash and resource ownership.
+- `samples.jsonl`: per-minute memory, CPU and resource samples.
+- `stdout.log`: per-cycle progress, saved when started in the background.
+- `STOP`: once this file is created, the task stops at the end of the current cycle, closes every owned browser and lease, and verifies that the temporary profiles were deleted.
 
 ```powershell
-New-Item -ItemType File -Path '<输出目录>\STOP'   # Windows
+New-Item -ItemType File -Path '<output directory>\STOP'   # Windows
 ```
 
 ```sh
-touch <输出目录>/STOP                            # Linux / WSL
+touch <output directory>/STOP                            # Linux / WSL
 ```
 
-`status` 取值为 starting、running、completed、completed-cycles、stopped 或 failed。只有达到计划时长且清理检查通过才标记 completed。`--cycles 5 --interval-ms 50` 用于快速自检，结果为 completed-cycles，不计为长稳通过。任务依赖主机保持唤醒：心跳缺口超过两分钟或三倍间隔即记为失败并清理，避免把休眠时间算作运行时间。浏览器断开或操作出错同样失败，不自动重启或重放输入。
+`status` is one of starting, running, completed, completed-cycles, stopped or failed. Only a run that reaches the planned duration and passes the cleanup checks is marked completed. `--cycles 5 --interval-ms 50` is for a quick self-check; its result is completed-cycles, which does not count as a soak pass. The task relies on the host staying awake: a heartbeat gap longer than two minutes or three intervals is recorded as a failure and cleaned up, so time spent asleep is never counted as run time. A browser disconnect or an operation error also fails the run; there is no automatic restart or input replay.
 
-## 当前结果
+## Current results
 
-Windows 11 x64（Ryzen 5 5600X），Node.js 24.22.0，Chrome 155.0.8059.80，2026-10-19 02:53 至 2026-10-20 02:53（UTC）运行满 24 小时，状态 completed：
+Windows 11 x64 (Ryzen 5 5600X), Node.js 24.22.0, Chrome 155.0.8059.80. The run lasted the full 24 hours, from 2026-10-19 02:53 to 2026-10-20 02:53 (UTC), with status completed:
 
-- 两种模式各完成 5342 轮，没有失败或重试；最大心跳间隔 21.6 秒，主机全程未休眠。
-- 两条传输各发送 586,355 条 CDP 命令，默认禁止的命令为 0。
-- 每轮结束时 tab、context、session、监听器与 pending 请求均回到基线（2 / 3 / 4 / 32 / 0），保留的引用数恒为 22。
-- 控制器 RSS 各小时中位数在 110–119 MiB 之间，JS heap 34–40 MiB，没有上升趋势；10 个采样点出现最高 191 MiB 的瞬时峰值，随后回落。
-- Chrome 进程 working set 之和由约 1.45 GiB 降至约 0.94 GiB；全部进程的 handle 总数由 8845 变为 8899（各取首末一小时的中位数），进程数恒为 19。
-- 结束时两个浏览器均已关闭，租约、浏览器和分配计数归零，临时 profile 已删除。
+- Each mode completed 5342 cycles with no failures or retries. The largest heartbeat gap was 21.6 s, and the host never slept.
+- Each transport sent 586,355 CDP commands, with 0 default-forbidden commands.
+- At the end of every cycle, tabs, contexts, sessions, listeners and pending requests were back at their baseline (2 / 3 / 4 / 32 / 0), and the number of retained refs stayed at 22.
+- The hourly median of controller RSS stayed between 110 and 119 MiB, and the JS heap between 34 and 40 MiB, with no upward trend. 10 samples showed transient peaks of up to 191 MiB, which then fell back.
+- The total working set of Chrome processes went from about 1.45 GiB down to about 0.94 GiB. The total handle count across all processes went from 8845 to 8899 (medians of the first and last hour), and the process count stayed at 19.
+- At the end both browsers were closed, the lease, browser and allocation counts were zero, and the temporary profiles were deleted.
 
-主标签页的 V8 JS heap 与 DOM 计数保持平稳；`Runtime.getHeapUsage` 中有两项随轮数线性上升。600 轮快速运行（`--cycles 600 --interval-ms 50`）的每轮增量与 24 小时运行相同，说明增长取决于操作次数而非时间：
+The main tab's V8 JS heap and DOM counts stayed flat; two values from `Runtime.getHeapUsage` grew linearly with the cycle count. A quick 600-cycle run (`--cycles 600 --interval-ms 50`) showed the same per-cycle increase as the 24-hour run, which shows that the growth depends on the number of operations rather than on time:
 
-- **backingStorageSize**（外部字符串与 ArrayBuffer）24 小时增加约 0.1 MiB。来源是测试 fixture：页面脚本把每次 input 事件的值追加到 `globalThis.inputs` 且从不清空，每轮增量等于当轮文本长度；清空该数组并强制回收后回到初始值。
-- **embedderHeapUsedSize**（Blink 堆）回收后的低点由约 1.3 MiB 升至约 7 MiB，约 1 KB/轮。单独复现时，只用原始 CDP 对同一页面反复执行"聚焦并全选输入框 + `Input.insertText` + `Accessibility.getFullAXTree`"，强制回收后每 2000 次同样增加约 1.2 MiB；去掉 AX 快照或改用脚本赋值时增量小且有界，DOM 不变时反复快照不增长，`Accessibility.disable` 不释放，页面导航后全部释放。这是 Chrome 在同一文档内交替编辑文本与读取 AX 树时保留的内存，不经过框架，也不在框架持有的资源中。长时间停留在同一页面、反复输入并调用 `browser_snapshot` 时会看到同样的增长，导航或重新加载页面即可释放。
+- **backingStorageSize** (external strings and ArrayBuffers) grew by about 0.1 MiB over 24 hours. The cause is the test fixture: the page script appends the value of every input event to `globalThis.inputs` and never clears it, so each cycle adds that cycle's text length. Clearing the array and forcing a garbage collection returns it to the initial value.
+- **embedderHeapUsedSize** (the Blink heap) rose from a post-GC low of about 1.3 MiB to about 7 MiB, roughly 1 KB per cycle. In an isolated reproduction using only raw CDP against the same page, repeating "focus and select all in an input + `Input.insertText` + `Accessibility.getFullAXTree`" also added about 1.2 MiB per 2000 iterations after forced GC. Without the AX snapshot, or with a script assignment instead, the increase was small and bounded; repeated snapshots without DOM changes did not grow; `Accessibility.disable` did not release it; navigating the page released all of it. This is memory Chrome retains when text edits and AX tree reads alternate in the same document. It does not pass through the library and is not in any resource the library holds. You will see the same growth if you stay on one page for a long time, typing repeatedly and calling `browser_snapshot`; navigating or reloading the page releases it.
 
-以上为单台主机的一次运行，不代表其他平台或负载下的结果。
+These results come from one run on one host and do not represent other platforms or workloads.

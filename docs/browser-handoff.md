@@ -1,14 +1,16 @@
-# 浏览器交接与 CDP 事件
+# Browser handoff and CDP events
 
-`nodriver-ts` 可以直接作为进程内的库使用。浏览器交接不经过 MCP，也不改变 MCP 协议版本。
+[简体中文](zh-CN/browser-handoff.md)
 
-## 启动、交接与重连
+`nodriver-ts` can be used directly as an in-process library. Browser handoff does not go through MCP and does not change the MCP protocol version.
+
+## Launch, hand off and reconnect
 
 ```ts
 import { writeFile, readFile } from 'node:fs/promises';
 import { Browser } from 'nodriver-ts';
 
-// 第一次运行：成功后保留浏览器；失败时仍由 await using 清理。
+// First run: keep the browser on success; on failure, await using still cleans up.
 {
   await using browser = await Browser.launch({
     detached: true,
@@ -16,14 +18,14 @@ import { Browser } from 'nodriver-ts';
     userDataDir: './exam-profile',
   });
   const tab = browser.tabs[0]!;
-  // 执行应用自己的工作。
-  // 先保存地址，避免 release 成功后写文件失败，失去重连信息。
+  // Do the application's own work.
+  // Save the endpoint first, so a failed write after a successful release cannot lose it.
   await writeFile('./browser-endpoint.json', JSON.stringify(browser.endpoint));
   const endpoint = await browser.release();
   console.log(endpoint);
 }
 
-// 下次运行：connect 不取得 Chrome 进程的所有权，close 只断开。
+// Next run: connect does not take ownership of the Chrome process; close only disconnects.
 {
   const endpoint = JSON.parse(await readFile('./browser-endpoint.json', 'utf8')) as string;
   await using browser = await Browser.connect({ endpoint });
@@ -31,46 +33,46 @@ import { Browser } from 'nodriver-ts';
 }
 ```
 
-`detached` 默认为 `false`，既有启动/关闭行为不变。设为 `true` 后，所有平台都以分离模式 spawn Chrome，stdin/stdout/stderr 都不绑定宿主管道；Chrome 的 stderr 不再进入启动诊断。CDP 仍使用 WebSocket，调试端口须在浏览器存活期间保持可用。
+`detached` is `false` by default, so existing launch/close behaviour is unchanged. With `true`, Chrome is spawned detached on every platform, and its stdin/stdout/stderr are not tied to host pipes; Chrome's stderr no longer feeds launch diagnostics. CDP still uses WebSocket, and the debugging port must stay available for as long as the browser lives.
 
-`release()` 幂等，返回浏览器的 WebSocket endpoint。它不发送 `Browser.close`、不终止进程、不关闭标签页或删除 profile，而是解除信号清理、取消子进程对 Node 事件循环的引用并断开 CDP。之后 `browser.owned === false`，`browser.closed === true`（指本连接），`close()`、`Symbol.asyncDispose` 和原 `browser.process.close()` 都不会终止 Chrome。旧 Tab/Session 不可继续使用，重连后获取新对象。已开始的 `close()` 会使后续 `release()` 拒绝；已开始的 `release()` 则使并发 `close()` 等待交接后仅断开。
+`release()` is idempotent and returns the browser's WebSocket endpoint. It does not send `Browser.close`, kill the process, close tabs or delete the profile. Instead it removes signal cleanup, unrefs the child process from Node's event loop and disconnects CDP. Afterwards `browser.owned === false` and `browser.closed === true` (for this connection), and neither `close()`, `Symbol.asyncDispose` nor the original `browser.process.close()` will terminate Chrome. Old Tab/Session objects can no longer be used; reconnect to get new ones. A `close()` already in progress makes a later `release()` reject; a `release()` already in progress makes a concurrent `close()` wait for the handoff and then only disconnect.
 
-自有浏览器只有显式以 `detached: true` 启动才能交接。`Browser.connect()` 得到的实例也可调用 `release()`，仅断开并返回 endpoint。普通 `disconnect()` 保留自有进程的所有权，之后 `close()` 仍清理它；满足独立启动条件时，可在断开后再 `release()`。
+An owned browser can be handed off only if it was launched with `detached: true` explicitly. A browser obtained from `Browser.connect()` can also call `release()`, which just disconnects and returns the endpoint. A plain `disconnect()` keeps ownership of an owned process, so a later `close()` still cleans it up; if the browser meets the detached-launch conditions, you can call `release()` after disconnecting.
 
-Pipe 模式不能交接：Chrome 的 CDP 管道断开会导致其退出。`release()` 在断开前拒绝 pipe 实例，`detached: true` 与 `transport: 'pipe'` 的组合在启动前拒绝。依赖本进程 `ProxyForwarder` 的 context 也会使交接拒绝；先关闭该 context，或使用可独立存活的外部 `proxyServer`。
+Pipe mode cannot be handed off: Chrome exits when its CDP pipe closes. `release()` rejects a pipe instance before disconnecting, and `detached: true` combined with `transport: 'pipe'` is rejected before launch. A context that depends on this process's `ProxyForwarder` also makes handoff reject; close that context first, or use an external `proxyServer` that can outlive the process.
 
-## Profile 与进程责任
+## Profile and process responsibilities
 
-- `.nodriver.lock` 表示 nodriver 控制器对持久 profile 的所有权，内容是宿主 PID 与主机名。交接时关闭锁句柄并删除此文件，不把它伪装成 Chrome 的锁。
-- `DevToolsActivePort` 保留。新的 `launch({ userDataDir })` 会探测它；同一浏览器仍提供服务时拒绝启动并提示使用 `connect()`。Chrome 自身的 profile 锁仍由 Chrome 管理。
-- 临时 profile 也会保留，路径可在交接前通过 `browser.process!.profile` 保存。交接将清理责任移交给调用方；只有确认 Chrome 完全退出后才可删除临时 profile。持久 profile 不自动删除。
-- `Browser.connect().close()` 不终止 Chrome。需要最终退出时，由用户关闭浏览器，或由调用方显式发送 `browser.cdp.send('Browser.close')`；断开时可能收到连接关闭错误。
-- endpoint 只在这一次 Chrome 生命周期内有效。浏览器退出后需重新启动并保存新 endpoint。
+- `.nodriver.lock` records the nodriver controller's ownership of a persistent profile; it contains the host PID and host name. Handoff closes the lock handle and deletes the file, rather than passing it off as Chrome's lock.
+- `DevToolsActivePort` is kept. A new `launch({ userDataDir })` probes it; if the same browser is still serving, launch is refused with a hint to use `connect()`. Chrome's own profile lock is still managed by Chrome.
+- A temporary profile is also kept. Its path can be saved before handoff from `browser.process!.profile`. Handoff passes cleanup responsibility to the caller; delete a temporary profile only after confirming that Chrome has fully exited. Persistent profiles are never deleted automatically.
+- `Browser.connect().close()` does not terminate Chrome. When Chrome should finally exit, the user closes the browser, or the caller sends `browser.cdp.send('Browser.close')` explicitly; a connection-closed error may arrive as it disconnects.
+- An endpoint is valid only for that one Chrome lifetime. After the browser exits, launch again and save the new endpoint.
 
-本实现不提供 Job Object、看门狗或原生辅助进程。普通启动失败或取消仍尝试终止 Chrome 并清理资源，但宿主从 spawn 到交接之间被强制终止或崩溃，可能留下独立 Chrome，包括尚未就绪的实例。需要“就绪前随宿主退出，就绪后独立存活”的严格保证时，须由上层提供平台进程监管。
+This implementation provides no Job Object, watchdog or native helper process. A normal launch that fails or is cancelled still tries to terminate Chrome and clean up, but if the host is force-killed or crashes between spawn and handoff, a detached Chrome can be left behind, including one that was not ready yet. If you need a strict guarantee of "exit with the host before ready, survive independently after ready", a higher layer must supervise the process at the platform level.
 
-分离启动也不保证抵抗外部进程树终止。例如 Windows 上，上层仍可能通过 `taskkill /T /F` 连带终止已交接 Chrome。因此交接不能修复 MCP 宿主的进程树强杀策略。
+A detached launch also does not resist termination of an external process tree. On Windows, for example, a higher layer can still kill a handed-off Chrome with `taskkill /T /F`. Handoff therefore cannot fix an MCP host's policy of force-killing process trees.
 
-## 录屏与 target 事件
+## Screencasts and target events
 
-`tab.cdp` 和 `browser.cdp` 是有类型的 `Session`，支持 `send`、`sendWith`、`on`、`onAny` 和 `waitFor`。`on` 返回取消订阅函数。事件等待须在触发命令前注册。
+`tab.cdp` and `browser.cdp` are typed `Session`s that support `send`, `sendWith`, `on`, `onAny` and `waitFor`. `on` returns an unsubscribe function. Register event waits before sending the command that triggers them.
 
 ```ts
 const stopFrames = tab.cdp.on('Page.screencastFrame', async ({ data, sessionId }) => {
   try {
-    // data 是 base64 编码的图像帧；在此交给应用自己的录制队列。
+    // data is a base64-encoded image frame; hand it to the application's own recording queue.
     console.log('frame bytes (base64):', data.length);
   } finally {
     await tab.cdp.send('Page.screencastFrameAck', { sessionId });
   }
 });
 await tab.cdp.send('Page.startScreencast', { format: 'jpeg', quality: 80 });
-// 录制期间保持订阅；每帧均须 ack。
+// Keep the subscription while recording; every frame must be acked.
 await tab.cdp.send('Page.stopScreencast');
 stopFrames();
 ```
 
-浏览器初始化已启用 target discovery，可直接订阅：
+Browser initialization already enables target discovery, so you can subscribe directly:
 
 ```ts
 const offCreated = browser.cdp.on('Target.targetCreated', ({ targetInfo }) => {
@@ -82,15 +84,15 @@ const offChanged = browser.cdp.on('Target.targetInfoChanged', ({ targetInfo }) =
 const offDestroyed = browser.cdp.on('Target.targetDestroyed', ({ targetId }) => {
   console.log('destroyed', targetId);
 });
-// 用完后调用 offCreated()、offChanged()、offDestroyed()。
+// When done, call offCreated(), offChanged() and offDestroyed().
 ```
 
-`browser.tabCreated.on(...)` 在 Tab 附加与初始化完成后通知；原始 `Target.targetCreated` 更早，可能尚无可用的 Tab。`pageTargets` 包括 attach 策略未自动附加的页面，可用 `attachTarget(id)` 主动附加。
+`browser.tabCreated.on(...)` fires once a Tab has been attached and initialized. The raw `Target.targetCreated` fires earlier, possibly before a usable Tab exists. `pageTargets` includes pages that the attach policy did not attach automatically; attach them with `attachTarget(id)`.
 
-## 焦点边界
+## Focus limits
 
-当前库没有“用户切换活动标签页”的高层事件，target 信息变化也不等价于焦点变化。`browser.frontTab` 只缓存本客户端最近置前的 Tab，不是操作系统或 Chrome UI 的权威焦点状态。
+The library has no high-level event for "the user switched the active tab", and target info changes are not the same as focus changes. `browser.frontTab` only caches the Tab this client most recently brought to the front; it is not an authoritative focus state from the OS or Chrome's UI.
 
-`tab.bringToFront()` 主动置前；`tab.activate()` 根据上述缓存决定是否置前。需要检查用户切换后的当前状态，可用 `tab.evaluate('document.hasFocus()')` 并按需读取 `document.visibilityState`。需要保留连续的焦点事件时，应由应用在文档中监听 `focus`、`blur`、`visibilitychange` 并记录队列，再读取队列；每次导航需重新安装监听。此方案有采样、导航及页面事件语义的限制，不能直接替换 OS 级 focus watcher。
+`tab.bringToFront()` brings a tab to the front; `tab.activate()` decides whether to do so based on that cache. To check the current state after the user switches tabs, use `tab.evaluate('document.hasFocus()')` and read `document.visibilityState` as needed. If you need a continuous record of focus events, have the application listen for `focus`, `blur` and `visibilitychange` in the document, record them in a queue and read the queue; the listeners must be reinstalled after each navigation. This approach is limited by sampling, navigation and page event semantics, and is not a drop-in replacement for an OS-level focus watcher.
 
-上述 target 与 screencast 订阅不要求 `Runtime.enable`。主世界仍通过 Document 与 `DOM.resolveNode` 获取；没有默认启用的 Runtime 事件可供等待。
+None of the target and screencast subscriptions above require `Runtime.enable`. The main world is still obtained through the Document and `DOM.resolveNode`, and there are no Runtime events enabled by default to wait for.

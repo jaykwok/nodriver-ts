@@ -1,8 +1,10 @@
-# 环境采样、诊断与对齐
+# Environment sampling, diagnostics and alignment
 
-三个接口按作用递进：`inspectEnvironment()` 只读取，`diagnoseEnvironment()` 汇总整个标签页的观测，`alignEnvironment()` 按明确配置覆盖并核验。默认不改写 navigator、UA 或设备属性，也不访问外网。MCP 的 `browser_environment` 复用同一套接口。
+[简体中文](zh-CN/environment.md)
 
-## 采样：inspectEnvironment
+Three APIs build on each other: `inspectEnvironment()` only reads, `diagnoseEnvironment()` summarizes observations across a whole tab, and `alignEnvironment()` applies an explicit configuration and verifies it. By default nothing rewrites navigator, the UA or device properties, and nothing goes out to the network. The MCP tool `browser_environment` uses the same APIs.
+
+## Sampling: inspectEnvironment
 
 ```ts
 const report = await tab.inspectEnvironment({ worker: true, webgl: true });
@@ -11,37 +13,37 @@ console.log(report.document.screen, report.document.viewport);
 console.log(report.worker, report.differences);
 ```
 
-`Tab.inspectEnvironment()` 与 `Frame.inspectEnvironment()` 读取所选文档的真实环境：UA、UA-CH（可用时含高熵值）、platform、语言、hardwareConcurrency、deviceMemory（可用时）、webdriver、Intl locale 与时区、screen 和 viewport/DPR。报告不包含字体、IP、WebRTC 或完整设备指纹。
+`Tab.inspectEnvironment()` and `Frame.inspectEnvironment()` read the real environment of the selected document: UA, UA-CH (with high-entropy values when available), platform, languages, hardwareConcurrency, deviceMemory (when available), webdriver, the Intl locale and timezone, screen, and viewport/DPR. The report does not include fonts, IP, WebRTC or a full device fingerprint.
 
-- **执行世界**：默认隔离世界；`{ world: 'main' }` 可作对照，页面在主世界安装的 hook 能观察或修改采样。
-- **Worker**：`worker: true` 创建临时 Blob dedicated Worker 读取同类字段，`differences` 按字段比较文档与 Worker（忽略对象键顺序，保留数组顺序，不比较 Worker 中不存在的 webdriver）。Worker 成功、失败或到期后都会 terminate 并撤销 Blob URL；受 CSP 阻止时 `worker.status` 为 `unavailable`，不会绕过 CSP。
-- **WebGL**：`webgl: true` 使用未插入 DOM 的临时 canvas 读取 vendor/renderer 并释放 context；不可用时返回错误字段。
-- **UA-CH**：非安全上下文没有 UA-CH 时省略该字段，高熵值错误保留在 `highEntropyError`。
-- **期限**：默认 5000 毫秒，可用 `timeout` 与 `signal` 调整。跨越导航、session 切换或文档失效时抛 `StaleElementError`，不合并不同文档的结果，也不重试。取消只停止等待；已创建的 Worker 仍在原期限内被清理。
+- **Execution world**: an isolated world by default. `{ world: 'main' }` is available for comparison; hooks the page installed in the main world can observe or change the sample.
+- **Worker**: `worker: true` creates a temporary Blob dedicated worker that reads the same fields, and `differences` compares the document and the worker field by field (object key order is ignored, array order is kept, and webdriver, which workers lack, is not compared). The worker is terminated and the Blob URL revoked whether it succeeds, fails or times out. When CSP blocks it, `worker.status` is `unavailable`; CSP is never bypassed.
+- **WebGL**: `webgl: true` reads the vendor/renderer from a temporary canvas that is never inserted into the DOM, then releases the context. When WebGL is unavailable, an error field is returned.
+- **UA-CH**: in an insecure context without UA-CH the field is omitted. Errors from high-entropy values are kept in `highEntropyError`.
+- **Deadline**: 5000 ms by default, adjustable with `timeout` and `signal`. Crossing a navigation, a session switch or a document invalidation throws `StaleElementError`; results from different documents are never merged, and there are no retries. Cancellation only stops waiting; a worker that was already created is still cleaned up within the original deadline.
 
-空的 `differences` 只说明比较的字段一致，不证明完整环境一致。
+An empty `differences` only means that the compared fields agree. It does not prove the whole environment is consistent.
 
-## 诊断：diagnoseEnvironment
+## Diagnostics: diagnoseEnvironment
 
 ```ts
 const diagnosis = await tab.diagnoseEnvironment({
   worker: true,
   webgl: true,
   fontSelectors: ['body', 'input'],
-  // 只有显式填写才发起网络请求；示例为自有同源 JSON {ip, headers?}
+  // Network requests happen only when set explicitly; this example is your own same-origin JSON {ip, headers?}
   httpProbe: 'http://127.0.0.1:8080/signals/ip',
-  stunServers: [], // 空数组只收集本地 ICE；省略则不创建 peer
+  stunServers: [], // an empty array collects only local ICE; omit it to create no peer
 });
 ```
 
-诊断汇总标签页内所有 frame 的文档与 Worker、字体、WebGL 和显式网络探针。报告区分 observed / unavailable / not-requested，以及 match / mismatch / unavailable / not-tested；未采集的项目不算通过。
+The diagnosis summarizes the documents and workers of every frame in the tab, fonts, WebGL and explicit network probes. The report distinguishes observed / unavailable / not-requested, and match / mismatch / unavailable / not-tested. Items that were not collected do not count as passing.
 
-- **字体**：显式启用 DOM/CSS 域，读取 `CSS.getPlatformFontsForNode` 返回的实际渲染字体。结果是浏览器选用的字体，不保证每个字符都有字形，也不安装字体。
-- **HTTP 探针**：由页面发起，省略凭证、禁止重定向，受 CSP/CORS 与网络影响；返回的 headers 只是调用方服务的反射观测。
-- **STUN**：只接受显式给出的最多四个 STUN 端点，不请求音视频权限或 TURN 凭证，限时后关闭数据通道和 peer。
-- **地址差异**：HTTP 与 STUN 的出口地址可以不同，不能据此认定伪装、泄漏或某种代理机制。网络调用失败时保留缺测原因。
+- **Fonts**: the DOM/CSS domains are enabled explicitly to read the fonts actually used for rendering, as returned by `CSS.getPlatformFontsForNode`. The result is the font the browser picked; it does not guarantee a glyph for every character, and no fonts are installed.
+- **HTTP probe**: sent by the page, without credentials and with redirects forbidden, and subject to CSP/CORS and the network. The returned headers are only what the caller's service reflects back.
+- **STUN**: only explicitly listed STUN endpoints are used, at most four. No audio/video permission or TURN credentials are requested, and the data channel and peer are closed after a time limit.
+- **Address differences**: the HTTP and STUN egress addresses can differ; that alone does not indicate spoofing, a leak or any particular proxy mechanism. When a network call fails, the reason it was not measured is kept.
 
-## 对齐：alignEnvironment
+## Alignment: alignEnvironment
 
 ```ts
 const aligned = await tab.alignEnvironment({
@@ -51,49 +53,49 @@ const aligned = await tab.alignEnvironment({
 console.log(aligned.applicationError, aligned.verification);
 
 await tab.alignEnvironment(
-  { geoip: { address: '由调用方获得的地址', fields: ['timezone'] } },
+  { geoip: { address: 'address obtained by the caller', fields: ['timezone'] } },
   async (address, { signal }) => {
-    // 本地数据库或调用方自己的 resolver；库不内置第三方 GeoIP 请求
+    // A local database or the caller's own resolver; the library makes no third-party GeoIP requests
     return { timezone: 'Europe/Paris', label: 'local database' };
   },
 );
 ```
 
-报告分别保存当前观测、首次覆盖前的文档 baseline、请求的配置与各 session 的应用结果、resolver 返回值和调用方提供的站点标签。首次覆盖前没有完整的 OS 原生快照；外部 CDP、扩展和浏览器已有配置的来源记为未知。
+The report keeps, separately: the current observation, the document baseline before the first override, the requested configuration and the result of applying it to each session, the resolver's return value, and any site labels the caller supplied. There is no full snapshot of native OS values from before the first override; values that come from an external CDP client, extensions or existing browser configuration are recorded as unknown.
 
-- **应用方式**：timezone、locale、viewport、UA 与 UA-CH、Accept-Language、geolocation 都通过 CDP 设置，没有全局 getter 或原型补丁。配置作用于当前及之后附加的页面 session，不追溯改写页面已有脚本和网络连接。
-- **GeoIP**：只应用 `fields` 选中的 timezone/geolocation，显式 `environment` 优先。不从 IP 推导品牌、UA-CH、硬件、精确位置或语言。resolver 收到取消信号和剩余期限，由宿主负责取消其外部工作。
-- **单独设置 Accept-Language**：保留当前 UA 和可取得的 UA-CH，不生成另一品牌身份。
-- **核验**：每个 frame 的文档与新建 dedicated Worker 分别核验；Worker 不支持的字段（如 viewport）记为 unavailable，实际不一致记为 mismatch。locale 只在页面根 session 设置，不保证所有 renderer/Worker 的 Intl 同步。UA-CH 按配置字段比较，高熵值不可用时不伪造成功。Geolocation 不自动授权，只有权限已为 granted 时才读取位置核验，否则为 unavailable。
-- **部分失败**：保留 `applicationError`、session 记录和实际报告，不声称原子回滚。
+- **How it is applied**: timezone, locale, viewport, UA and UA-CH, Accept-Language and geolocation are all set through CDP, with no global getter or prototype patches. The configuration applies to the current page sessions and those attached later; it does not retroactively change scripts or network connections the page already has.
+- **GeoIP**: only the timezone/geolocation fields selected in `fields` are applied, and an explicit `environment` takes precedence. Brand, UA-CH, hardware, precise location and language are never derived from an IP. The resolver receives a cancellation signal and the remaining deadline; the host is responsible for cancelling its external work.
+- **Accept-Language on its own**: the current UA and any available UA-CH are kept; no other brand identity is generated.
+- **Verification**: the document of each frame and a freshly created dedicated worker are verified separately. Fields that workers do not support (such as viewport) are recorded as unavailable, and real disagreements as mismatch. The locale is set only on the page's root session, so Intl is not guaranteed to agree in every renderer/worker. UA-CH is compared by the configured fields; when high-entropy values are unavailable, success is not faked. Geolocation is never granted automatically; the location is read for verification only if permission is already granted, otherwise it is unavailable.
+- **Partial failure**: `applicationError`, the session records and the actual report are kept. There is no claim of atomic rollback.
 
-`setEnvironment()` 是不带核验的显式覆盖接口。UA、Client Hints、时区等覆盖不保证传播到所有 Worker、SharedWorker 或 Service Worker。有界面模式默认保留真实值；headless 默认只把 UA/UA-CH 中的 HeadlessChrome 改为 Chrome（`maskHeadless: false` 可关闭），见 [自动化痕迹审计](automation-audit.md)。
+`setEnvironment()` is the explicit override API without verification. Overrides of the UA, Client Hints, timezone and so on are not guaranteed to reach every Worker, SharedWorker or Service Worker. Headful mode keeps the real values by default; headless by default only changes HeadlessChrome to Chrome in the UA/UA-CH (`maskHeadless: false` turns this off). See the [automation audit](automation-audit.md).
 
-MCP 宿主可在 `BrowserSessionManagerOptions.environmentDiagnostics` 中配置 `httpProbe`/`stunServers`，并注入 `geoIPResolver`；工具只能选择是否使用这些配置，不能传入任意探测 URL。
+An MCP host can configure `httpProbe`/`stunServers` in `BrowserSessionManagerOptions.environmentDiagnostics` and inject a `geoIPResolver`. Tools can only choose whether to use this configuration; they cannot pass arbitrary probe URLs.
 
-## 代理与 WebRTC
+## Proxies and WebRTC
 
-`launch` / `newContext` 的 `proxyServer` 直接交给 Chrome；`proxy` 经本机转发器支持认证 HTTP(S)/SOCKS 上游。诊断报告只记录是否配置代理，不输出代理凭证；外部连接的路由来源记为 unknown。
+`proxyServer` on `launch` / `newContext` is passed straight to Chrome. `proxy` goes through a local forwarder and supports authenticated HTTP(S)/SOCKS upstreams. The diagnosis report only records whether a proxy is configured and never outputs proxy credentials; for external connections the routing source is recorded as unknown.
 
-`Browser.launch({ webRtcIPHandlingPolicy })` 显式设置 WebRTC 路由策略，取值为 `default`、`default_public_interface_only`、`default_public_and_private_interfaces`、`disable_non_proxied_udp`。库只为自有临时 profile 写入 `webrtc.ip_handling_policy` 偏好并传启动开关；持久 profile 由所有者自行配置，库拒绝代写。仅靠启动开关时 Chrome 155 仍会产生 UDP 候选，因此偏好与开关同时设置。测试验证 `disable_non_proxied_udp` 下本地 ICE 没有 UDP 候选，默认策略能完成原生数据通道。
+`Browser.launch({ webRtcIPHandlingPolicy })` sets the WebRTC routing policy explicitly. Values are `default`, `default_public_interface_only`, `default_public_and_private_interfaces` and `disable_non_proxied_udp`. The library writes the `webrtc.ip_handling_policy` preference only for its own temporary profiles, and passes the launch switch. Persistent profiles are configured by their owners; the library refuses to write the preference for them. With the launch switch alone, Chrome 155 still produces UDP candidates, so the preference and the switch are set together. Tests verify that under `disable_non_proxied_udp` local ICE has no UDP candidates, and that the default policy completes a native data channel.
 
-该策略可能降低直连和媒体可用性，默认不启用；它不关闭整个 WebRTC，也不保证 HTTP 与 WebRTC 的公网出口相同。定义见 [Chromium WebRTC 偏好](https://chromium.googlesource.com/chromium/src/+/fdaf45e57c902c85d3ff281fe5a56677e6f9b7fa%5E%21/)。库不改写 profile 的 exit_type/exited_cleanly，以免掩盖真实崩溃。
+This policy can reduce direct connectivity and media availability, so it is off by default. It does not turn off WebRTC as a whole, and it does not guarantee that HTTP and WebRTC share the same public egress. For the definitions, see [Chromium's WebRTC preference](https://chromium.googlesource.com/chromium/src/+/fdaf45e57c902c85d3ff281fe5a56677e6f9b7fa%5E%21/). The library does not rewrite the profile's exit_type/exited_cleanly, so real crashes are not masked.
 
-## 测试
+## Tests
 
 ```sh
-npm run test:compat    # 用 CHROME_PATH 指定待验证的 Chrome
-npm run test:signals   # 渲染字体、本机 HTTP 地址与 WebRTC 数据通道
+npm run test:compat    # set CHROME_PATH to the Chrome under test
+npm run test:signals   # rendered fonts, local HTTP address and WebRTC data channel
 ```
 
-| 变量                                       | 作用                                          |
-| ------------------------------------------ | --------------------------------------------- |
-| `NODRIVER_HEADFUL=1`                       | 以有界面模式运行（Linux 需要桌面、X 或 WSLg） |
-| `NODRIVER_CHURN_CYCLES=100`                | 压力轮数；日常回归每条传输 12 轮              |
-| `NODRIVER_ENV_REPORT=/absolute/path.jsonl` | 追加保存原始环境观测，每行一条 JSON           |
+| Variable                                   | Effect                                                            |
+| ------------------------------------------ | ----------------------------------------------------------------- |
+| `NODRIVER_HEADFUL=1`                       | Run headful (Linux needs a desktop, X or WSLg)                    |
+| `NODRIVER_CHURN_CYCLES=100`                | Number of stress cycles; routine regression runs 12 per transport |
+| `NODRIVER_ENV_REPORT=/absolute/path.jsonl` | Append raw environment observations, one JSON object per line     |
 
-兼容测试覆盖主页面、同进程 iframe、跨站及嵌套 OOPIF 的 main/isolated 求值、Worker、中文输入、popup、导航/BFCache、外部重连和协议阳性对照。压力循环反复创建/移除 iframe，并创建含 BFCache 历史的 context 后关闭，检查 frame/session 映射、监听器、初始化任务和 pending 请求回到基线。所有默认路径断言禁用命令为零；阳性对照在独立浏览器中显式启用 Runtime。普通 Worker 启动时只短暂恢复并断开辅助 target session，不启用 Runtime 域。
+The compatibility tests cover main/isolated evaluation in main pages, same-process iframes, and cross-site and nested OOPIFs, plus workers, Chinese text input, popups, navigation/BFCache, external reconnects and the protocol positive control. The stress loop repeatedly creates and removes iframes, and creates and closes contexts with BFCache history, checking that the frame/session maps, listeners, initialization tasks and pending requests return to their baseline. Every default path asserts zero disabled commands; the positive control enables Runtime explicitly in a separate browser. When an ordinary worker starts, its helper target session is only briefly resumed and then detached; the Runtime domain is not enabled.
 
-信号测试覆盖四类 frame 中拉丁字母、中文和 emoji 的实际渲染字体，以及无 STUN 的本地双 peer WebRTC 数据通道中文/emoji 往返。不同系统选用的字体不同（例如 Windows 为 Arial、Microsoft YaHei、Segoe UI Emoji，WSL 为 DejaVu Sans），这是系统字体资源差异。
+The signal tests cover the fonts actually rendered for Latin letters, Chinese and emoji in all four kinds of frame, and a Chinese/emoji round trip over a local two-peer WebRTC data channel without STUN. Different systems pick different fonts (for example Arial, Microsoft YaHei and Segoe UI Emoji on Windows, and DejaVu Sans on WSL); this reflects differences in installed system fonts.
 
-已验证的平台与版本见 [支持范围](support.md)。
+Verified platforms and versions are listed in [Support](support.md).

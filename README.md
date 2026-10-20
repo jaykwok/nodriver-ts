@@ -146,11 +146,12 @@ npm run format:check
 
 ## Documentation
 
-The documents under `docs/` are written in Chinese.
+Simplified Chinese translations are in [docs/zh-CN](docs/zh-CN/).
 
 | Document                                     | Contents                                                          |
 | -------------------------------------------- | ----------------------------------------------------------------- |
 | [API](docs/api.md)                           | Objects, deadlines and cancellation, queries, evaluation, storage |
+| [Browser handoff](docs/browser-handoff.md)   | Detached launch, release and reconnect, CDP event subscriptions   |
 | [Input](docs/input.md)                       | The human input policy, typing, pointer checks, cancellation      |
 | [Environment](docs/environment.md)           | Environment sampling, diagnostics, explicit alignment, WebRTC     |
 | [Automation audit](docs/automation-audit.md) | Default protocol behaviour, regression evidence, detector results |
@@ -160,6 +161,7 @@ The documents under `docs/` are written in Chinese.
 | [Support](docs/support.md)                   | Verified platforms, capabilities, limitations                     |
 | [Performance](docs/performance.md)           | Benchmark method and baseline                                     |
 | [Soak test](docs/soak.md)                    | Long-running resource test                                        |
+| [Scripted testing](docs/testing.md)          | `ScriptedChrome` for testing code without launching Chrome        |
 | [Upstream API map](docs/upstream-api-map.md) | nodriver members and their TypeScript counterparts                |
 | [API test map](docs/test-map.md)             | Tests that call each public member and MCP tool (generated)       |
 

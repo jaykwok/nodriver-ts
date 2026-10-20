@@ -1,79 +1,81 @@
-# 支持范围
+# Support
 
-## 运行环境
+[简体中文](zh-CN/support.md)
 
-- **运行时**：包支持 Node.js ≥ 22，测试使用 `node:test` 与 `expect`；Node.js ≥ 24 直接运行 TypeScript 源码，因此从源码开发和测试需要 Node.js 24 及以上，Node.js 22 以构建产物的冒烟测试覆盖。包管理使用 npm。
-- **浏览器**：本机 Chrome、Chromium 或 Edge。Windows、macOS、Linux 的常见安装位置与 `PATH` 自动探测，也可用 `CHROME_PATH` 或 `executablePath` 指定。
-- **协议**：CDP 类型固定为 devtools-protocol 0.0.1718299；MCP 仅支持 2026-07-28。
-- **Linux**：以普通用户运行，安装 Chrome 所需共享库（如 libnspr4、libnss3）。框架不添加 `--no-sandbox`，也不关闭站点隔离。WSL 的有界面模式需要 WSLg 或其他显示服务。
-- **macOS**：Chrome 运行在 macOS 上时，按键事件附带 Chrome 的编辑命令，`Meta+A`、`Meta+C/X/V/Z`、`Shift+Meta+Z` 及 Alt/Meta 组合的方向键与删除键与物理键盘行为一致；跨平台脚本的全选应按平台使用 `Meta+A` 或 `Control+A`。GitHub 托管的 macOS 虚拟机无法解析 mDNS（`.local`）主机候选，本地 WebRTC 会停在 ICE `new`；平台矩阵在该环境中以 `--disable-features=WebRtcHideLocalIpsWithMdns` 启动 WebRTC 测试的浏览器，本项目不会自动添加此参数。
-- **WebSocket**：使用固定版本 npm `ws` 8.22.0 的 JS 协议解析器，关闭 per-message compression。适配层显式解析 npm 包的公开入口，需要保留正常的 npm 文件布局。
+## Runtime environment
 
-## 已验证组合
+- **Runtime**: the package supports Node.js ≥ 22, and the tests use `node:test` and `expect`. Node.js ≥ 24 runs the TypeScript sources directly, so developing and testing from source needs Node.js 24 or newer; Node.js 22 is covered by smoke tests of the build output. npm is the package manager.
+- **Browser**: a locally installed Chrome, Chromium or Edge. Common install locations on Windows, macOS and Linux, and `PATH`, are detected automatically; `CHROME_PATH` or `executablePath` can also be set.
+- **Protocol**: CDP types are pinned to devtools-protocol 0.0.1718299; only MCP 2026-07-28 is supported.
+- **Linux**: run as a normal user and install the shared libraries Chrome needs (such as libnspr4 and libnss3). The library never adds `--no-sandbox` and never turns off site isolation. Headful mode on WSL needs WSLg or another display server.
+- **macOS**: when Chrome runs on macOS, key events carry Chrome's editing commands, so `Meta+A`, `Meta+C/X/V/Z`, `Shift+Meta+Z`, and arrow and delete keys combined with Alt/Meta behave as on a physical keyboard. Cross-platform scripts should select all with `Meta+A` or `Control+A` depending on the platform. GitHub-hosted macOS VMs cannot resolve mDNS (`.local`) host candidates, so local WebRTC stays at ICE `new`; in that environment the platform matrix launches the WebRTC test browser with `--disable-features=WebRtcHideLocalIpsWithMdns`. The project never adds this flag automatically.
+- **WebSocket**: uses the JS protocol parser of the pinned npm `ws` 8.22.0, with per-message compression off. The adapter explicitly resolves the npm package's public entry point, so the normal npm file layout must be kept.
 
-下表保留 0.1.0 发布时的 Node.js 验证记录；测试数为单元 / 集成 / 兼容矩阵（WebSocket 与 Pipe 两种传输）。0.2.0 在本机 Windows、Node.js 24.22.0、Chrome 155.0.8059.85 上通过了 60 项单元测试、95 项集成测试及构建产物测试。后续 CI 仅运行 Node.js：Windows/Ubuntu 的 Node.js 24 完整测试，以及 Node.js 22 的构建产物测试。
+## Verified combinations
 
-| 平台与浏览器                                                                 | 运行时          | 结果                                                          |
-| ---------------------------------------------------------------------------- | --------------- | ------------------------------------------------------------- |
-| Windows 11 x64，Chrome 155.0.8059.80（本机）                                 | Node.js 24.22.0 | 53 / 85 通过；类型、格式检查与构建产物测试通过                |
-| WSL2 Ubuntu 26.04，Chrome for Testing 155.0.8059.79 与 154.0.8037.92（本机） | Node.js 24.22.0 | 53 / 85 / 8 + 8 通过；原生信号测试 4 项与构建产物测试通过     |
-| GitHub Actions Windows x64，Chrome 155.0.8059.40                             | Node.js 24.21.0 | 53 / 85 通过，集成测试首次通过；构建产物测试通过              |
-| GitHub Actions Ubuntu x64，Chrome 155.0.8059.84                              | Node.js 24.22.0 | 53 / 85 通过，集成测试首次通过；构建产物测试通过              |
-| GitHub Actions Ubuntu x64，Chrome 155.0.8059.39                              | Node.js 22.23.3 | 构建产物冒烟测试（WebSocket 与 Pipe）及 HTTP 断连回收测试通过 |
-| GitHub Actions macOS ARM64，Chrome 155.0.8059.40                             | Node.js 24.21.0 | 53 / 85 / 8 通过（WebRTC 测试见上文 macOS 说明）              |
-| GitHub Actions Ubuntu ARM64，Chrome for Testing 155.0.8059.84                | Node.js 24.22.0 | 53 / 85 / 8 通过                                              |
-| GitHub Actions Ubuntu x64，Chrome for Testing 154.0.8037.92                  | Node.js 24.21.0 | 53 / 85 / 8 通过                                              |
-| GitHub Actions Windows x64，Microsoft Edge 154.0.4258.62                     | Node.js 24.21.0 | 53 / 85 / 8 通过                                              |
+The table keeps the Node.js verification records from the 0.1.0 release; test counts are unit / integration / compatibility matrix (WebSocket and Pipe transports). 0.2.0 passed 60 unit tests, 95 integration tests and the build-output tests locally on Windows, Node.js 24.22.0 and Chrome 155.0.8059.85. CI since then runs only Node.js: full tests on Node.js 24 on Windows/Ubuntu, and build-output tests on Node.js 22.
 
-后四行来自按需触发的平台矩阵（`.github/workflows/platforms.yml`），每个套件只运行一次、不重试，均首次通过。推送 CI 的集成测试失败时会重试一次，首次失败记录在作业摘要与日志 artifact 中。每个公开 API 由哪些测试直接调用，见 [测试映射](test-map.md)。
+| Platform and browser                                                          | Runtime         | Result                                                                                        |
+| ----------------------------------------------------------------------------- | --------------- | --------------------------------------------------------------------------------------------- |
+| Windows 11 x64, Chrome 155.0.8059.80 (local)                                  | Node.js 24.22.0 | 53 / 85 passed; type check, format check and build-output tests passed                        |
+| WSL2 Ubuntu 26.04, Chrome for Testing 155.0.8059.79 and 154.0.8037.92 (local) | Node.js 24.22.0 | 53 / 85 / 8 + 8 passed; 4 native signal tests and build-output tests passed                   |
+| GitHub Actions Windows x64, Chrome 155.0.8059.40                              | Node.js 24.21.0 | 53 / 85 passed, integration tests on the first attempt; build-output tests passed             |
+| GitHub Actions Ubuntu x64, Chrome 155.0.8059.84                               | Node.js 24.22.0 | 53 / 85 passed, integration tests on the first attempt; build-output tests passed             |
+| GitHub Actions Ubuntu x64, Chrome 155.0.8059.39                               | Node.js 22.23.3 | Build-output smoke tests (WebSocket and Pipe) and the HTTP disconnect-reclamation test passed |
+| GitHub Actions macOS ARM64, Chrome 155.0.8059.40                              | Node.js 24.21.0 | 53 / 85 / 8 passed (for the WebRTC test, see the macOS note above)                            |
+| GitHub Actions Ubuntu ARM64, Chrome for Testing 155.0.8059.84                 | Node.js 24.22.0 | 53 / 85 / 8 passed                                                                            |
+| GitHub Actions Ubuntu x64, Chrome for Testing 154.0.8037.92                   | Node.js 24.21.0 | 53 / 85 / 8 passed                                                                            |
+| GitHub Actions Windows x64, Microsoft Edge 154.0.4258.62                      | Node.js 24.21.0 | 53 / 85 / 8 passed                                                                            |
 
-打包产物：`npm pack` 生成的 tarball 安装到空项目后，Node.js 24 可导入全部入口，TypeScript 7.0.2 与 5.9.3 在 `nodenext` 和 `bundler` 解析下以 `skipLibCheck: false` 通过类型检查，`npx nodriver-mcp` 可运行。Windows 上以 Node.js 24.22.0 完成了 24 小时长稳运行，结果见 [长稳测试](soak.md)。
+The last four rows come from the on-demand platform matrix (`.github/workflows/platforms.yml`), where each suite runs once without retries; all passed on the first attempt. In push CI, failed integration tests are retried once, and the first failure is recorded in the job summary and the log artifact. Which tests call each public API directly is listed in the [API test map](test-map.md).
 
-Node.js 22 不支持 `await using` 语法，调用方可用 `try/finally` 和 `close()` 管理资源。
+Package: after the tarball produced by `npm pack` is installed into an empty project, Node.js 24 can import every entry point, TypeScript 7.0.2 and 5.9.3 type-check it with `skipLibCheck: false` under both `nodenext` and `bundler` resolution, and `npx nodriver-mcp` runs. A 24-hour soak run was completed on Windows with Node.js 24.22.0; see the [soak test](soak.md) for the results.
 
-集成测试只使用本地 fixture：用 127.0.0.1 与 localhost 构造跨站 OOPIF，并以所属 session 确认真实进程外 frame；测试显式启用 `--site-per-process`，不关闭任何隔离。代理测试使用本地 HTTP/SOCKS fixture，包括故意分片的响应。
+Node.js 22 does not support the `await using` syntax; callers can manage resources with `try/finally` and `close()`.
 
-## 核心能力
+Integration tests use only local fixtures. Cross-site OOPIFs are built from 127.0.0.1 and localhost, and the owning session confirms they are real out-of-process frames. The tests enable `--site-per-process` explicitly and turn off no isolation. Proxy tests use local HTTP/SOCKS fixtures, including deliberately fragmented responses.
 
-| 能力     | 实现与覆盖                                                                                                                                                                             |
-| -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 协议     | 官方命令参数元组、返回值与事件类型；乱序响应、session 路由、超时、AbortSignal、迟到消息、断开拒绝和监听清理；Pipe 拆包/粘包、UTF-8、长度上限与 EOF                                     |
-| 生命周期 | Chrome 路径探测、临时/持久 profile、loopback WebSocket、Pipe、外部连接；幂等关闭与启动失败清理；Windows 终止进程树，Linux 终止并等待独立进程组后再删除临时 profile；不删除外部 profile |
-| 页面     | 新建/关闭、popup、历史、重定向、hash/SPA、DOMContentLoaded/load/commit/networkidle、BFCache（含嵌套 frame）、renderer 崩溃与 reload、窗口、内容、资源、PDF                             |
-| frame    | 同进程 iframe、OOPIF、嵌套 OOPIF、递归附加、进程内外切换、所属 session/context、句柄按文档代次失效                                                                                     |
-| DOM      | CSS、XPath、最小文本、open/closed shadow root、元素作用域；隔离世界 DOM 辅助与主世界用户脚本                                                                                           |
-| 输入     | 滚动、稳定/可见/启用/命中检查、遮挡与父 iframe 命中、变换后的 quad、hover 投递确认；中文/emoji、焦点与选择区、物理按键、文件输入、select/checkbox、指针拖动；可选 human 策略           |
-| 求值     | Promise、exceptionDetails、顶层特殊数值/BigInt/undefined、JSHandle、对象释放、导航与崩溃失效、不重放副作用                                                                             |
-| 状态     | Cookie 保存与恢复、local/sessionStorage、Cookie + localStorage 快照（含 iframe 与已关闭标签页的 origin）、权限、20 个 BrowserContext 隔离与订阅回收                                    |
-| 文件     | PNG/JPEG/WebP、全页与元素截图、PDF、GUID 命名下载及完成/取消、saveAs、上传                                                                                                             |
-| 网络     | Fetch 拦截/替换/失败、认证、响应与响应体、headers/cache/offline；覆盖页面及递归 OOPIF session                                                                                          |
-| 代理     | Chrome 直接代理、每个 context 独立代理、经 proxy-chain 转发的认证 HTTP(S)/SOCKS 上游                                                                                                   |
-| 环境     | 显式视口/DPR、时区、locale、UA 与 Client Hints、地理位置；结构化诊断与显式对齐，见 [环境](environment.md)                                                                              |
-| MCP      | stdio、本地 HTTP、socket、InMemory 共用 26 个默认工具与 3 个目录受限的可选文件工具；租约、受控浏览器池、状态资源与订阅、进度、取消和人工确认，见 [MCP](mcp.md)                         |
+## Core capabilities
 
-## 限制
+| Capability  | Implementation and coverage                                                                                                                                                                                                                                                                                                                     |
+| ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Protocol    | Official command parameter tuples, return values and event types; out-of-order responses, session routing, timeouts, AbortSignal, late messages, rejection on disconnect and listener cleanup; Pipe split/coalesced frames, UTF-8, length limits and EOF                                                                                        |
+| Lifecycle   | Chrome path detection, temporary/persistent profiles, loopback WebSocket, Pipe, external connections; idempotent close and cleanup after failed launches; on Windows the process tree is terminated, on Linux the separate process group is terminated and awaited before the temporary profile is deleted; external profiles are never deleted |
+| Pages       | Create/close, popups, history, redirects, hash/SPA, DOMContentLoaded/load/commit/networkidle, BFCache (including nested frames), renderer crashes and reload, windows, content, resources, PDF                                                                                                                                                  |
+| Frames      | Same-process iframes, OOPIFs, nested OOPIFs, recursive attach, moves in and out of process, owning session/context, handle invalidation by document generation                                                                                                                                                                                  |
+| DOM         | CSS, XPath, smallest text match, open/closed shadow roots, element scoping; DOM helpers in isolated worlds and user scripts in the main world                                                                                                                                                                                                   |
+| Input       | Scrolling, stable/visible/enabled/hit checks, obstruction and parent-iframe hit-testing, transformed quads, hover delivery confirmation; Chinese/emoji, focus and selection, physical keys, file inputs, select/checkbox, pointer drag; optional human policy                                                                                   |
+| Evaluation  | Promises, exceptionDetails, top-level special numbers/BigInt/undefined, JSHandle, object release, invalidation on navigation and crashes, no replay of side effects                                                                                                                                                                             |
+| State       | Saving and restoring cookies, local/sessionStorage, cookie + localStorage snapshots (including origins of iframes and closed tabs), permissions, isolation across 20 BrowserContexts and subscription cleanup                                                                                                                                   |
+| Files       | PNG/JPEG/WebP, full-page and element screenshots, PDF, GUID-named downloads with completion/cancellation, saveAs, uploads                                                                                                                                                                                                                       |
+| Network     | Fetch interception/fulfil/fail, authentication, responses and bodies, headers/cache/offline; covers the page and its recursive OOPIF sessions                                                                                                                                                                                                   |
+| Proxy       | Direct Chrome proxy, a separate proxy per context, authenticated HTTP(S)/SOCKS upstreams forwarded through proxy-chain                                                                                                                                                                                                                          |
+| Environment | Explicit viewport/DPR, timezone, locale, UA and Client Hints, geolocation; structured diagnostics and explicit alignment, see [Environment](environment.md)                                                                                                                                                                                     |
+| MCP         | stdio, local HTTP, socket and InMemory share 26 default tools and 3 directory-restricted optional file tools; leases, a managed browser pool, state resources and subscriptions, progress, cancellation and human confirmation, see [MCP](mcp.md)                                                                                               |
 
-- **浏览器版本**：只对上表的 Chrome 154/155 与 Edge 154 建立了证据，不宣称兼容所有版本。主世界发现依赖经严格校验的 V8 objectId 内部格式；不兼容时明确报错，不退回 `Runtime.enable`。
-- **检测**：默认不发送 `Runtime.enable`，并以原生启动开关关闭 AutomationControlled。隔离世界仍共享 DOM，headless 的屏幕尺寸等特征仍可观察；没有任何外部挑战必过的承诺，见 [自动化痕迹审计](automation-audit.md)。
-- **查询**：XPath 不穿越 shadow root，frame 查询不隐式跨 frame。识别 closed shadow root 需要全量 DOM，大页面上的高频轮询成本未做长期测量。
-- **状态**：快照不含跨站 iframe 的分区 localStorage、sessionStorage、IndexedDB 和 Service Worker。第三方分区 Cookie 没有独立的端到端用例。
-- **几何与截图**：覆盖嵌套、边框、滚动、scale/rotate、DPR 和父层遮挡；复杂 CSS 透视、pinch zoom、极端裁剪没有跨平台矩阵。元素截图适用于轴对齐元素。
-- **句柄**：JSHandle/Element 在文档失效后抛错，不自动重新定位。取消用户脚本只停止等待，不回滚已执行的 JS；用户脚本死循环会占用 renderer，需要协议执行期限或关闭页面。
-- **注入时机**：已经开始运行的页面和 popup 不保证首段脚本前注入。新 OOPIF 的暂停初始化有 watchdog，超时后恢复页面并报告初始化错误。
-- **文件**：上传与下载路径位于浏览器主机；连接远程 CDP 时需要共享文件系统或调用者自行传输。
-- **输入**：指针拖动不等于完整的 HTML5 DataTransfer 或跨应用拖放；`insertText` 不模拟 OS IME 候选窗或真实剪贴板。human 策略是可复现的程序化模型，不等同于物理输入。
-- **网络**：Fetch 路由不覆盖浏览器自身流量和独立的 Service Worker target。HTTPS 代理证书、IPv6 与复杂 DNS 出口组合由 proxy-chain 处理，本项目没有覆盖全部组合。
-- **范围外**：不内置 OpenCV、视频编码、验证码或挑战自动处理、屏幕布局探测；可通过 typed CDP、页面脚本或外部适配器扩展。
-- **MCP**：HTTP 服务需显式启用且只绑定 loopback，HTTP/socket 强制预配令牌与应用租约；不提供远程不可信多租户、OAuth 或全部内核能力的工具映射。AX 快照限制输出大小，但底层仍读取完整 AX 树；在同一页面上反复输入并快照时，Chrome 会保留少量 Blink 内存（约 1 KB/次，导航后释放），见 [长稳测试](soak.md)。
-- **清理**：`await using`、finally 与可选信号处理不能保证宿主被强杀或断电后的即时清理。重连不自动重放操作。
+## Limitations
 
-## 待验证
+- **Browser versions**: evidence exists only for Chrome 154/155 and Edge 154 in the table above; there is no claim of compatibility with every version. Main-world discovery depends on the internal V8 objectId format, validated strictly; an incompatible format fails explicitly instead of falling back to `Runtime.enable`.
+- **Detection**: `Runtime.enable` is not sent by default, and AutomationControlled is turned off with the native launch switch. Isolated worlds still share the DOM, and headless signals such as the screen size are still observable. There is no promise to pass any external challenge; see the [automation audit](automation-audit.md).
+- **Queries**: XPath does not cross shadow roots, and frame queries never cross frames implicitly. Finding closed shadow roots needs the full DOM, and the cost of high-frequency polling on large pages has not been measured over the long term.
+- **State**: snapshots exclude partitioned localStorage of cross-site iframes, sessionStorage, IndexedDB and Service Workers. Third-party partitioned cookies have no dedicated end-to-end test.
+- **Geometry and screenshots**: nesting, borders, scrolling, scale/rotate, DPR and parent obstruction are covered; complex CSS perspective, pinch zoom and extreme clipping have no cross-platform matrix. Element screenshots suit axis-aligned elements.
+- **Handles**: JSHandle/Element throw once their document is invalidated and are never relocated automatically. Cancelling a user script only stops waiting and does not roll back JS that already ran; an infinite loop in a user script ties up the renderer and needs a protocol execution deadline or closing the page.
+- **Injection timing**: pages and popups that are already running get no guarantee that a script runs before their first script. Paused initialization of a new OOPIF has a watchdog; on timeout the page is resumed and an initialization error is reported.
+- **Files**: upload and download paths are on the browser's host. When connected to a remote CDP endpoint, you need a shared file system or must transfer files yourself.
+- **Input**: a pointer drag is not a full HTML5 DataTransfer or cross-application drag and drop; `insertText` does not simulate an OS IME candidate window or the real clipboard. The human policy is a reproducible programmatic model, not equivalent to physical input.
+- **Network**: Fetch routing does not cover the browser's own traffic or separate Service Worker targets. HTTPS proxy certificates, IPv6 and complex DNS egress combinations are handled by proxy-chain, and this project does not cover every combination.
+- **Out of scope**: no built-in OpenCV, video encoding, automatic CAPTCHA or challenge handling, or screen layout detection; these can be built with typed CDP, page scripts or external adapters.
+- **MCP**: the HTTP service must be enabled explicitly and binds only to loopback; HTTP/socket enforce provisioned tokens and application leases. There is no remote untrusted multi-tenancy, no OAuth, and not every core capability is mapped to a tool. AX snapshots limit the output size, but the full AX tree is still read underneath. When you type and snapshot repeatedly on the same page, Chrome retains a little Blink memory (about 1 KB per iteration, released on navigation); see the [soak test](soak.md).
+- **Cleanup**: `await using`, `finally` and optional signal handling cannot guarantee prompt cleanup if the host is force-killed or loses power. Reconnecting never replays operations automatically.
 
-- 原生 Linux 的其他发行版、Intel macOS 及更多相邻 Chrome 版本。
-- Linux 与 macOS 上的 24 小时长稳运行。
-- 物理输入与真实 OS IME 对照，以及当前版本的在线检测页复测。
+## To be verified
 
-## 复验命令
+- Other native Linux distributions, Intel macOS and more adjacent Chrome versions.
+- 24-hour soak runs on Linux and macOS.
+- Comparisons against physical input and a real OS IME, and re-running the online detection pages against the current version.
+
+## Reproducing the checks
 
 ```sh
 npm ci
@@ -81,5 +83,5 @@ npm run check
 npm test
 npm run test:integration
 npm run test:dist
-npm run test:compat         # 用 CHROME_PATH 指定待验证的 Chrome
+npm run test:compat         # set CHROME_PATH to the Chrome under test
 ```

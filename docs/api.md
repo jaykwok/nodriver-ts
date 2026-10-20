@@ -1,132 +1,134 @@
-# API 与行为约定
+# API and behaviour
 
-除只读属性和事件订阅外，所有操作都是异步的。公开类型从根入口 `nodriver-ts` 导出，构建产物附带 `.d.ts`；CDP 类型来自随包安装的 `devtools-protocol`。
+[简体中文](zh-CN/api.md)
 
-## 入口
+Every operation is asynchronous except read-only properties and event subscriptions. Public types are exported from the root entry point `nodriver-ts`, and the build ships `.d.ts` files. CDP types come from `devtools-protocol`, which is installed with the package.
 
-| 入口                     | 导出                                                                                                                          |
-| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
-| `nodriver-ts`            | Browser、BrowserContext、Tab、Frame、Element、Network、输入、环境诊断、错误类型，以及 `InputPolicy`、`InputReport` 等配套类型 |
-| `nodriver-ts/mcp`        | `createBrowserMcpServer`、`BrowserSessionManager`、`MCP_PROTOCOL_VERSION`，见 [MCP](mcp.md)                                   |
-| `nodriver-ts/mcp/http`   | `startBrowserMcpHttpServer`、`createBrowserMcpHttpService`，见 [HTTP 接入](mcp-http.md)                                       |
-| `nodriver-ts/mcp/socket` | `startBrowserMcpSocketServer`、`BrowserMcpSocketClientTransport`，见 [socket 接入](mcp-socket.md)                             |
+## Entry points
 
-## 对象
+| Entry point              | Exports                                                                                                                                                          |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `nodriver-ts`            | Browser, BrowserContext, Tab, Frame, Element, Network, input, environment diagnostics, error types, and supporting types such as `InputPolicy` and `InputReport` |
+| `nodriver-ts/mcp`        | `createBrowserMcpServer`, `BrowserSessionManager`, `MCP_PROTOCOL_VERSION`; see [MCP](mcp.md)                                                                     |
+| `nodriver-ts/mcp/http`   | `startBrowserMcpHttpServer`, `createBrowserMcpHttpService`; see [MCP over HTTP](mcp-http.md)                                                                     |
+| `nodriver-ts/mcp/socket` | `startBrowserMcpSocketServer`, `BrowserMcpSocketClientTransport`; see [MCP over socket](mcp-socket.md)                                                           |
 
-测试入口 `nodriver-ts/testing` 导出 `ScriptedChrome`、`NO_REPLY` 及相关类型，见[脚本化测试](testing.md)。它不通过主入口导出。
+## Objects
 
-| 对象           | 高层入口                                                                                                                                                                                                |
-| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Browser        | `launch`, `connect`, `newTab`, `newContext`, `tabs`, `contexts`, `defaultContext`, `version`, `owned`, `endpoint`, `close`, `disconnect`, `release`, `waitForTab`, `errors`, `cdp`                      |
-| BrowserContext | `newTab`, `tabs`, `cookies`, `setCookies`, `clearCookies`, `saveCookies`, `loadCookies`, `storageState`, `restoreStorage`, `grantPermissions`, `resetPermissions`, `setDownloadDirectory`, `close`      |
-| Tab            | `goto`, `reload`, `go(delta)`, `waitForNavigation`, `stopLoading`, `bringToFront`, `activate`, `windowBounds`, `mainFrame`, `frames`, `waitForPopup`, `handleDialog`, `setInputPolicy`                  |
-| Tab 文件/环境  | `setContent`, `screenshot`, `pdf`, `resources`, `resourceContent`, `setEnvironment`, `addInitScript`, `waitForDownload`, `inspectEnvironment`, `diagnoseEnvironment`, `alignEnvironment`                |
-| Tab / Frame    | `evaluate`, `evaluateHandle`, `query`, `queryAll`, `waitForSelector`, `waitForFunction`, `content`                                                                                                      |
-| Frame          | `parent`, `children`, `session`, `url`, `generation`, `storage`, `setStorage`, `inspectEnvironment`                                                                                                     |
-| Element        | `text`, `html`, `attribute`, `describe`, `evaluate`, `query`, `queryAll`, `focus`, `click`, `hover`, `scrollIntoView`, `clickablePoint`, `fill`, `type`, `select`, `setChecked`, `upload`, `screenshot` |
-| Network        | `route`, `authenticate`, `setExtraHeaders`, `setCacheEnabled`, `setOffline`, `waitForResponse`, `responses`, `enable`, `networkEnabled`                                                                 |
-| Route          | `request`, `continue`, `fulfill`, `abort`；只能处理一次，handler 未处理时默认 continue                                                                                                                  |
-| Download       | `guid`, `url`, `suggestedFilename`, `status`, `updates`, `path`, `saveAs`, `cancel`                                                                                                                     |
-| Mouse          | `move`, `click`, `wheel`, `drag`；顶层视口 CSS 坐标                                                                                                                                                     |
-| Keyboard       | `insertText`, `type`, `down`, `up`, `press('Control+A')`                                                                                                                                                |
-| JSHandle       | `jsonValue`, `dispose`, `Symbol.asyncDispose`                                                                                                                                                           |
-| Session        | `send`, `sendWith`, `on`, `onAny`, `waitFor`, `disconnected`, `id`, `closed`                                                                                                                            |
-| Transport      | WebSocket / Pipe；自定义传输实现 `send`, `close`, `onmessage`, `onclose`                                                                                                                                |
+The test entry point `nodriver-ts/testing` exports `ScriptedChrome`, `NO_REPLY` and related types; see [scripted testing](testing.md). They are not exported from the main entry point.
 
-输入策略与 `InputReport` 见 [输入](input.md)，环境采样、诊断与对齐见 [环境](environment.md)。
+| Object                | High-level members                                                                                                                                                                                      |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Browser               | `launch`, `connect`, `newTab`, `newContext`, `tabs`, `contexts`, `defaultContext`, `version`, `owned`, `endpoint`, `close`, `disconnect`, `release`, `waitForTab`, `errors`, `cdp`                      |
+| BrowserContext        | `newTab`, `tabs`, `cookies`, `setCookies`, `clearCookies`, `saveCookies`, `loadCookies`, `storageState`, `restoreStorage`, `grantPermissions`, `resetPermissions`, `setDownloadDirectory`, `close`      |
+| Tab                   | `goto`, `reload`, `go(delta)`, `waitForNavigation`, `stopLoading`, `bringToFront`, `activate`, `windowBounds`, `mainFrame`, `frames`, `waitForPopup`, `handleDialog`, `setInputPolicy`                  |
+| Tab files/environment | `setContent`, `screenshot`, `pdf`, `resources`, `resourceContent`, `setEnvironment`, `addInitScript`, `waitForDownload`, `inspectEnvironment`, `diagnoseEnvironment`, `alignEnvironment`                |
+| Tab / Frame           | `evaluate`, `evaluateHandle`, `query`, `queryAll`, `waitForSelector`, `waitForFunction`, `content`                                                                                                      |
+| Frame                 | `parent`, `children`, `session`, `url`, `generation`, `storage`, `setStorage`, `inspectEnvironment`                                                                                                     |
+| Element               | `text`, `html`, `attribute`, `describe`, `evaluate`, `query`, `queryAll`, `focus`, `click`, `hover`, `scrollIntoView`, `clickablePoint`, `fill`, `type`, `select`, `setChecked`, `upload`, `screenshot` |
+| Network               | `route`, `authenticate`, `setExtraHeaders`, `setCacheEnabled`, `setOffline`, `waitForResponse`, `responses`, `enable`, `networkEnabled`                                                                 |
+| Route                 | `request`, `continue`, `fulfill`, `abort`; a route can be handled once, and a route the handler leaves unhandled is continued                                                                           |
+| Download              | `guid`, `url`, `suggestedFilename`, `status`, `updates`, `path`, `saveAs`, `cancel`                                                                                                                     |
+| Mouse                 | `move`, `click`, `wheel`, `drag`; CSS coordinates in the top-level viewport                                                                                                                             |
+| Keyboard              | `insertText`, `type`, `down`, `up`, `press('Control+A')`                                                                                                                                                |
+| JSHandle              | `jsonValue`, `dispose`, `Symbol.asyncDispose`                                                                                                                                                           |
+| Session               | `send`, `sendWith`, `on`, `onAny`, `waitFor`, `disconnected`, `id`, `closed`                                                                                                                            |
+| Transport             | WebSocket / Pipe; a custom transport implements `send`, `close`, `onmessage`, `onclose`                                                                                                                 |
 
-## 期限与取消
+The input policy and `InputReport` are described in [Input](input.md). Environment sampling, diagnostics and alignment are described in [Environment](environment.md).
 
-`WaitOptions` 由毫秒 `timeout` 和 `AbortSignal` 组成。0 表示立即到期，不表示无限等待。
+## Deadlines and cancellation
 
-| 操作                                           | 默认期限                                                 |
-| ---------------------------------------------- | -------------------------------------------------------- |
-| 启动或连接 Chrome 并完成 CDP 握手              | 30 秒                                                    |
-| 单条协议命令                                   | 30 秒；`launch({ timeout })` 同时设置启动/握手与命令期限 |
-| `waitForSelector`、`waitForFunction`、动作轮询 | 10 秒，轮询间隔 50 毫秒                                  |
-| `inspectEnvironment`                           | 5 秒                                                     |
+`WaitOptions` combines a `timeout` in milliseconds with an `AbortSignal`. A timeout of 0 expires immediately; it does not mean "wait forever".
 
-`sendWith(method, { timeout, signal }, ...params)` 为单条命令设置期限与取消。多步骤操作共用一个预算：选择器查询的执行上下文等待和其中每个 DOM/Runtime 请求只使用剩余时间，`waitForSelector()` / `waitForFunction()` 的各次尝试也共用总预算。执行上下文的查找由并发调用者共享，单个调用者到期或取消只结束自己的等待。查询的对象组释放有独立的 1 秒期限，不推迟调用者返回。
+| Operation                                            | Default deadline                                                                |
+| ---------------------------------------------------- | ------------------------------------------------------------------------------- |
+| Launching or connecting to Chrome, CDP handshake     | 30 s                                                                            |
+| A single protocol command                            | 30 s; `launch({ timeout })` sets both the launch/handshake and command deadline |
+| `waitForSelector`, `waitForFunction`, action polling | 10 s, polling every 50 ms                                                       |
+| `inspectEnvironment`                                 | 5 s                                                                             |
 
-宿主侧的期限或取消只停止等待，已发出的 CDP 命令、已执行的页面脚本和已派发的输入不会撤销或重放。
+`sendWith(method, { timeout, signal }, ...params)` sets a deadline and cancellation for one command. Multi-step operations share one budget: a selector query's wait for an execution context, and each DOM/Runtime request inside it, only gets the remaining time, and the attempts of `waitForSelector()` / `waitForFunction()` share the total budget too. Concurrent callers share one execution-context lookup; when one caller times out or is cancelled, only that caller's wait ends. Releasing a query's object group has its own 1 s deadline and does not delay the caller's return.
 
-## 导航与事件等待
+A host-side deadline or cancellation only stops waiting. CDP commands already sent, page scripts already run and input already dispatched are neither undone nor replayed.
 
-导航默认等待 `load`，另支持 `domcontentloaded`、`commit` 和 `networkidle`（Chrome 生命周期事件 networkIdle）。SPA/hash 导航以同文档导航事件完成，BFCache 恢复以恢复事件完成。
+## Navigation and event waits
 
-导航、下载、弹窗和响应等待须在触发动作之前注册。关闭的 session 会拒绝其上的请求和事件等待，迟到的响应被丢弃。页面崩溃后可调用 `reload()` 恢复，旧句柄保持失效。连接断开后应建立新连接；框架不重放脚本或输入。
+Navigation waits for `load` by default; `domcontentloaded`, `commit` and `networkidle` (Chrome's networkIdle lifecycle event) are also supported. SPA/hash navigations complete on the same-document navigation event, and BFCache restores complete on the restore event.
 
-## 查询
+Register waits for navigation, downloads, popups and responses before triggering the action. A closed session rejects its pending requests and event waits, and late responses are dropped. After a page crash, `reload()` recovers the page; old handles stay invalid. After a disconnect, open a new connection; the library does not replay scripts or input.
 
-- 选择器为 CSS 字符串、`{ css }`、`{ xpath }` 或 `{ text, exact? }`。
-- CSS 和文本查询默认穿透 open 与 closed shadow root，`pierce: false` 关闭。XPath 遵循标准语义，不穿越 shadow root。
-- 文本匹配折叠空白，默认只返回可见、且不包含同样匹配子元素的最小元素。
-- `Frame.query()` 只查所选 frame，不跨 iframe；`Element.query()` 限定在该元素子树。
-- 查询在随机命名的隔离世界中一次遍历文档与 open shadow root。默认穿透时用 `DOM.getDocument` 识别 closed shadow root：没有发现时，同一文档在无结构变化的 1 秒内复用该结论；发现时缓存到 DOM 结构变化，再把这些根一并交给同一次遍历。
-- `QueryOptions` 接受 `pierce`、`visible`、`limit`、`timeout`、`signal`。轮询不适合对大页面做高频全量抓取。
+## Queries
 
-## 求值与执行世界
+- A selector is a CSS string, `{ css }`, `{ xpath }` or `{ text, exact? }`.
+- CSS and text queries pierce open and closed shadow roots by default; `pierce: false` turns this off. XPath follows standard semantics and does not cross shadow roots.
+- Text matching collapses whitespace and, by default, returns only the smallest visible elements that do not contain a matching child.
+- `Frame.query()` searches only the selected frame and never crosses into iframes. `Element.query()` is scoped to the element's subtree.
+- A query walks the document and open shadow roots in a single pass inside a randomly named isolated world. When piercing (the default), closed shadow roots are found with `DOM.getDocument`. If none are found, that result is reused for the same document for up to 1 s while the structure is unchanged; if some are found, they are cached until the DOM structure changes and passed to the same single pass.
+- `QueryOptions` accepts `pierce`, `visible`, `limit`, `timeout` and `signal`. Polling is not meant for high-frequency full scans of large pages.
 
-`evaluate()` 默认在 main world 执行，`{ world: 'isolated' }` 使用隔离世界；DOM 辅助操作始终使用随机命名的隔离世界。隔离世界与页面共享 DOM，页面能观察 DOM 变化和输入事件。
+## Evaluation and execution worlds
 
-函数参数在浏览器中执行，不能捕获宿主闭包；参数以单个可序列化值传递，`JSHandle` 可作为参数。用户脚本异常抛出 `EvaluationError`。字符串形式的 `evaluate` / `evaluateHandle` 可传正数 `executionTimeout`（毫秒），对应 `Runtime.evaluate.timeout`，只限制初始同步执行，不能终止已安排的定时器、请求或异步续体，也不是资源沙箱。
+`evaluate()` runs in the main world by default; `{ world: 'isolated' }` uses an isolated world. DOM helpers always use a randomly named isolated world. Isolated worlds share the DOM with the page, so the page can observe DOM changes and input events.
 
-框架不调用 `Runtime.enable`：主世界通过所属 frame 的 Document 与 `DOM.resolveNode` 解析并校验，详见 [自动化痕迹审计](automation-audit.md)。因此不能等待默认未启用的 Runtime 事件；显式 `cdp.send('Runtime.enable')` 会改变这一点及检测面。`addInitScript()` 应在 `goto()` 前注册；新 OOPIF 在暂停状态下完成初始化后恢复，有 watchdog 兜底。已经开始执行的 popup 或外部页面没有首段脚本前注入保证。
+Functions run in the browser and cannot capture host closures. Arguments are passed as one serializable value, and a `JSHandle` can be an argument. Exceptions in user scripts throw `EvaluationError`. The string form of `evaluate` / `evaluateHandle` accepts a positive `executionTimeout` in milliseconds. It maps to `Runtime.evaluate.timeout`: it limits only the initial synchronous run, cannot stop timers, requests or async continuations that were already scheduled, and is not a resource sandbox.
 
-## 启动与连接
+The library does not call `Runtime.enable`. The main world is resolved and validated through the owning frame's Document and `DOM.resolveNode`; see the [automation audit](automation-audit.md). As a result, you cannot wait for Runtime events, which are not enabled by default. An explicit `cdp.send('Runtime.enable')` changes this, and changes the detection surface. Register `addInitScript()` before `goto()`. A new OOPIF is initialized while paused and then resumed, with a watchdog as a fallback. Popups or external pages that have already started running get no guarantee that the script runs before their first script.
 
-| 选项                              | 行为                                                                                                                                           |
-| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `headless`                        | 默认 `false`。无图形桌面时须显式 `true`；显示环境不可用时不会自动切换                                                                          |
-| `maskHeadless`                    | headless 且未指定 `userAgent` 时默认开启，去掉 UA 与 UA-CH 中的 HeadlessChrome                                                                 |
-| `automationControlled`            | 默认 `false`：加入 `--disable-blink-features=AutomationControlled`（与调用者的其他禁用特性合并），webdriver getter 保持原生；`true` 不加该开关 |
-| `preset: 'agent'`                 | 追加 `AGENT_ARGS`：关闭首次运行、搜索引擎选择、崩溃恢复气泡与后台节流                                                                          |
-| `userAgent`、`lang`、`windowSize` | 启动时设置 UA、BCP 47 语言和窗口尺寸                                                                                                           |
-| `userDataDir`                     | 持久 profile，由 `acquireProfileLock()` 加锁（见下文）                                                                                         |
-| `handleSignals`                   | 默认不接管宿主信号；`true` 时为自有进程注册 SIGINT/SIGTERM 清理                                                                                |
-| `detached`                        | 默认 `false`；`true` 允许 Windows/Unix 独立启动与 `release()`，仅支持 WebSocket，丢弃 Chrome stderr                                            |
-| `trace`                           | 与 `connect` 一致：布尔值或回调，接收方法、会话、耗时与错误；`false` 覆盖 `NODRIVER_TRACE`，不记录参数或结果                                   |
+## Launch and connect
 
-持久 profile 的锁文件记录 PID 与主机名，只有确认本机持有进程已退出时才回收陈旧锁；回收过程由独立的 `.nodriver.lock.reclaim` 文件互斥。若回收期间进程被强杀而留下该文件，会明确报错，确认记录的进程已退出后再手动删除。profile 中残留的 `DevToolsActivePort`（Chrome 未正常退出时留下，例如 MCP 宿主强制结束了服务进程）会被探测：记录的端口上仍有同一浏览器在服务时拒绝启动，无响应时删除该文件后继续。启动失败且 Chrome 已退出时，错误包含退出码与 stderr。
+| Option                            | Behaviour                                                                                                                                                                                  |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `headless`                        | `false` by default. Must be set to `true` explicitly without a graphical desktop; the library never switches automatically when no display is available                                    |
+| `maskHeadless`                    | On by default when headless and no `userAgent` is given; removes HeadlessChrome from the UA and UA-CH                                                                                      |
+| `automationControlled`            | `false` by default: adds `--disable-blink-features=AutomationControlled` (merged with the caller's other disabled features) and keeps the native webdriver getter; `true` omits the switch |
+| `preset: 'agent'`                 | Appends `AGENT_ARGS`: disables first-run UI, the search engine choice screen, the crash-restore bubble and background throttling                                                           |
+| `userAgent`, `lang`, `windowSize` | Set the UA, BCP 47 language and window size at launch                                                                                                                                      |
+| `userDataDir`                     | Persistent profile, locked by `acquireProfileLock()` (see below)                                                                                                                           |
+| `handleSignals`                   | Host signals are not handled by default; `true` registers SIGINT/SIGTERM cleanup for the owned process                                                                                     |
+| `detached`                        | `false` by default; `true` allows a detached launch on Windows/Unix and `release()`. WebSocket only; Chrome stderr is discarded                                                            |
+| `trace`                           | Same as `connect`: a boolean or a callback that receives method, session, duration and error. `false` overrides `NODRIVER_TRACE`. Parameters and results are never logged                  |
 
-`Browser.connect({ endpoint, attach })` 连接已有浏览器：`'all'`（默认）附加全部标签页，`'created'` 只附加本客户端创建的标签页及其弹出页。启动参数对已连接的浏览器无效，`close()` 只断开连接。
+The lock file of a persistent profile records the PID and host name. A stale lock is reclaimed only once the owning process on this host is confirmed to have exited, and reclamation is serialized by a separate `.nodriver.lock.reclaim` file. If a process is killed during reclamation and leaves that file behind, launch fails with a clear error; delete the file manually after confirming the recorded process has exited. A leftover `DevToolsActivePort` in the profile (left when Chrome did not exit cleanly, for example because an MCP host force-killed the server) is probed: if the same browser still answers on the recorded port, launch is refused; if nothing answers, the file is deleted and launch continues. When launch fails and Chrome has exited, the error includes the exit code and stderr.
 
-确认同机 `.nodriver.lock` 持有进程仍存活，或 `DevToolsActivePort` 仍提供原浏览器服务时，抛出带 `profile` 路径的 `ProfileInUseError`。Windows 另探测 Chrome 原生 `lockfile` 的共享冲突（`EBUSY`），因此未开放调试端口的已运行 Chrome 也会得到该类型错误；仅存在但未锁定的残留文件不视为占用，权限错误不误报为占用。Unix 原生 `SingletonLock`/`SingletonSocket` 暂不额外解析，未开放调试端口时仍可能报告普通启动退出错误。
+`Browser.connect({ endpoint, attach })` connects to an existing browser. `'all'` (the default) attaches to every tab; `'created'` attaches only to tabs that this client creates and their popups. Launch options have no effect on a connected browser, and `close()` only disconnects.
 
-`await using` 在正常退出和异常展开时关闭资源，`close()` 幂等。宿主被强制终止或断电时，JavaScript 无法保证清理。
+`ProfileInUseError`, carrying the `profile` path, is thrown when the process holding `.nodriver.lock` on this host is still alive, or when `DevToolsActivePort` is still served by the original browser. On Windows the library also probes Chrome's native `lockfile` for a sharing violation (`EBUSY`), so a running Chrome without a debugging port also produces this error type; a leftover file that is not locked is not treated as in use, and permission errors are not misreported as in use. On Unix the native `SingletonLock`/`SingletonSocket` are not parsed yet, so without a debugging port you may still get an ordinary launch-exit error.
 
-`await browser.release()` 返回 WebSocket endpoint 并放弃进程所有权，之后 `owned` 为 `false`，`close()` 与异步析构只断开连接。自有浏览器必须以 `detached: true` 启动；pipe 会明确拒绝交接且不改变连接。交接保留 profile 与 `DevToolsActivePort`，移除记录宿主 PID 的 `.nodriver.lock`。`disconnect()` 不放弃所有权，pipe Chrome 在管道断开时会退出。独立启动的 stderr 不可用，交接前宿主崩溃可能遗留 Chrome。完整示例、清理责任和事件接口见[浏览器交接与事件](browser-handoff.md)。
+`await using` closes resources on normal exit and during exception unwinding, and `close()` is idempotent. JavaScript cannot guarantee cleanup if the host is force-killed or loses power.
 
-## 输入与元素操作
+`await browser.release()` returns the WebSocket endpoint and gives up ownership of the process. Afterwards `owned` is `false`, and `close()` and async disposal only disconnect. An owned browser must have been launched with `detached: true`; a pipe connection rejects handoff explicitly and is left unchanged. Handoff keeps the profile and `DevToolsActivePort`, and removes the `.nodriver.lock` that records the host PID. `disconnect()` does not give up ownership, and a pipe Chrome exits when its pipe closes. A detached launch has no stderr, and a host crash before handoff can leave Chrome running. See [browser handoff and events](browser-handoff.md) for a full example, cleanup responsibilities and the event API.
 
-- 点击前滚动到视口，检查可见、启用、位置稳定和命中，不自动重放已经派发的动作。
-- `fill()` 支持可编辑 input、textarea 和 contenteditable，通过焦点/选择区和 `Input.insertText` 写入 Unicode，只承诺最终文本和浏览器 input 语义，不模拟 OS IME 候选窗或剪贴板。
-- `select()` 通过 DOM 改值并派发 input/change。
-- 物理按键支持命名键、F1–F12、修饰键组合与 US 布局字符（含上档符号）。
-- `Mouse.drag()` 是指针拖动，复杂 HTML5 DataTransfer 需要自行使用协议扩展。
+## Input and element actions
 
-## 截图、PDF 与错误
+- Before a click, the element is scrolled into the viewport and checked for visibility, enabled state, stable position and hit-testing. Actions already dispatched are never replayed.
+- `fill()` supports editable inputs, textareas and contenteditable elements. It writes Unicode through focus/selection and `Input.insertText`, and promises only the final text and the browser's input semantics; it does not simulate an OS IME candidate window or the clipboard.
+- `select()` changes the value through the DOM and dispatches input/change.
+- Physical keys support named keys, F1–F12, modifier combinations and US-layout characters (including shifted symbols).
+- `Mouse.drag()` is a pointer drag; complex HTML5 DataTransfer needs your own protocol code.
 
-`screenshot()` 返回 Buffer，`path` 可选。元素截图适用于轴对齐元素，旋转/透视元素请用页面截图加显式 clip。`pdf()` 依赖 Chrome 的 headless 打印能力。权限问题、实验性命令和不同浏览器实现的差异以 `ProtocolError` 暴露，不统一视为不支持。
+## Screenshots, PDF and errors
 
-## 网络
+`screenshot()` returns a Buffer; `path` is optional. Element screenshots suit axis-aligned elements; for rotated or perspective-transformed elements, take a page screenshot with an explicit clip. `pdf()` relies on Chrome's headless printing. Permission problems, experimental commands and differences between browser implementations surface as `ProtocolError`; they are not all treated as "unsupported".
 
-`Network.enable` 只在需要时发送：订阅 `responses`、调用 `waitForResponse`、显式 `enable()`，或设置非默认 headers/cache/offline。`route()` 和 `authenticate()` 只使用 Fetch 域。路由覆盖所选 Tab 及其 OOPIF，不覆盖 Service Worker、浏览器自身请求和其他 Tab。响应的 `body()` 须在内容可用后调用；缓存被驱逐或发生重定向时 CDP 可能拒绝。
+## Network
 
-## 状态与存储
+`Network.enable` is sent only when needed: subscribing to `responses`, calling `waitForResponse`, calling `enable()` explicitly, or setting non-default headers/cache/offline. `route()` and `authenticate()` use only the Fetch domain. Routes cover the selected Tab and its OOPIFs, but not Service Workers, the browser's own requests or other tabs. Call a response's `body()` after its content is available; CDP may refuse when the cache entry was evicted or the response was redirected.
 
-BrowserContext 之间的 Cookie 与存储相互隔离；这不等于独立的操作系统、GPU 或字体环境。
+## State and storage
 
-`storageState(path?)` 保存 Cookie，以及该上下文中任一 frame 访问过的 HTTP(S) origin 的第一方 localStorage，包括 iframe 和已关闭标签页用过的 origin；空存储不导出。跨站 iframe 在其他顶层站点下的分区 localStorage、sessionStorage 和 IndexedDB 不在快照内。仍打开的主页面原地读取，其余 origin 在一个临时标签页中读取。
+Cookies and storage are isolated between BrowserContexts. That isolation does not extend to the operating system, GPU or fonts.
 
-`restoreStorage(state)` 先设置 Cookie，再替换列出的各 origin 的 localStorage：该 origin 仍打开的主页面原地写入，返回时即可读到；其余 origin 在一个临时标签页中写入。临时标签页拦截文档请求、返回空白页并绕过 Service Worker，因此不访问站点、不跟随重定向、不运行站点脚本。同一 origin 的其他已打开文档与浏览器中跨标签页写入一样，异步收到变更。
+`storageState(path?)` saves cookies, plus first-party localStorage for every HTTP(S) origin that any frame in the context has visited, including iframes and origins used by tabs that have since closed. Empty storage is not exported. Partitioned localStorage of cross-site iframes under other top-level sites, sessionStorage and IndexedDB are not in the snapshot. Main pages that are still open are read in place; other origins are read in one temporary tab.
 
-`Frame.storage(kind = 'local', origin?)` 与 `Frame.setStorage(values, kind = 'local', clear = false, origin?)` 可指定预期 origin：读取、清空与写入和 `location.origin` 检查在同一段脚本中执行，不匹配时抛出 `EvaluationError`，页面存储保持不变。
+`restoreStorage(state)` sets cookies first, then replaces the localStorage of each listed origin. If a main page for that origin is still open, it is written in place and readable once the call returns; other origins are written in one temporary tab. The temporary tab intercepts document requests, serves a blank page and bypasses Service Workers, so it never contacts the site, follows redirects or runs site scripts. Other open documents of the same origin receive the change asynchronously, just as with cross-tab writes in the browser.
 
-Cookie 快照与状态文件包含凭证，存放位置由调用者负责。
+`Frame.storage(kind = 'local', origin?)` and `Frame.setStorage(values, kind = 'local', clear = false, origin?)` accept an expected origin. Reading, clearing and writing happen in the same script as the `location.origin` check; on a mismatch they throw `EvaluationError` and the page's storage is left unchanged.
 
-## 协议与追踪
+Cookie snapshots and state files contain credentials. Where they are stored is the caller's responsibility.
 
-严格的命令参数元组与返回、事件类型来自固定版本的 `devtools-protocol`。事件按 session 路由：`session.on(method, listener)` 和 `session.onAny(listener)` 只接收该 session 的事件，先于全局 `connection.events` 执行；`connection.listenerCount` 汇总两者。
+## Protocol and tracing
 
-`Connection` 选项 `trace: true` 把每条命令的方法、session、耗时和错误码写到 stderr；传函数则接收 `TraceEntry`。环境变量 `NODRIVER_TRACE=1` 等价于 `true`。参数和结果从不记录。
+Strict command parameter tuples, return types and event types come from a pinned version of `devtools-protocol`. Events are routed by session: `session.on(method, listener)` and `session.onAny(listener)` receive only that session's events, and run before the global `connection.events`. `connection.listenerCount` counts both.
+
+The `Connection` option `trace: true` writes each command's method, session, duration and error code to stderr; a function receives a `TraceEntry` instead. The environment variable `NODRIVER_TRACE=1` is equivalent to `true`. Parameters and results are never logged.
