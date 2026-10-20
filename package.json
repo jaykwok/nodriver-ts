@@ -48,7 +48,7 @@
     }
   },
   "bin": {
-    "nodriver-mcp": "./dist/mcp/cli.js"
+    "nodriver-mcp": "dist/mcp/cli.js"
   },
   "files": [
     "dist",
