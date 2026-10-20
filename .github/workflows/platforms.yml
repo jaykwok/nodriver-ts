@@ -34,9 +34,6 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: '1.4.3'
       # See test.yml: systemd-coredump delays renderer-crash reports.
       - name: Disable piped core dumps
         if: runner.os == 'Linux'
@@ -65,9 +62,8 @@ jobs:
         shell: bash
         run: |
           mkdir -p test-results
-          { node test/ci-versions.ts; bun test/ci-versions.ts | grep '^runtime:'; } | tee test-results/versions.txt
+          node test/ci-versions.ts | tee test-results/versions.txt
           { echo '### Versions'; echo '```'; cat test-results/versions.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-      # The same test sources run on Node.js and on Bun.
       - name: Node.js unit tests
         shell: bash
         run: npm test 2>&1 | tee test-results/node-unit.log
@@ -79,18 +75,6 @@ jobs:
         if: success() || failure()
         shell: bash
         run: npm run test:compat 2>&1 | tee test-results/node-compat.log
-      - name: Bun unit tests
-        if: success() || failure()
-        shell: bash
-        run: npm run test:bun 2>&1 | tee test-results/bun-unit.log
-      - name: Bun integration tests
-        if: success() || failure()
-        shell: bash
-        run: npm run test:bun:integration 2>&1 | tee test-results/bun-integration.log
-      - name: Bun compatibility tests
-        if: success() || failure()
-        shell: bash
-        run: npm run test:bun:compat 2>&1 | tee test-results/bun-compat.log
       - name: Failure summary
         if: failure()
         shell: bash

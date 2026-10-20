@@ -1,6 +1,6 @@
 # 本地 Streamable HTTP 与浏览器租约
 
-HTTP 是常驻本地服务的主入口，与 stdio、socket、InMemory 共用工具实现、`BrowserSessionManager`、浏览器池与租约和 CDP 内核；工具与边界见 [MCP](mcp.md)。服务在 Bun 下使用 `Bun.serve`，在 Node.js 22+ 下使用 `node:http` 适配（同一 fetch 处理器，流式 SSE 带背压）。仅支持 MCP **2026-07-28**；应用级 `Browser-Lease-Id` 让浏览器状态跨请求保持，不使用 MCP session，也不面向远程不可信多租户部署。
+HTTP 是常驻本地服务的主入口，与 stdio、socket、InMemory 共用工具实现、`BrowserSessionManager`、浏览器池与租约和 CDP 内核；工具与边界见 [MCP](mcp.md)。服务在 Node.js 22+ 下使用 `node:http` 适配（fetch 处理器，流式 SSE 带背压）。仅支持 MCP **2026-07-28**；应用级 `Browser-Lease-Id` 让浏览器状态跨请求保持，不使用 MCP session，也不面向远程不可信多租户部署。
 
 ## 启动
 

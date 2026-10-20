@@ -10,13 +10,13 @@ nodriver-ts drives Chrome, Chromium and Edge directly over the Chrome DevTools P
 - **Frames.** Same-process iframes, out-of-process iframes (OOPIF) and nested OOPIFs each run in their own CDP session. Queries pierce open and closed shadow roots.
 - **Input.** Clicks wait for the target to be visible, stable and unobscured before dispatching, and actions are never replayed. An optional seeded "human" policy adds pointer paths, key-event typing and wheel scrolling.
 - **Agent-ready MCP.** Tools take short stable element refs (`e12`) from an indented accessibility snapshot. An action returns a summary of what happened: navigation, new tabs, dialogs. HTTP clients get application-level leases, so browser state survives across requests and reconnects. Only MCP **2026-07-28** is accepted.
-- **Runtimes.** The same test suite runs on Node.js and Bun. The package runs on Node.js 22 or newer and Bun 1.4.3 or newer; the MCP HTTP server uses `node:http` on Node and `Bun.serve` on Bun.
+- **Runtime.** The package runs on Node.js 22 or newer; the MCP HTTP server uses `node:http`.
 
 > No automation framework is undetectable. nodriver-ts removes the common CDP and WebDriver tells; it does not promise that any site will let you through. Read [the automation audit](docs/automation-audit.md) for what has and has not been measured.
 
 ## Requirements
 
-- Node.js ≥ 22 or Bun ≥ 1.4.3. The CLI and package entry points run on both. Building and testing from source needs Node.js ≥ 24, which runs the TypeScript sources directly.
+- Node.js ≥ 22. Building and testing from source needs Node.js ≥ 24, which runs the TypeScript sources directly.
 - A locally installed Chrome, Chromium or Edge. It is auto-detected on Windows, macOS and Linux, including on `PATH`; otherwise set `CHROME_PATH` or `executablePath`.
 - Chrome opens with a window by default (`headless: false`). Servers and CI without a display should pass `headless: true` / `--headless`. Run Linux as a normal user with Chrome's shared libraries installed; the library never adds `--no-sandbox`.
 
@@ -141,7 +141,6 @@ npm run check                # strict type check (src and tests)
 npm test                     # unit tests on Node.js
 npm run test:integration     # real Chrome, both CDP transports
 npm run test:dist            # build, then a smoke test of the package and MCP over HTTP
-npm run test:bun             # the same unit tests on Bun (also test:bun:integration)
 npm run format:check
 ```
 

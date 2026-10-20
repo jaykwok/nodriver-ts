@@ -149,7 +149,7 @@ HTTP 只监听 loopback，要求 Bearer 令牌。省略 `Browser-Lease-Id` 时�
 
 - **结果**：`{ "type": "json", "value": ... }`；无 return 或返回 undefined 时为 `{ "type": "undefined" }`。对象遵循 `JSON.stringify` 语义（Date 变成字符串，嵌套 undefined 被省略，NaN 变成 null）；BigInt、循环引用、顶层 function/symbol 报错。DOM 节点须显式映射成所需字段，不返回远端句柄。
 - **大小**：脚本与参数（JSON 序列化后）各最多 32,768 个字符，结果 JSON 最多 262,144 个字符；超限报错，不截断。
-- **范围**：`frameId` 可选，省略为主 frame，必须属于当前租约的标签页，支持同进程 iframe 与 OOPIF。`world` 默认 main，可访问页面全局变量；isolated 与页面 JS 全局对象隔离，但共享 DOM，不是安全沙箱。脚本只在 Chrome 中运行，无法访问宿主的 Bun、Node、文件系统或进程；请求、Cookie、存储和同源限制遵循页面自身权限。该工具能读写页面敏感状态，因此标为可修改状态。
+- **范围**：`frameId` 可选，省略为主 frame，必须属于当前租约的标签页，支持同进程 iframe 与 OOPIF。`world` 默认 main，可访问页面全局变量；isolated 与页面 JS 全局对象隔离，但共享 DOM，不是安全沙箱。脚本只在 Chrome 中运行，无法访问宿主的 Node、文件系统或进程；请求、Cookie、存储和同源限制遵循页面自身权限。该工具能读写页面敏感状态，因此标为可修改状态。
 - **期限**：timeout 默认 10 秒、最大 60 秒，同时受操作期限（默认 30 秒）约束。CDP 执行期限限制初始同步计算，宿主等待期限与取消信号同时生效；**不能保证停止已安排的定时器、网络请求或异步续体，也不回滚副作用**。超时或取消后不重放，后续操作可能与遗留的页面任务交错；需要中止整页任务时关闭该标签页。
 - **输入行为**：`element.click()`、直接赋值 value 或 `dispatchEvent()` 不经过输入策略，也不产生可信输入事件；需要真实输入时使用 `browser_click`、`browser_fill`、`browser_type`、`browser_scroll`。跨页面导航请用 `browser_navigate`，避免执行期间文档被销毁。
 

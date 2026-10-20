@@ -19,31 +19,11 @@
 
 端点采样只描述有限工作负载下的状态，不能证明不存在内存泄漏。
 
-## 基线结果
-
-Ryzen 5 5600X，Bun 1.4.3；Windows 使用 Chrome 155.0.8059.80，WSL2 Ubuntu 26.04（12 个逻辑 CPU、约 7.72 GiB 内存）使用 Chrome for Testing 155.0.8059.79。两个平台顺序运行。表中为单次运行的中位数，不能外推到其他机器，也不能归因于某一语言或传输实现。
-
-| 指标                     | Windows Pipe | Windows WS | WSL Pipe | WSL WS |
-| ------------------------ | -----------: | ---------: | -------: | -----: |
-| 冷启动，3 次，ms         |          307 |        301 |      228 |    195 |
-| 预热后 RTT，100 次，ms   |        0.132 |      0.208 |    0.175 |  0.327 |
-| 100 按钮快照，7 次，ms   |          9.0 |        9.9 |     12.3 |   11.1 |
-| 1000 按钮快照，7 次，ms  |         58.7 |       61.5 |     79.1 |   77.5 |
-| 10000 按钮快照，7 次，ms |        523.9 |      571.1 |    724.5 |  832.4 |
-
-10000 按钮页面的 AX 响应约 13.61 MB、30012 个节点，最终 200 节点的快照约 23 KB。截断输出不减少读取完整 AX 树的成本。
-
-| context 数（进程数） | Windows 任务 p50 / p95，ms | Windows 任务/秒 | WSL 任务 p50 / p95，ms | WSL 任务/秒 |
-| -------------------- | -------------------------: | --------------: | ---------------------: | ----------: |
-| 1（1）               |                40.9 / 41.7 |            24.4 |            46.1 / 62.3 |        19.5 |
-| 5（2）               |              165.9 / 177.0 |            29.5 |          183.8 / 195.0 |        26.7 |
-| 20（5）              |              208.6 / 268.0 |            87.9 |          203.7 / 216.9 |        96.0 |
-
-三档分别完成 5 / 25 / 100 个任务，错误为 0；释放后租约、浏览器和分配数均为 0。运行中 Chrome 进程 RSS 之和：Windows 约 0.67 / 1.81 / 5.90 GiB，WSL 约 1.36 / 3.96 / 13.15 GiB（最后一项超过 WSL 内存额度，说明 RSS 求和重复计算了共享页，不代表物理占用）。控制器结束时 RSS 约 80–102 MiB。
+历史 MCP 基线见 [0.2.0 发布文档](https://github.com/jaykwok/nodriver-ts/blob/v0.2.0/docs/performance.md#基线结果)。
 
 ## 与 Python nodriver 对照
 
-`npm run bench:compare` 运行 `benchmarks/compare.ts`（也可用 `bun benchmarks/compare.ts` 在 Bun 下运行）：同一台机器、同一个 Chrome、headless、WebSocket、全新临时 profile 和同一个本地 fixture，两侧执行相同的工作负载。Python 侧通过 `uv` 以隔离模式运行 nodriver 0.50.6（Python 3.12，websockets 17.2），脚本位于 `benchmarks/compare/nodriver_bench.py`。默认先运行 TypeScript，`BENCH_PYTHON_FIRST=1` 时先运行 Python；`BENCH_SAMPLES` 调整往返样本数（默认 200）。
+`npm run bench:compare` 运行 `benchmarks/compare.ts`：同一台机器、同一个 Chrome、headless、WebSocket、全新临时 profile 和同一个本地 fixture，两侧执行相同的工作负载。Python 侧通过 `uv` 以隔离模式运行 nodriver 0.50.6（Python 3.12，websockets 17.2），脚本位于 `benchmarks/compare/nodriver_bench.py`。默认先运行 TypeScript，`BENCH_PYTHON_FIRST=1` 时先运行 Python；`BENCH_SAMPLES` 调整往返样本数（默认 200）。
 
 - **冷启动**：启动浏览器并打开空白页，各 5 次。headless 启动默认用探测页去除 UA 中的 HeadlessChrome，nodriver 不做这一步，因此另测 `maskHeadless: false` 作为对等口径。
 - **往返**：预热 20 次后测 200 次 `Browser.getVersion` 与 200 次 `evaluate("1+1")`。
@@ -64,8 +44,6 @@ Ryzen 5 5600X、Windows 11、Chrome 155.0.8059.80，nodriver-ts 运行在 Node.j
 | 导航                 |        11.22 / 15.56 |            11.05 / 11.73 |     12.69 / 14.59 |         12.68 / 14.68 |
 | AX 树，30003 节点    |        627.3 / 652.0 |            603.7 / 696.1 |   1401.0 / 1604.3 |       1418.4 / 1541.5 |
 | 控制器 RSS，MiB      |                  241 |                      206 |               494 |                   495 |
-
-同一台机器上以 Bun 1.4.3 运行 nodriver-ts（两种顺序各一次）的中位数与 Node.js 接近：冷启动默认 474 / 497 ms、不处理 UA 372 / 344 ms，`Browser.getVersion` 0.15 / 0.16 ms，`evaluate` 0.24 ms，查询 1.02 / 0.98 ms，导航 11.1 / 10.6 ms，AX 树 569 / 567 ms，控制器 RSS 135 / 171 MiB。
 
 单次运行，结果只描述此工作负载在此机器上的表现；5 次冷启动的 p95 即最大样本，受偶发慢启动影响。查询差异来自实现方式不同（nodriver 的 `select` 每次以 `DOM.getDocument(depth=-1, pierce=true)` 取回完整 DOM 树，再在 Python 中递归查找节点），不代表 CDP 通信本身的差距；导航一项两侧的完成判定方式不同。
 

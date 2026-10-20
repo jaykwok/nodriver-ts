@@ -10,7 +10,7 @@
 
 安装：`npm install nodriver-ts`。源码开发与测试使用下列命令。
 
-包需要 Node.js 22+ 或 Bun 1.4.3+；从源码构建和测试需要 Node.js 24+（直接运行 TypeScript 源码），同一套测试也在 Bun 下运行。另需本机 Chrome/Chromium/Edge（Windows、macOS、Linux 常见路径与 `PATH` 自动探测，也可用 `CHROME_PATH` 或 `executablePath` 指定）。已验证的系统和版本见 [支持范围](docs/support.md)。
+包需要 Node.js 22+；从源码构建和测试需要 Node.js 24+（直接运行 TypeScript 源码）。另需本机 Chrome/Chromium/Edge（Windows、macOS、Linux 常见路径与 `PATH` 自动探测，也可用 `CHROME_PATH` 或 `executablePath` 指定）。已验证的系统和版本见 [支持范围](docs/support.md)。
 
 ```sh
 npm ci
@@ -18,7 +18,6 @@ npm run check
 npm test
 npm run test:integration
 npm run test:dist   # 构建后对包与 MCP HTTP 做冒烟测试
-npm run test:bun    # 同一套单元测试在 Bun 下运行（另有 test:bun:integration）
 ```
 
 默认打开有界面 Chrome（`headless: false`）；没有图形桌面的服务器或 CI 请显式设置 `headless: true`。Linux 应使用普通用户运行并安装 Chrome 所需共享库；框架不会自动添加 `--no-sandbox`。WSL 的默认有界面模式需要 WSLg 或其他可用显示服务。

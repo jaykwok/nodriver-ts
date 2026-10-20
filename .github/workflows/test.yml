@@ -3,27 +3,21 @@ on: [push, pull_request, workflow_dispatch]
 permissions:
   contents: read
 jobs:
-  # The same test sources run on Node.js (primary) and Bun.
+  # Run the source suite on Node.js 24 and check the built package on Node.js 22 below.
   test:
     strategy:
       fail-fast: false
       matrix:
         os: [windows-latest, ubuntu-latest]
-        runtime: [node, bun]
-    name: test (${{ matrix.os }}, ${{ matrix.runtime }})
+    name: test (${{ matrix.os }}, node)
     runs-on: ${{ matrix.os }}
     env:
       NODRIVER_HEADFUL: '0'
-      RUNTIME: ${{ matrix.runtime }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
-      - uses: oven-sh/setup-bun@v2
-        if: matrix.runtime == 'bun'
-        with:
-          bun-version: '1.4.3'
       # Ubuntu pipes core dumps to systemd-coredump, which holds a crashed renderer for tens of
       # seconds before Chrome sees it exit. Plain core files are skipped (the core size limit is 0).
       - name: Disable piped core dumps
@@ -35,37 +29,32 @@ jobs:
         shell: bash
         run: |
           mkdir -p test-results
-          $RUNTIME test/ci-versions.ts | tee test-results/versions.txt
+          node test/ci-versions.ts | tee test-results/versions.txt
           { echo '### Versions'; echo '```'; cat test-results/versions.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-      - if: matrix.runtime == 'node'
-        run: npm run check
-      - if: matrix.runtime == 'node'
-        run: npm run format:check
+      - run: npm run check
+      - run: npm run format:check
       - name: Unit tests
         shell: bash
-        run: |
-          if [ "$RUNTIME" = bun ]; then npm run test:bun; else npm test; fi
+        run: npm test
       # Real-browser tests depend on runner timing; retry once before failing the job. The first
       # attempt's log is kept and its failures are reported, so a passing retry does not hide them.
       - name: Integration tests
         shell: bash
         run: |
-          integration() { if [ "$RUNTIME" = bun ]; then npm run test:bun:integration; else npm run test:integration; fi; }
-          if integration 2>&1 | tee test-results/integration-1.log; then exit 0; fi
+          if npm run test:integration 2>&1 | tee test-results/integration-1.log; then exit 0; fi
           node test/ci-failures.ts test-results/integration-1.log > test-results/integration-1-failures.txt
           while IFS= read -r line; do echo "::warning title=Integration first attempt::${line//%/%25}"; done < test-results/integration-1-failures.txt
           { echo '### Integration first attempt failed'; echo '```'; cat test-results/integration-1-failures.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-          integration 2>&1 | tee test-results/integration-2.log
+          npm run test:integration 2>&1 | tee test-results/integration-2.log
       - name: Upload test logs
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: test-logs-${{ matrix.os }}-${{ matrix.runtime }}
+          name: test-logs-${{ matrix.os }}-node
           path: test-results/
           if-no-files-found: ignore
           retention-days: 30
       - name: Built package
-        if: matrix.runtime == 'node'
         run: npm run test:dist
 
   # Oldest supported Node.js for package consumers: the built package, not the TypeScript sources.

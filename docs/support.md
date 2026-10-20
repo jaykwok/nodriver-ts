@@ -2,34 +2,34 @@
 
 ## 运行环境
 
-- **运行时**：包支持 Node.js ≥ 22 与 Bun ≥ 1.4.3。同一套测试（`node:test` 与 `expect`）不经改写地在 Node.js 与 Bun 下运行；Node.js ≥ 24 直接运行 TypeScript 源码，因此从源码开发和测试需要 Node.js 24 及以上，Node.js 22 以构建产物的冒烟测试覆盖。包管理使用 npm。
+- **运行时**：包支持 Node.js ≥ 22，测试使用 `node:test` 与 `expect`；Node.js ≥ 24 直接运行 TypeScript 源码，因此从源码开发和测试需要 Node.js 24 及以上，Node.js 22 以构建产物的冒烟测试覆盖。包管理使用 npm。
 - **浏览器**：本机 Chrome、Chromium 或 Edge。Windows、macOS、Linux 的常见安装位置与 `PATH` 自动探测，也可用 `CHROME_PATH` 或 `executablePath` 指定。
 - **协议**：CDP 类型固定为 devtools-protocol 0.0.1718299；MCP 仅支持 2026-07-28。
 - **Linux**：以普通用户运行，安装 Chrome 所需共享库（如 libnspr4、libnss3）。框架不添加 `--no-sandbox`，也不关闭站点隔离。WSL 的有界面模式需要 WSLg 或其他显示服务。
 - **macOS**：Chrome 运行在 macOS 上时，按键事件附带 Chrome 的编辑命令，`Meta+A`、`Meta+C/X/V/Z`、`Shift+Meta+Z` 及 Alt/Meta 组合的方向键与删除键与物理键盘行为一致；跨平台脚本的全选应按平台使用 `Meta+A` 或 `Control+A`。GitHub 托管的 macOS 虚拟机无法解析 mDNS（`.local`）主机候选，本地 WebRTC 会停在 ICE `new`；平台矩阵在该环境中以 `--disable-features=WebRtcHideLocalIpsWithMdns` 启动 WebRTC 测试的浏览器，本项目不会自动添加此参数。
-- **WebSocket**：使用固定版本 npm `ws` 8.22.0 的 JS 协议解析器，关闭 per-message compression。Bun 会替换裸 `ws` 导入，适配层显式解析 npm 包的公开入口，因此需要保留正常的 npm 文件布局；Bun 单文件编译打包未验证。
+- **WebSocket**：使用固定版本 npm `ws` 8.22.0 的 JS 协议解析器，关闭 per-message compression。适配层显式解析 npm 包的公开入口，需要保留正常的 npm 文件布局。
 
 ## 已验证组合
 
-测试数为单元 / 集成 / 兼容矩阵（WebSocket 与 Pipe 两种传输），均为当前版本；“两者”指 Node.js 与 Bun 各运行同一套测试一次，各自得到所列结果。
+下表保留 0.1.0 发布时的 Node.js 验证记录；测试数为单元 / 集成 / 兼容矩阵（WebSocket 与 Pipe 两种传输）。0.2.0 在本机 Windows、Node.js 24.22.0、Chrome 155.0.8059.85 上通过了 60 项单元测试、95 项集成测试及构建产物测试。后续 CI 仅运行 Node.js：Windows/Ubuntu 的 Node.js 24 完整测试，以及 Node.js 22 的构建产物测试。
 
-| 平台与浏览器                                                                     | 运行时                       | 结果                                                           |
-| -------------------------------------------------------------------------------- | ---------------------------- | -------------------------------------------------------------- |
-| Windows 11 x64，Chrome 155.0.8059.80（本机）                                     | Node.js 24.22.0 与 Bun 1.4.3 | 两者 53 / 85 通过；类型、格式检查与构建产物测试通过            |
-| WSL2 Ubuntu 26.04，Chrome for Testing 155.0.8059.79 与 154.0.8037.92（本机）     | Node.js 24.22.0 与 Bun 1.4.3 | 两者 53 / 85 / 8 + 8 通过；原生信号测试 4 项与构建产物测试通过 |
-| GitHub Actions Windows x64，Chrome 155.0.8059.40                                 | Node.js 24.21.0 与 Bun 1.4.3 | 两者 53 / 85 通过，集成测试首次通过；构建产物测试通过          |
-| GitHub Actions Ubuntu x64，Chrome 155.0.8059.84（Node.js）/ 155.0.8059.39（Bun） | Node.js 24.22.0 与 Bun 1.4.3 | 两者 53 / 85 通过，集成测试首次通过；构建产物测试通过          |
-| GitHub Actions Ubuntu x64，Chrome 155.0.8059.39                                  | Node.js 22.23.3              | 构建产物冒烟测试（WebSocket 与 Pipe）及 HTTP 断连回收测试通过  |
-| GitHub Actions macOS ARM64，Chrome 155.0.8059.40                                 | Node.js 24.21.0 与 Bun 1.4.3 | 两者 53 / 85 / 8 通过（WebRTC 测试见上文 macOS 说明）          |
-| GitHub Actions Ubuntu ARM64，Chrome for Testing 155.0.8059.84                    | Node.js 24.22.0 与 Bun 1.4.3 | 两者 53 / 85 / 8 通过                                          |
-| GitHub Actions Ubuntu x64，Chrome for Testing 154.0.8037.92                      | Node.js 24.21.0 与 Bun 1.4.3 | 两者 53 / 85 / 8 通过                                          |
-| GitHub Actions Windows x64，Microsoft Edge 154.0.4258.62                         | Node.js 24.21.0 与 Bun 1.4.3 | 两者 53 / 85 / 8 通过                                          |
+| 平台与浏览器                                                                 | 运行时          | 结果                                                          |
+| ---------------------------------------------------------------------------- | --------------- | ------------------------------------------------------------- |
+| Windows 11 x64，Chrome 155.0.8059.80（本机）                                 | Node.js 24.22.0 | 53 / 85 通过；类型、格式检查与构建产物测试通过                |
+| WSL2 Ubuntu 26.04，Chrome for Testing 155.0.8059.79 与 154.0.8037.92（本机） | Node.js 24.22.0 | 53 / 85 / 8 + 8 通过；原生信号测试 4 项与构建产物测试通过     |
+| GitHub Actions Windows x64，Chrome 155.0.8059.40                             | Node.js 24.21.0 | 53 / 85 通过，集成测试首次通过；构建产物测试通过              |
+| GitHub Actions Ubuntu x64，Chrome 155.0.8059.84                              | Node.js 24.22.0 | 53 / 85 通过，集成测试首次通过；构建产物测试通过              |
+| GitHub Actions Ubuntu x64，Chrome 155.0.8059.39                              | Node.js 22.23.3 | 构建产物冒烟测试（WebSocket 与 Pipe）及 HTTP 断连回收测试通过 |
+| GitHub Actions macOS ARM64，Chrome 155.0.8059.40                             | Node.js 24.21.0 | 53 / 85 / 8 通过（WebRTC 测试见上文 macOS 说明）              |
+| GitHub Actions Ubuntu ARM64，Chrome for Testing 155.0.8059.84                | Node.js 24.22.0 | 53 / 85 / 8 通过                                              |
+| GitHub Actions Ubuntu x64，Chrome for Testing 154.0.8037.92                  | Node.js 24.21.0 | 53 / 85 / 8 通过                                              |
+| GitHub Actions Windows x64，Microsoft Edge 154.0.4258.62                     | Node.js 24.21.0 | 53 / 85 / 8 通过                                              |
 
 后四行来自按需触发的平台矩阵（`.github/workflows/platforms.yml`），每个套件只运行一次、不重试，均首次通过。推送 CI 的集成测试失败时会重试一次，首次失败记录在作业摘要与日志 artifact 中。每个公开 API 由哪些测试直接调用，见 [测试映射](test-map.md)。
 
-打包产物：`npm pack` 生成的 tarball 安装到空项目后，Node.js 24 与 Bun 1.4.3 均可导入全部入口，TypeScript 7.0.2 与 5.9.3 在 `nodenext` 和 `bundler` 解析下以 `skipLibCheck: false` 通过类型检查，`npx nodriver-mcp` 可运行。Windows 上以 Node.js 24.22.0 完成了 24 小时长稳运行，结果见 [长稳测试](soak.md)。
+打包产物：`npm pack` 生成的 tarball 安装到空项目后，Node.js 24 可导入全部入口，TypeScript 7.0.2 与 5.9.3 在 `nodenext` 和 `bundler` 解析下以 `skipLibCheck: false` 通过类型检查，`npx nodriver-mcp` 可运行。Windows 上以 Node.js 24.22.0 完成了 24 小时长稳运行，结果见 [长稳测试](soak.md)。
 
-两种运行时的差异会被这套测试暴露：例如 Bun 对设置了 `__esModule` 的 CommonJS 模块的默认导入取 `exports.default`（Node.js 取 `module.exports`），Node.js 的 `fetch` 不允许改写 `Host` 请求头，Node.js 22 不支持 `await using`。测试辅助代码按两种运行时的共同行为编写，库代码不依赖这些差异。
+Node.js 22 不支持 `await using` 语法，调用方可用 `try/finally` 和 `close()` 管理资源。
 
 集成测试只使用本地 fixture：用 127.0.0.1 与 localhost 构造跨站 OOPIF，并以所属 session 确认真实进程外 frame；测试显式启用 `--site-per-process`，不关闭任何隔离。代理测试使用本地 HTTP/SOCKS fixture，包括故意分片的响应。
 
@@ -82,5 +82,4 @@ npm test
 npm run test:integration
 npm run test:dist
 npm run test:compat         # 用 CHROME_PATH 指定待验证的 Chrome
-npm run test:bun            # Bun 下的单元测试；另有 test:bun:integration、test:bun:compat
 ```

@@ -2,6 +2,10 @@
 
 All notable changes are recorded here. The project follows [Semantic Versioning](https://semver.org/); before 1.0, minor versions may contain breaking changes.
 
+## Unreleased
+
+- CI and platform workflows now run only Node.js, with Node.js 24 source tests and Node.js 22 package smoke tests. Runtime guidance and validation documentation focus on Node.js.
+
 ## 0.2.0 — 2026-10-20
 
 - `Browser.launch()` accepts the same `trace` callback/boolean as `connect()`, including startup commands, duration, failures and cancellation.
@@ -47,12 +51,12 @@ First public release.
 
 ### Runtimes
 
-- Node.js ≥ 22 and Bun ≥ 1.4.3. The MCP HTTP server uses `node:http` on Node and `Bun.serve` on Bun.
+- Node.js ≥ 22. The MCP HTTP server uses `node:http`.
 - Windows, Linux (x64 and ARM64) and macOS (ARM64).
 
 ### Tooling
 
-- One test suite (`node:test` with `expect`) runs unchanged on Node.js and Bun. Node.js ≥ 24 runs the TypeScript sources directly, so tests need no build step; CI runs both runtimes on Windows and Linux and checks the built package on Node.js 22. npm is the package manager.
+- The test suite uses `node:test` with `expect`. Node.js ≥ 24 runs the TypeScript sources directly, so tests need no build step; CI covers Windows and Linux and checks the built package on Node.js 22. npm is the package manager.
 - `npm run test:map` regenerates [docs/test-map.md](docs/test-map.md), which maps each public member, exported function and MCP tool to the tests that call it.
 - `npm run bench:compare` runs the same workload against Python nodriver 0.50.6 on the same machine.
 
