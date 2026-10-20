@@ -6,6 +6,9 @@ import { spyOn } from 'jest-mock';
 import { Client, type CallToolResult } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { InMemoryTransport } from '@modelcontextprotocol/server';
+import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { access, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -292,9 +295,11 @@ test('MCP disconnect leaves externally connected Chrome and its tabs alive', asy
 
 test('MCP stdio EOF closes Chrome and releases persistent profile lock', async () => {
   const profile = await mkdtemp(join(tmpdir(), 'nodriver-mcp-test-'));
-  const transport = new StdioClientTransport({
-    command: process.execPath,
-    args: [
+  // Spawned directly: the SDK's StdioClientTransport.close() kills a server that takes longer
+  // than two seconds to exit, which would test that timer instead of the server's own EOF path.
+  const child = spawn(
+    process.execPath,
+    [
       cli,
       process.env.NODRIVER_HEADFUL === '1' ? '--headful' : '--headless',
       '--transport',
@@ -302,26 +307,31 @@ test('MCP stdio EOF closes Chrome and releases persistent profile lock', async (
       '--user-data-dir',
       profile,
     ],
-    env: Object.fromEntries(
-      Object.entries(process.env).filter(
-        (entry): entry is [string, string] => entry[1] !== undefined,
-      ),
-    ),
-    stderr: 'pipe',
-  });
+    { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true },
+  );
+  const exited = once(child, 'exit');
   const client = new Client(
     { name: 'eof-test', version: '1' },
     { versionNegotiation: { mode: { pin: '2026-07-28' } } },
   );
   try {
-    await client.connect(transport);
+    // The stdio framing is symmetric; the server transport class serves the client side here.
+    await client.connect(new StdioServerTransport(child.stdout, child.stdin));
     await call(client, 'browser_open');
     await access(join(profile, '.nodriver.lock'));
     const [port] = (await readFile(join(profile, 'DevToolsActivePort'), 'utf8'))
       .trim()
       .split(/\r?\n/);
-    await client.close();
+    child.stdin.end();
+    const [code] = await Promise.race([
+      exited,
+      sleep(30_000).then(() => {
+        throw new Error('Server did not exit after stdin EOF');
+      }),
+    ]);
+    expect(code).toBe(0);
     await expect(access(join(profile, '.nodriver.lock'))).rejects.toThrow();
+    await expect(access(join(profile, 'DevToolsActivePort'))).rejects.toThrow();
     await access(profile);
     const endpointAlive = await fetch(`http://127.0.0.1:${port}/json/version`, {
       signal: AbortSignal.timeout(1000),
@@ -332,6 +342,7 @@ test('MCP stdio EOF closes Chrome and releases persistent profile lock', async (
     expect(endpointAlive).toBe(false);
   } finally {
     await client.close();
+    if (child.exitCode === null && child.signalCode === null) child.kill();
     await removeTree(profile);
   }
 });

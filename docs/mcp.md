@@ -188,4 +188,4 @@ npm run test:mcp
 npm run test:all
 ```
 
-测试使用官方 MCP 客户端，以真实 stdio 子进程和两种 Chrome 传输运行，并验证旧协议被拒绝；覆盖四类 frame、closed shadow root、引用失效与跨标签页拒绝、中文输入、checkbox/select、截图、非法参数、取消、JS 对话框和下载等待。嵌入测试审计实际 CDP 命令，并验证关闭后清理自有 profile、保留外部 Chrome；EOF 测试验证持久 profile 保留、锁释放且调试端口已退出。
+测试使用官方 MCP 客户端，以真实 stdio 子进程和两种 Chrome 传输运行，并验证旧协议被拒绝；覆盖四类 frame、closed shadow root、引用失效与跨标签页拒绝、中文输入、checkbox/select、截图、非法参数、取消、JS 对话框和下载等待。嵌入测试审计实际 CDP 命令，并验证关闭后清理自有 profile、保留外部 Chrome；EOF 测试只关闭 stdin 并等待服务自行退出，验证持久 profile 保留、锁与 `DevToolsActivePort` 已删除且调试端口已退出。

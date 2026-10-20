@@ -82,7 +82,7 @@
 | `userDataDir`                     | 持久 profile，由 `acquireProfileLock()` 加锁（见下文）                                                                                         |
 | `handleSignals`                   | 默认不接管宿主信号；`true` 时为自有进程注册 SIGINT/SIGTERM 清理                                                                                |
 
-持久 profile 的锁文件记录 PID 与主机名，只有确认本机持有进程已退出时才回收陈旧锁；回收过程由独立的 `.nodriver.lock.reclaim` 文件互斥。若回收期间进程被强杀而留下该文件，会明确报错，确认记录的进程已退出后再手动删除。启动失败且 Chrome 已退出时，错误包含退出码与 stderr。
+持久 profile 的锁文件记录 PID 与主机名，只有确认本机持有进程已退出时才回收陈旧锁；回收过程由独立的 `.nodriver.lock.reclaim` 文件互斥。若回收期间进程被强杀而留下该文件，会明确报错，确认记录的进程已退出后再手动删除。profile 中残留的 `DevToolsActivePort`（Chrome 未正常退出时留下，例如 MCP 宿主强制结束了服务进程）会被探测：记录的端口上仍有同一浏览器在服务时拒绝启动，无响应时删除该文件后继续。启动失败且 Chrome 已退出时，错误包含退出码与 stderr。
 
 `Browser.connect({ endpoint, attach })` 连接已有浏览器：`'all'`（默认）附加全部标签页，`'created'` 只附加本客户端创建的标签页及其弹出页。启动参数对已连接的浏览器无效，`close()` 只断开连接。
 

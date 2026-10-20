@@ -15,14 +15,14 @@
 
 | 平台与浏览器                                                                   | 运行时                       | 结果                                                           |
 | ------------------------------------------------------------------------------ | ---------------------------- | -------------------------------------------------------------- |
-| Windows 11 x64，Chrome 155.0.8059.80（本机）                                   | Node.js 24.22.0 与 Bun 1.4.3 | 两者 53 / 84 通过；类型、格式检查与构建产物测试通过            |
-| WSL2 Ubuntu 26.04，Chrome for Testing 155.0.8059.79 与 154.0.8037.92（本机）   | Node.js 24.22.0 与 Bun 1.4.3 | 两者 53 / 84 / 8 + 8 通过；原生信号测试 4 项与构建产物测试通过 |
-| GitHub Actions Windows x64 与 Ubuntu x64，Chrome 155.0.8059.40 / 155.0.8059.39 | Node.js 24.21.0 与 Bun 1.4.3 | 两者 53 / 84 通过，集成测试首次通过；构建产物测试通过          |
+| Windows 11 x64，Chrome 155.0.8059.80（本机）                                   | Node.js 24.22.0 与 Bun 1.4.3 | 两者 53 / 85 通过；类型、格式检查与构建产物测试通过            |
+| WSL2 Ubuntu 26.04，Chrome for Testing 155.0.8059.79 与 154.0.8037.92（本机）   | Node.js 24.22.0 与 Bun 1.4.3 | 两者 53 / 85 / 8 + 8 通过；原生信号测试 4 项与构建产物测试通过 |
+| GitHub Actions Windows x64 与 Ubuntu x64，Chrome 155.0.8059.40 / 155.0.8059.39 | Node.js 24.21.0 与 Bun 1.4.3 | 两者 53 / 85 通过，集成测试首次通过；构建产物测试通过          |
 | GitHub Actions Ubuntu x64，Chrome 155.0.8059.39                                | Node.js 22.23.3              | 构建产物冒烟测试（WebSocket 与 Pipe）及 HTTP 断连回收测试通过  |
-| GitHub Actions macOS ARM64，Chrome 155.0.8059.40                               | Node.js 24.21.0 与 Bun 1.4.3 | 两者 53 / 84 / 8 通过（WebRTC 测试见上文 macOS 说明）          |
-| GitHub Actions Ubuntu ARM64，Chrome for Testing 155.0.8059.84                  | Node.js 24.21.0 与 Bun 1.4.3 | 两者 53 / 84 / 8 通过                                          |
-| GitHub Actions Ubuntu x64，Chrome for Testing 154.0.8037.92                    | Node.js 24.21.0 与 Bun 1.4.3 | 两者 53 / 84 / 8 通过                                          |
-| GitHub Actions Windows x64，Microsoft Edge 154.0.4258.62                       | Node.js 24.21.0 与 Bun 1.4.3 | 两者 53 / 84 / 8 通过                                          |
+| GitHub Actions macOS ARM64，Chrome 155.0.8059.40                               | Node.js 24.21.0 与 Bun 1.4.3 | 两者 53 / 85 / 8 通过（WebRTC 测试见上文 macOS 说明）          |
+| GitHub Actions Ubuntu ARM64，Chrome for Testing 155.0.8059.84                  | Node.js 24.21.0 与 Bun 1.4.3 | 两者 53 / 85 / 8 通过                                          |
+| GitHub Actions Ubuntu x64，Chrome for Testing 154.0.8037.92                    | Node.js 24.21.0 与 Bun 1.4.3 | 两者 53 / 85 / 8 通过                                          |
+| GitHub Actions Windows x64，Microsoft Edge 154.0.4258.62                       | Node.js 24.21.0 与 Bun 1.4.3 | 两者 53 / 85 / 8 通过                                          |
 
 后四行来自按需触发的平台矩阵（`.github/workflows/platforms.yml`），每个套件只运行一次、不重试，均首次通过。推送 CI 的集成测试失败时会重试一次，首次失败记录在作业摘要与日志 artifact 中。每个公开 API 由哪些测试直接调用，见 [测试映射](test-map.md)。
 

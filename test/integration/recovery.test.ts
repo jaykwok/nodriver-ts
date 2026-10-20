@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { setTimeout as pause } from 'node:timers/promises';
 import { Browser, StaleElementError, TimeoutError } from '../../src/index.ts';
 import { fixtureServer } from '../fixtures/server.ts';
+import { serve } from '../fixtures/serve.ts';
 async function rejection(promise: Promise<unknown>): Promise<unknown> {
   try {
     await promise;
@@ -186,6 +187,42 @@ describe('navigation and lifecycle failures', () => {
         expect(await readFile(marker, 'utf8')).toBe('keep');
       }
       await expect(access(join(profile, '.nodriver.lock'))).rejects.toThrow();
+    } finally {
+      await removeTree(profile);
+    }
+  });
+  test('persistent profile reopens after an unclean exit, never beside a live Chrome', async () => {
+    const profile = await mkdtemp(join(tmpdir(), 'nodriver-persistent-'));
+    const activePort = join(profile, 'DevToolsActivePort');
+    const launch = () =>
+      Browser.launch({ headless: process.env.NODRIVER_HEADFUL !== '1', userDataDir: profile });
+    try {
+      // A Chrome killed before a clean shutdown leaves the file; nothing answers on its port.
+      const gone = await serve({ hostname: '127.0.0.1', fetch: () => new Response('') });
+      await gone.stop();
+      await writeFile(activePort, `${gone.port}\n/devtools/browser/stale\n`);
+      const b = await launch();
+      try {
+        expect(await readFile(activePort, 'utf8')).not.toContain('stale');
+      } finally {
+        await b.close();
+      }
+      // An endpoint that still serves the recorded browser is left alone.
+      const live = await serve({
+        hostname: '127.0.0.1',
+        fetch: (request) =>
+          Response.json({
+            webSocketDebuggerUrl: `ws://${new URL(request.url).host}/devtools/browser/live`,
+          }),
+      });
+      try {
+        await writeFile(activePort, `${live.port}\n/devtools/browser/live\n`);
+        await expect(launch()).rejects.toThrow('Chrome is serving this profile');
+        expect(await readFile(activePort, 'utf8')).toContain('/devtools/browser/live');
+        await expect(access(join(profile, '.nodriver.lock'))).rejects.toThrow();
+      } finally {
+        await live.stop();
+      }
     } finally {
       await removeTree(profile);
     }

@@ -218,14 +218,7 @@ export class BrowserProcess {
         await mkdir(profile, { recursive: true });
         lock = await acquireProfileLock(profile);
         // Never accidentally connect to a different Chrome already using this profile.
-        try {
-          await access(join(profile, 'DevToolsActivePort'));
-          throw new NodriverError(
-            'Profile has DevToolsActivePort; use connect(), or remove stale file after confirming Chrome has exited',
-          );
-        } catch (e) {
-          if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
-        }
+        await removeStaleActivePort(profile);
       }
       const extraArgs = [...(options.args ?? [])];
       if (options.automationControlled !== true) {
@@ -409,6 +402,37 @@ export class BrowserProcess {
     if (this.temporary) await removeTree(this.profile);
     else await rm(join(this.profile, 'DevToolsActivePort'), { force: true });
   }
+}
+
+/**
+ * Rejects while a Chrome still serves the endpoint recorded in the profile's DevToolsActivePort.
+ * Removes the file when nothing answers there: a Chrome killed before a clean shutdown (for
+ * example together with an MCP server its host terminated) leaves it behind.
+ */
+async function removeStaleActivePort(profile: string): Promise<void> {
+  const path = join(profile, 'DevToolsActivePort');
+  let contents: string;
+  try {
+    contents = await readFile(path, 'utf8');
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw e;
+  }
+  const [port, browserPath = ''] = contents.trim().split(/\r?\n/);
+  const live = await fetch(`http://127.0.0.1:${Number(port)}/json/version`, {
+    signal: AbortSignal.timeout(1000),
+  }).then(
+    async (response) =>
+      ((await response.json()) as { webSocketDebuggerUrl?: string }).webSocketDebuggerUrl?.endsWith(
+        browserPath,
+      ) === true,
+    () => false,
+  );
+  if (live)
+    throw new NodriverError(
+      `Chrome is serving this profile on port ${port}; use connect(), or close that Chrome first`,
+    );
+  await rm(path, { force: true });
 }
 
 const LOCK = '.nodriver.lock';
