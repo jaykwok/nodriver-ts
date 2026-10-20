@@ -26,6 +26,8 @@
 
 后四行来自按需触发的平台矩阵（`.github/workflows/platforms.yml`），每个套件只运行一次、不重试，均首次通过。推送 CI 的集成测试失败时会重试一次，首次失败记录在作业摘要与日志 artifact 中。每个公开 API 由哪些测试直接调用，见 [测试映射](test-map.md)。
 
+打包产物：`npm pack` 生成的 tarball 安装到空项目后，Node.js 24 与 Bun 1.4.3 均可导入全部入口，TypeScript 7.0.2 与 5.9.3 在 `nodenext` 和 `bundler` 解析下以 `skipLibCheck: false` 通过类型检查，`npx nodriver-mcp` 可运行。Windows 上以 Node.js 24.22.0 完成了 24 小时长稳运行，结果见 [长稳测试](soak.md)。
+
 两种运行时的差异会被这套测试暴露：例如 Bun 对设置了 `__esModule` 的 CommonJS 模块的默认导入取 `exports.default`（Node.js 取 `module.exports`），Node.js 的 `fetch` 不允许改写 `Host` 请求头，Node.js 22 不支持 `await using`。测试辅助代码按两种运行时的共同行为编写，库代码不依赖这些差异。
 
 集成测试只使用本地 fixture：用 127.0.0.1 与 localhost 构造跨站 OOPIF，并以所属 session 确认真实进程外 frame；测试显式启用 `--site-per-process`，不关闭任何隔离。代理测试使用本地 HTTP/SOCKS fixture，包括故意分片的响应。
@@ -61,14 +63,13 @@
 - **输入**：指针拖动不等于完整的 HTML5 DataTransfer 或跨应用拖放；`insertText` 不模拟 OS IME 候选窗或真实剪贴板。human 策略是可复现的程序化模型，不等同于物理输入。
 - **网络**：Fetch 路由不覆盖浏览器自身流量和独立的 Service Worker target。HTTPS 代理证书、IPv6 与复杂 DNS 出口组合由 proxy-chain 处理，本项目没有覆盖全部组合。
 - **范围外**：不内置 OpenCV、视频编码、验证码或挑战自动处理、屏幕布局探测；可通过 typed CDP、页面脚本或外部适配器扩展。
-- **MCP**：HTTP 服务需显式启用且只绑定 loopback，HTTP/socket 强制预配令牌与应用租约；不提供远程不可信多租户、OAuth 或全部内核能力的工具映射。AX 快照限制输出大小，但底层仍读取完整 AX 树。
+- **MCP**：HTTP 服务需显式启用且只绑定 loopback，HTTP/socket 强制预配令牌与应用租约；不提供远程不可信多租户、OAuth 或全部内核能力的工具映射。AX 快照限制输出大小，但底层仍读取完整 AX 树；在同一页面上反复输入并快照时，Chrome 会保留少量 Blink 内存（约 1 KB/次，导航后释放），见 [长稳测试](soak.md)。
 - **清理**：`await using`、finally 与可选信号处理不能保证宿主被强杀或断电后的即时清理。重连不自动重放操作。
 
 ## 待验证
 
 - 原生 Linux 的其他发行版、Intel macOS 及更多相邻 Chrome 版本。
-- 当前版本打包产物的独立消费者安装与声明检查。
-- 完整 24 小时长稳运行，见 [长稳测试](soak.md)。
+- Linux 与 macOS 上的 24 小时长稳运行。
 - 物理输入与真实 OS IME 对照，以及当前版本的在线检测页复测。
 
 ## 复验命令
