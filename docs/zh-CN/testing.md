@@ -2,7 +2,7 @@
 
 [English](../testing.md)
 
-下列 `await using` 示例需要 Node.js 24+。Node.js 22 运行构建产物时请使用 `try/finally` 与 `close()`，先关闭子资源，再关闭所属 Browser。
+包与示例统一需要 Node.js 24.22.0+。可使用 `await using` 或 `try/finally` 与 `close()`，先关闭子资源，再关闭所属 Browser。
 
 从 **`nodriver-ts/testing`** 导入 `ScriptedChrome`，即可用真实的 `Browser`、`Tab`、`Frame` 和 `Session` 实例测试代码，不必启动 Chrome，也不必把手写 mock 强转成带私有字段的类。
 

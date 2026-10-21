@@ -10,7 +10,7 @@
 
 安装：`npm install nodriver-ts`。源码开发与测试使用下列命令。
 
-包需要 Node.js 22+；从源码构建和测试需要 Node.js 24+（直接运行 TypeScript 源码）。另需本机 Chrome/Chromium/Edge（Windows、macOS、Linux 常见路径与 `PATH` 自动探测，也可用 `CHROME_PATH` 或 `executablePath` 指定）。已验证的系统和版本见 [支持范围](docs/zh-CN/support.md)。
+包、源码开发与测试统一需要 Node.js 24.22.0+（直接运行 TypeScript 源码）。另需本机 Chrome/Chromium/Edge（Windows、macOS、Linux 常见路径与 `PATH` 自动探测，也可用 `CHROME_PATH` 或 `executablePath` 指定）。已验证的系统和版本见 [支持范围](docs/zh-CN/support.md)。
 
 ```sh
 npm ci
@@ -34,7 +34,7 @@ try {
 }
 ```
 
-以上 JavaScript 示例可在 Node.js 22+ 运行。Node.js 24+ 可选用 `await using browser = await Browser.launch(...)` 在正常退出和异常展开时关闭资源；`close()` 幂等。仓库内 TypeScript 示例需要 Node.js 24+，包管理使用 npm。库默认不接管宿主信号；`handleSignals: true` 可启用拥有进程的 SIGINT/SIGTERM 清理。强制终止控制器或机器断电无法由 JavaScript 保证清理。
+也可选用 `await using browser = await Browser.launch(...)` 在正常退出和异常展开时关闭资源；`close()` 幂等。包与仓库内示例统一需要 Node.js 24.22.0+，包管理使用 npm。库默认不接管宿主信号；`handleSignals: true` 可启用拥有进程的 SIGINT/SIGTERM 清理。强制终止控制器或机器断电无法由 JavaScript 保证清理。
 
 - **Raw session。** `attach: 'none'` 只发现 target，不创建 Tab。`attachSession()` 提供独立 session、明确的生命周期、取消清理及发送时观察，详见 [raw session](docs/zh-CN/raw-sessions.md)。
 

@@ -2,7 +2,7 @@
 
 [English](../differential-audit.md)
 
-`npm run bench:audit` 将 JSON 写到 stdout、进度写到 stderr，需要 Node.js 24+ 与本机 Chrome。解释时序数据时请让主机空闲；普通 CI 只验证功能并保存观测，不用精确时间阈值或检测网站评分验收。`AUDIT_REPEATS` 默认 2；`AUDIT_TRANSPORTS=websocket,pipe` 和 `AUDIT_VARIANTS` 选择矩阵。`AUDIT_HEADFUL=1` 显式选择空闲图形桌面上的有界面测试，会创建独立窗口并影响焦点，不接入个人浏览资料。
+`npm run bench:audit` 将 JSON 写到 stdout、进度写到 stderr，需要 Node.js 24.22.0+ 与本机 Chrome。解释时序数据时请让主机空闲；普通 CI 只验证功能并保存观测，不用精确时间阈值或检测网站评分验收。`AUDIT_REPEATS` 默认 2；`AUDIT_TRANSPORTS=websocket,pipe` 和 `AUDIT_VARIANTS` 选择矩阵。`AUDIT_HEADFUL=1` 显式选择空闲图形桌面上的有界面测试，会创建独立窗口并影响焦点，不接入个人浏览资料。
 
 ## 分组与归因
 

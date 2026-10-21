@@ -6,6 +6,7 @@ import {
   Client,
   StreamableHTTPClientTransport,
   type CallToolResult,
+  type JSONRPCMessage,
 } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { startBrowserMcpHttpServer, type BrowserMcpHttpServer } from '../../src/mcp/http.ts';
@@ -53,7 +54,7 @@ async function find(client: Client, tabId: string, selector: string) {
 }
 for (const version of MCP_COMPATIBLE_VERSIONS)
   for (const kind of ['stdio', 'http'] as const)
-    test(`generic MCP ${version} ${kind}: tools, refs, cancellation, capability gating and elicitation`, async () => {
+    test(`generic MCP ${version} ${kind}: tools, refs, cancellation, capability gating and elicitation`, async (t) => {
       const fixture = await fixtureServer();
       const service =
         kind === 'http'
@@ -88,6 +89,10 @@ for (const version of MCP_COMPATIBLE_VERSIONS)
             ],
             stderr: 'pipe',
           });
+      const incoming: JSONRPCMessage[] = [];
+      transport.onmessage = (message) => {
+        incoming.push(message);
+      };
       try {
         await client.connect(transport);
         assert.equal(client.getNegotiatedProtocolVersion(), version);
@@ -100,6 +105,7 @@ for (const version of MCP_COMPATIBLE_VERSIONS)
         await assert.rejects(client.subscribeResource({ uri: 'browser://foreign' }));
         await client.subscribeResource({ uri: 'browser://state' });
         const progress: number[] = [];
+        const beforeOpen = incoming.length;
         const { tabId } = data(
           await client.callTool(
             { name: 'browser_open', arguments: { url: fixture.base + '/page?frames=1' } },
@@ -110,7 +116,26 @@ for (const version of MCP_COMPATIBLE_VERSIONS)
             },
           ),
         );
-        assert.deepEqual(progress, [0, 1, 2]);
+        const opening = incoming.slice(beforeOpen);
+        const responseIndex = opening.findIndex(
+          (m) => 'id' in m && ('result' in m || 'error' in m),
+        );
+        assert.ok(responseIndex >= 0, 'browser_open response must be present on the wire');
+        const progressNotifications = opening
+          .slice(0, responseIndex)
+          .filter((m) => 'method' in m && m.method === 'notifications/progress');
+        assert.deepEqual(
+          progressNotifications.map((m) => ('params' in m ? m.params?.progress : undefined)),
+          [0, 1, 2],
+        );
+        // SDK 2.3.1 defers notification handlers but clears progress callbacks synchronously
+        // on a result. Coalesced stdio frames can lose the final callback despite correct wire
+        // order. Keep the strict wire assertion; do not add server delays to influence packets.
+        assert.deepEqual(progress, [0, 1, 2].slice(0, progress.length));
+        if (progress.length !== 3)
+          t.diagnostic(
+            `SDK progress callbacks: ${progress}; wire: 0,1,2 before result (see test/sdk-progress.mjs)`,
+          );
         await poll(async () => (notifications > 0 ? true : undefined), { timeout: 2000 });
         await client.unsubscribeResource({ uri: 'browser://state' });
         const snapshot = await call(client, 'browser_snapshot', { tabId });

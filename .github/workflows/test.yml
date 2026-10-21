@@ -3,7 +3,7 @@ on: [push, pull_request, workflow_dispatch]
 permissions:
   contents: read
 jobs:
-  # Run the source suite on Node.js 24 and check the built package on Node.js 22 below.
+  # Run the source suite on current Node.js 24 and check the minimum release below.
   test:
     strategy:
       fail-fast: false
@@ -73,14 +73,14 @@ jobs:
       - name: Built package
         run: npm run test:dist
 
-  # Oldest supported Node.js for package consumers: the built package, not the TypeScript sources.
-  node-22:
+  # Keep the declared >=24.22.0 floor honest as later 24.x releases add APIs.
+  node-24-minimum:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
-          node-version: '22.19.0'
+          node-version: '24.22.0'
       - run: npm ci
       - name: Disable piped core dumps for crash acceptance
         run: sudo sysctl -w kernel.core_pattern=core

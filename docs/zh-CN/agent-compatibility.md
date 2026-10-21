@@ -43,8 +43,10 @@ HTTP MCP session ID 随机生成，作用域同时绑定已认证主体与浏览
 
 在图形桌面的交互终端运行 `npm run bench:handoff:manual` 可进行真实验收。它只打开可丢弃浏览器和本地测试页；请用物理键鼠输入 `manual-check` 并点击 Complete，再在终端选择 `accept`、`decline` 或 `cancel`。接受时检查新 Accessibility Snapshot 确实包含页面变化；拒绝/取消时检查交接未完成。工具不代填、不代点、不代确认。`HANDOFF_TRANSPORT=http` 选择 HTTP（默认 stdio），`HANDOFF_PROTOCOL=2025-06-18` 选择六月协议（默认十一月）。结果及清理错误写入 `test-results/` 下带时间的 JSON；非交互运行直接拒绝。用户声明与 trusted 事件都不是物理输入的独立鉴证，这个 SDK 客户端也不代表 Pi TUI/模型验收。真实操作仍需人完成。
 
+进度按协议消息顺序验收：queued/running/completed 通知必须先于工具结果。固定的 SDK 2.3.1 客户端把通知回调延后执行，却在收到响应时同步清除回调状态；stdio 合并交付消息时，服务端正确发送也可能丢失 `onprogress` 回调。`node test/sdk-progress.mjs` 使用可控传输复现这一问题。测试直接核对消息顺序，服务端不增加影响分包时序的延时；最终状态以工具结果为准。
+
 ## 证据与限制
 
-集成矩阵覆盖两个 2025 版本及 stdio、Streamable HTTP：发现、资源、资源订阅/退订通知、进度、快照、引用、Unicode 填写、点击、截图、导航失效、取消后在期限内继续写入，以及模拟接受/拒绝/取消确认。另验证现代 stdio、严格 `/mcp` 拒绝旧协议、混合 envelope 拒绝、主体/租约隔离、容量、DELETE、空闲回收后引用仍可用，以及活动租约释放。`npm run test:mcp` 包含这些测试，常规集成 CI 也会执行；构建产物验收在 Node 22/24 上覆盖两个版本与两种传输的协商。
+集成矩阵覆盖两个 2025 版本及 stdio、Streamable HTTP：发现、资源、资源订阅/退订通知、进度、快照、引用、Unicode 填写、点击、截图、导航失效、取消后在期限内继续写入，以及模拟接受/拒绝/取消确认。另验证现代 stdio、严格 `/mcp` 拒绝旧协议、混合 envelope 拒绝、主体/租约隔离、容量、DELETE、空闲回收后引用仍可用，以及活动租约释放。`npm run test:mcp` 包含这些测试，常规集成 CI 也会执行；构建产物验收在 Node.js 24 上覆盖两个版本与两种传输的协商。
 
 [Pi 1.3.0](pi.md) 是额外真实客户端证据，不定义本接口。尚未逐一认证其他 agent；不据此宣称支持更早 MCP 版本、旧式 HTTP+SSE 传输、OAuth、可恢复事件重放、远程不可信多租户或真实人工验收。客户端必须满足所列协议、传输及具体工具的能力要求。

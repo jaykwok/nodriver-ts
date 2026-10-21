@@ -97,7 +97,7 @@
 
 确认同机 `.nodriver.lock` 持有进程仍存活，或 `DevToolsActivePort` 仍提供原浏览器服务时，抛出带 `profile` 路径的 `ProfileInUseError`。Windows 另探测 Chrome 原生 `lockfile` 的共享冲突（`EBUSY`），因此未开放调试端口的已运行 Chrome 也会得到该类型错误；仅存在但未锁定的残留文件不视为占用，权限错误不误报为占用。Unix 原生 `SingletonLock`/`SingletonSocket` 暂不额外解析，未开放调试端口时仍可能报告普通启动退出错误。
 
-Node.js 22 请用 `try/finally` 与 `close()`；Node.js 24+ 可用 `await using` 在正常退出和异常展开时关闭资源，`close()` 幂等。宿主被强制终止或断电时，JavaScript 无法保证清理。
+Node.js 24.22.0+ 支持用 `await using` 在正常退出和异常展开时关闭资源，也可使用 `try/finally` 与 `close()`；`close()` 幂等。宿主被强制终止或断电时，JavaScript 无法保证清理。
 
 `await browser.release()` 返回 WebSocket endpoint 并放弃进程所有权，之后 `owned` 为 `false`，`close()` 与异步析构只断开连接。自有浏览器必须以 `detached: true` 启动；pipe 会明确拒绝交接且不改变连接。交接保留 profile 与 `DevToolsActivePort`，移除记录宿主 PID 的 `.nodriver.lock`。`disconnect()` 不放弃所有权，pipe Chrome 在管道断开时会退出。独立启动的 stderr 不可用，交接前宿主崩溃可能遗留 Chrome。完整示例、清理责任和事件接口见[浏览器交接与事件](browser-handoff.md)。
 

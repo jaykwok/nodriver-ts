@@ -76,11 +76,12 @@ interface Sample {
 
 describe('Runtime remains disabled and helpers avoid main-world patches', () => {
   for (const transport of ['websocket', 'pipe'] as const) {
-    test(`${transport}: all frame worlds, input, popup, navigation and reconnect`, async () => {
+    test(`${transport}: all frame worlds, input, popup, navigation and reconnect`, async (t) => {
       const audit = recordWire(transport);
       const fixture = await fixtureServer();
       const errors: unknown[] = [];
       let browser: Browser | undefined;
+      let stage = 'launch';
       try {
         browser = await Browser.launch({
           transport,
@@ -88,6 +89,7 @@ describe('Runtime remains disabled and helpers avoid main-world patches', () => 
           args: ['--site-per-process', '--disable-blink-features=IdleDetection'],
           onError: (e) => errors.push(e),
         });
+        stage = 'open audit fixture';
         const tab = await browser.newTab(fixture.base + '/audit');
         expect(tab.frames.length).toBe(4);
         expect(new Set(tab.frames.map((f) => f.session.id)).size).toBe(3);
@@ -96,6 +98,7 @@ describe('Runtime remains disabled and helpers avoid main-world patches', () => 
           if (e.method.startsWith('Runtime.')) runtimeEvents.push(e.method);
         });
         for (const frame of tab.frames) {
+          stage = `frame audit: ${frame.url}`;
           const before = await frame.evaluate<Sample>('__audit.sample()');
           await frame.evaluate('__audit.arm()');
           expect(await frame.evaluate('typeof __audit', undefined, { world: 'isolated' })).toBe(
@@ -125,14 +128,18 @@ describe('Runtime remains disabled and helpers avoid main-world patches', () => 
           expect(sample.moves).toBeGreaterThan(0);
           await frame.evaluate('__audit.log()');
         }
+        stage = 'navigate away';
         const stale = await tab.evaluateHandle('document.body');
         await tab.goto(fixture.base + '/empty');
         await expect(stale.jsonValue()).rejects.toBeInstanceOf(StaleElementError);
         await stale.dispose();
+        stage = 'history back';
         await tab.go(-1);
         await tab.evaluate('__audit.log()');
+        stage = 'reload';
         await tab.reload();
         expect(await tab.evaluate('typeof __audit')).toBe('object');
+        stage = 'popup';
         const popup = tab.waitForPopup();
         await tab.evaluate(
           'document.querySelector("#probe-button").addEventListener("click",()=>window.open("/audit?level=popup"),{once:true})',
@@ -143,6 +150,7 @@ describe('Runtime remains disabled and helpers avoid main-world patches', () => 
         expect(await child.evaluate('navigator.webdriver')).toBe(false);
         await child.close();
         if (browser.endpoint) {
+          stage = 'reconnect';
           const external = await Browser.connect({ endpoint: browser.endpoint });
           try {
             const attached = external.tabs.find((t) => t.id === tab.id)!;
@@ -173,6 +181,19 @@ describe('Runtime remains disabled and helpers avoid main-world patches', () => 
           commands: audit.messages.length,
           forbidden: forbidden.length,
         });
+      } catch (error) {
+        t.diagnostic(
+          JSON.stringify({
+            transport,
+            stage,
+            browser: browser?.version.product,
+            lastCommands: audit.messages.slice(-20).map(({ method, sessionId }) => ({
+              method,
+              sessionId,
+            })),
+          }),
+        );
+        throw error;
       } finally {
         await browser?.close();
         await fixture.server.stop();

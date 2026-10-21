@@ -6,7 +6,8 @@ All notable changes are recorded here. The project follows [Semantic Versioning]
 
 - Add opt-in, agent-independent MCP 2025-11-25 / 2025-06-18 compatibility on stdio and HTTP `/mcp/compat`, sharing the browser core, permissions and queues. Keep the default modern endpoint strict. Verify both revisions and Pi 1.3.0's actual client/native extension, including cancellation and capability gating; see [compatibility](docs/agent-compatibility.md).
 
-- Use Node.js HTTP and standard ESM implementations throughout; remove alternate-runtime adapters and test scripts. Keep Node.js 22 built-package and Node.js 24 source-development support.
+- Require Node.js ≥ 24.22.0 for package use, development and tests; verify built-package acceptance on the minimum 24.22.0 release in CI.
+- Use Node.js HTTP and standard ESM implementations throughout; remove alternate-runtime adapters and test scripts.
 - Make headless UA masking opt-in after repeated page/Worker/request inconsistency measurements. Native UA values are preserved by default; explicit `maskHeadless: true` retains the previous behavior.
 - Generate one random seed per input behavior, preserve its stream when configuration omits seed, and include action-start PRNG state in input reports. Explicit seeds still reset deterministically.
 - Run font diagnostics in independent temporary CDP sessions so they cannot disable caller-owned DOM/CSS subscriptions.
@@ -21,11 +22,11 @@ All notable changes are recorded here. The project follows [Semantic Versioning]
 - Cancelled attaches clean up late responses with independent bounded detach requests; unconfirmed cleanup disconnects the connection. Crash ends raw sessions; recovery requires reattachment.
 - Apply a single initialization deadline and AbortSignal across endpoint discovery and the complete browser handshake, with owned-process cleanup on launch failure.
 - Add payload-free synchronous send observation (`observe.onSend`) and correlated settlement (`onSettle`), preserving existing trace behavior.
-- Extend ScriptedChrome with modeled detach and delayed attach replies. Add raw-session unit and real Chrome acceptance, including Node 22.19 built-package coverage.
+- Extend ScriptedChrome with modeled detach and delayed attach replies. Add raw-session unit, real Chrome and built-package acceptance.
 
 ## 0.2.1 — 2026-10-21
 
-- CI and platform workflows now run only Node.js, with Node.js 24 source tests and Node.js 22 package smoke tests. Runtime guidance and validation documentation focus on Node.js.
+- CI and platform workflows now run only Node.js, with source tests and package smoke tests. Runtime guidance and validation documentation focus on Node.js.
 - Documentation under `docs/` is now in English; the Simplified Chinese versions move to `docs/zh-CN/` and ship in the package. `npm run test:map` writes both language versions of the API test map.
 
 ## 0.2.0 — 2026-10-20
@@ -73,12 +74,12 @@ First public release.
 
 ### Runtimes
 
-- Node.js ≥ 22. The MCP HTTP server uses `node:http`.
+- Node.js. The MCP HTTP server uses `node:http`.
 - Windows, Linux (x64 and ARM64) and macOS (ARM64).
 
 ### Tooling
 
-- The test suite uses `node:test` with `expect`. Node.js ≥ 24 runs the TypeScript sources directly, so tests need no build step; CI covers Windows and Linux and checks the built package on Node.js 22. npm is the package manager.
+- The test suite uses `node:test` with `expect`. Node.js runs the TypeScript sources directly, so tests need no build step; CI covers Windows and Linux and checks the built package. npm is the package manager.
 - `npm run test:map` regenerates [docs/test-map.md](docs/test-map.md), which maps each public member, exported function and MCP tool to the tests that call it.
 - `npm run bench:compare` runs the same workload against Python nodriver 0.50.6 on the same machine.
 

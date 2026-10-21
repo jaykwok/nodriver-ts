@@ -2,7 +2,7 @@
 
 [English](../mcp-http.md)
 
-HTTP 是常驻本地服务的主入口，与 stdio、socket、InMemory 共用工具实现、`BrowserSessionManager`、浏览器池与租约和 CDP 内核；工具与边界见 [MCP](mcp.md)。服务在 Node.js 22+ 下使用 `node:http` 适配（fetch 处理器，流式 SSE 带背压）。默认 `/mcp` 要求 MCP **2026-07-28**，用应用级 `Browser-Lease-Id` 保持状态，不使用 MCP session。可选[通用兼容入口](agent-compatibility.md)在 `/mcp/compat` 提供 2025 协议会话，作用域限制在同一已认证浏览器租约内。服务面向本地预配置客户端。
+HTTP 是常驻本地服务的主入口，与 stdio、socket、InMemory 共用工具实现、`BrowserSessionManager`、浏览器池与租约和 CDP 内核；工具与边界见 [MCP](mcp.md)。服务在 Node.js 24.22.0+ 下使用 `node:http` 适配（fetch 处理器，流式 SSE 带背压）。默认 `/mcp` 要求 MCP **2026-07-28**，用应用级 `Browser-Lease-Id` 保持状态，不使用 MCP session。可选[通用兼容入口](agent-compatibility.md)在 `/mcp/compat` 提供 2025 协议会话，作用域限制在同一已认证浏览器租约内。服务面向本地预配置客户端。
 
 ## 启动
 

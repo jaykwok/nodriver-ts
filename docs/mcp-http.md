@@ -2,7 +2,7 @@
 
 [简体中文](zh-CN/mcp-http.md)
 
-HTTP is the main entry point for a long-running local service. It shares the tool implementation, `BrowserSessionManager`, browser pool and leases, and the CDP core with stdio, socket and InMemory; tools and limits are described in [MCP](mcp.md). On Node.js 22+ the service is adapted to `node:http` (a fetch handler, with backpressure for streaming SSE). The default `/mcp` route requires MCP **2026-07-28** and uses application-level `Browser-Lease-Id`, without MCP sessions. Opt-in [agent compatibility](agent-compatibility.md) adds stateful 2025-era MCP sessions on `/mcp/compat`, scoped within the same authenticated browser leases. The service is intended for local provisioned clients.
+HTTP is the main entry point for a long-running local service. It shares the tool implementation, `BrowserSessionManager`, browser pool and leases, and the CDP core with stdio, socket and InMemory; tools and limits are described in [MCP](mcp.md). On Node.js 24.22.0+ the service is adapted to `node:http` (a fetch handler, with backpressure for streaming SSE). The default `/mcp` route requires MCP **2026-07-28** and uses application-level `Browser-Lease-Id`, without MCP sessions. Opt-in [agent compatibility](agent-compatibility.md) adds stateful 2025-era MCP sessions on `/mcp/compat`, scoped within the same authenticated browser leases. The service is intended for local provisioned clients.
 
 ## Starting the server
 

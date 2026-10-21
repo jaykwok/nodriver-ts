@@ -10,14 +10,14 @@ nodriver-ts drives Chrome, Chromium and Edge directly over the Chrome DevTools P
 - **Frames.** Same-process iframes, out-of-process iframes (OOPIF) and nested OOPIFs each run in their own CDP session. Queries pierce open and closed shadow roots.
 - **Input.** Clicks wait for the target to be visible, stable and unobscured before dispatching, and actions are never replayed. An optional seeded "human" policy adds pointer paths, key-event typing and wheel scrolling.
 - **Agent-ready MCP.** Tools take short stable element refs (`e12`) from an indented accessibility snapshot. An action returns a summary of what happened: navigation, new tabs, dialogs. HTTP clients get application-level leases, so browser state survives across requests and reconnects. MCP **2026-07-28** is the default; [opt-in compatibility](docs/agent-compatibility.md) supports 2025-11-25 / 2025-06-18 agents.
-- **Runtime.** The package runs on Node.js 22 or newer; the MCP HTTP server uses `node:http`.
+- **Runtime.** The package runs on Node.js 24.22.0 or newer; the MCP HTTP server uses `node:http`.
 - **Native environment.** Headless UA masking is opt-in (`maskHeadless: true`); the default preserves native values across Workers and requests. See the measured [differential audit](docs/differential-audit.md).
 
 > No automation framework is undetectable. nodriver-ts removes the common CDP and WebDriver tells; it does not promise that any site will let you through. Read [the automation audit](docs/automation-audit.md) for what has and has not been measured.
 
 ## Requirements
 
-- Node.js ≥ 22. Building and testing from source needs Node.js ≥ 24, which runs the TypeScript sources directly.
+- Node.js ≥ 24.22.0 for package use, development and tests. Node runs the TypeScript sources directly.
 - A locally installed Chrome, Chromium or Edge. It is auto-detected on Windows, macOS and Linux, including on `PATH`; otherwise set `CHROME_PATH` or `executablePath`.
 - Chrome opens with a window by default (`headless: false`). Servers and CI without a display should pass `headless: true` / `--headless`. Run Linux as a normal user with Chrome's shared libraries installed; the library never adds `--no-sandbox`.
 
@@ -55,7 +55,7 @@ try {
 }
 ```
 
-This JavaScript example runs on Node.js 22+. On Node.js 24+, `await using browser = await Browser.launch(...)` can replace `try/finally`; `close()` is idempotent. Repository source examples require Node.js 24+ and npm.
+`await using browser = await Browser.launch(...)` can replace `try/finally`; `close()` is idempotent. The package and repository examples require Node.js 24.22.0+; use npm for package management.
 
 - **Main world.** `evaluate` runs there by default (`{ world: 'isolated' }` is also available); functions are serialized into the page.
 - **Frames.** `tab.frames` lists every frame, including OOPIFs, and queries never cross frames silently.

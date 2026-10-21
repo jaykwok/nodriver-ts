@@ -108,4 +108,4 @@ fixture 支持独立 attachment、`detachSession(id)`、`crashTarget(id)`、`des
 真实 Chrome 覆盖 raw evaluate、crash/recovery、关闭 target、release/reconnect 和后台进程最后窗口关闭。
 最后一项用 `--no-startup-window --keep-alive-for-test` 控制后台存活，Windows 使用真实窗口，
 无显示环境的 Linux 使用 headless；它不验证特定扩展的后台策略。
-Node 22.19 跑构建产物验收，Node 24 跑源码测试。
+Node.js 24 跑源码与构建产物验收，CI 另检查最低支持版本 Node.js 24.22.0。

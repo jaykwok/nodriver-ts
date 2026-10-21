@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { promisify } from 'node:util';
-import { Browser } from '../../src/index.ts';
+import { Browser, ProfileInUseError } from '../../src/index.ts';
 import { poll, removeTree } from '../../src/utils.ts';
 import { recordWire } from '../fixtures/wire.ts';
 
@@ -29,7 +29,7 @@ for (const mode of ['natural', 'forced']) {
       // Removing the controller lock must not allow another launch beside the live Chrome.
       await assert.rejects(
         Browser.launch({ ...launchOptions, userDataDir: profile }),
-        /Chrome is serving this profile/,
+        ProfileInUseError,
       );
       remote = await Browser.connect({ endpoint: info!.endpoint });
       assert.equal(await remote.tabs[0]!.evaluate('6 * 7'), 42);

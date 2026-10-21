@@ -139,5 +139,5 @@ Real-browser tests cover raw evaluation, crash/recovery, target close, release/r
 closing the last window while Chrome stays alive. The latter uses
 `--no-startup-window --keep-alive-for-test`: it is a controlled background-process test,
 not a test of a particular installed extension's background policy. Windows runs it headful;
-Linux without a display uses headless Chrome. Node 22.19 runs built-package acceptance;
-Node 24 runs the source suite.
+Linux without a display uses headless Chrome. Node.js 24 runs the source suite and
+built-package acceptance; CI also checks the minimum supported release, Node.js 24.22.0.

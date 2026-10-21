@@ -2,7 +2,7 @@
 
 [简体中文](zh-CN/differential-audit.md)
 
-`npm run bench:audit` emits JSON to stdout and progress to stderr. Node.js 24+ and a local Chrome are required. Run on an idle machine when interpreting timing; ordinary CI checks functionality and preserves observations, without timing thresholds or detector scores. `AUDIT_REPEATS` defaults to 2; `AUDIT_TRANSPORTS=websocket,pipe` and `AUDIT_VARIANTS` select the library matrix. `AUDIT_HEADFUL=1` is an explicit opt-in for an idle graphical desktop: the audit creates its own windows and tabs, which can affect focus. It never attaches to personal browsing profiles.
+`npm run bench:audit` emits JSON to stdout and progress to stderr. Node.js 24.22.0+ and a local Chrome are required. Run on an idle machine when interpreting timing; ordinary CI checks functionality and preserves observations, without timing thresholds or detector scores. `AUDIT_REPEATS` defaults to 2; `AUDIT_TRANSPORTS=websocket,pipe` and `AUDIT_VARIANTS` select the library matrix. `AUDIT_HEADFUL=1` is an explicit opt-in for an idle graphical desktop: the audit creates its own windows and tabs, which can affect focus. It never attaches to personal browsing profiles.
 
 ## Attribution and controls
 

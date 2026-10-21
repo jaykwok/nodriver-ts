@@ -1,4 +1,4 @@
-// Built-package raw-session acceptance, including Node 22.19 (no `await using` syntax).
+// Built-package raw-session acceptance, including the minimum supported Node.js 24.22.0.
 import assert from 'node:assert/strict';
 import { rm } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
