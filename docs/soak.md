@@ -37,9 +37,9 @@ touch <output directory>/STOP                            # Linux / WSL
 
 `status` is one of starting, running, completed, completed-cycles, stopped or failed. Only a run that reaches the planned duration and passes the cleanup checks is marked completed. `--cycles 5 --interval-ms 50` is for a quick self-check; its result is completed-cycles, which does not count as a soak pass. The task relies on the host staying awake: a heartbeat gap longer than two minutes or three intervals is recorded as a failure and cleaned up, so time spent asleep is never counted as run time. A browser disconnect or an operation error also fails the run; there is no automatic restart or input replay.
 
-## Current results
+## Results
 
-Windows 11 x64 (Ryzen 5 5600X), Node.js 24.22.0, Chrome 155.0.8059.80. The run lasted the full 24 hours, from 2026-10-19 02:53 to 2026-10-20 02:53 (UTC), with status completed:
+A full 24-hour run on Windows 11 x64 (Ryzen 5 5600X), Node.js 24.22.0 and Chrome 155 completed with:
 
 - Each mode completed 5342 cycles with no failures or retries. The largest heartbeat gap was 21.6 s, and the host never slept.
 - Each transport sent 586,355 CDP commands, with 0 default-forbidden commands.
@@ -51,6 +51,4 @@ Windows 11 x64 (Ryzen 5 5600X), Node.js 24.22.0, Chrome 155.0.8059.80. The run l
 The main tab's V8 JS heap and DOM counts stayed flat; two values from `Runtime.getHeapUsage` grew linearly with the cycle count. A quick 600-cycle run (`--cycles 600 --interval-ms 50`) showed the same per-cycle increase as the 24-hour run, which shows that the growth depends on the number of operations rather than on time:
 
 - **backingStorageSize** (external strings and ArrayBuffers) grew by about 0.1 MiB over 24 hours. The cause is the test fixture: the page script appends the value of every input event to `globalThis.inputs` and never clears it, so each cycle adds that cycle's text length. Clearing the array and forcing a garbage collection returns it to the initial value.
-- **embedderHeapUsedSize** (the Blink heap) rose from a post-GC low of about 1.3 MiB to about 7 MiB, roughly 1 KB per cycle. In an isolated reproduction using only raw CDP against the same page, repeating "focus and select all in an input + `Input.insertText` + `Accessibility.getFullAXTree`" also added about 1.2 MiB per 2000 iterations after forced GC. Without the AX snapshot, or with a script assignment instead, the increase was small and bounded; repeated snapshots without DOM changes did not grow; `Accessibility.disable` did not release it; navigating the page released all of it. This is memory Chrome retains when text edits and AX tree reads alternate in the same document. It does not pass through the library and is not in any resource the library holds. You will see the same growth if you stay on one page for a long time, typing repeatedly and calling `browser_snapshot`; navigating or reloading the page releases it.
-
-These results come from one run on one host and do not represent other platforms or workloads.
+- **embedderHeapUsedSize** (the Blink heap) rose from a post-GC low of about 1.3 MiB to about 7 MiB, roughly 1 KB per cycle. Using only raw CDP against the same page, repeating "focus and select all in an input + `Input.insertText` + `Accessibility.getFullAXTree`" also added about 1.2 MiB per 2000 iterations after forced GC. Without the AX snapshot, or with a script assignment instead, the increase was small and bounded; repeated snapshots without DOM changes did not grow; `Accessibility.disable` did not release it; navigating the page released all of it. This is memory Chrome retains when text edits and AX tree reads alternate in the same document. It does not pass through the library and is not in any resource the library holds. You will see the same growth if you stay on one page for a long time, typing repeatedly and calling `browser_snapshot`; navigating or reloading the page releases it.

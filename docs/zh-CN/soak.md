@@ -37,9 +37,9 @@ touch <输出目录>/STOP                            # Linux / WSL
 
 `status` 取值为 starting、running、completed、completed-cycles、stopped 或 failed。只有达到计划时长且清理检查通过才标记 completed。`--cycles 5 --interval-ms 50` 用于快速自检，结果为 completed-cycles，不计为长稳通过。任务依赖主机保持唤醒：心跳缺口超过两分钟或三倍间隔即记为失败并清理，避免把休眠时间算作运行时间。浏览器断开或操作出错同样失败，不自动重启或重放输入。
 
-## 当前结果
+## 结果
 
-Windows 11 x64（Ryzen 5 5600X），Node.js 24.22.0，Chrome 155.0.8059.80，2026-10-19 02:53 至 2026-10-20 02:53（UTC）运行满 24 小时，状态 completed：
+在 Windows 11 x64（Ryzen 5 5600X）、Node.js 24.22.0、Chrome 155 上完整运行 24 小时，结果如下：
 
 - 两种模式各完成 5342 轮，没有失败或重试；最大心跳间隔 21.6 秒，主机全程未休眠。
 - 两条传输各发送 586,355 条 CDP 命令，默认禁止的命令为 0。
@@ -51,6 +51,4 @@ Windows 11 x64（Ryzen 5 5600X），Node.js 24.22.0，Chrome 155.0.8059.80，202
 主标签页的 V8 JS heap 与 DOM 计数保持平稳；`Runtime.getHeapUsage` 中有两项随轮数线性上升。600 轮快速运行（`--cycles 600 --interval-ms 50`）的每轮增量与 24 小时运行相同，说明增长取决于操作次数而非时间：
 
 - **backingStorageSize**（外部字符串与 ArrayBuffer）24 小时增加约 0.1 MiB。来源是测试 fixture：页面脚本把每次 input 事件的值追加到 `globalThis.inputs` 且从不清空，每轮增量等于当轮文本长度；清空该数组并强制回收后回到初始值。
-- **embedderHeapUsedSize**（Blink 堆）回收后的低点由约 1.3 MiB 升至约 7 MiB，约 1 KB/轮。单独复现时，只用原始 CDP 对同一页面反复执行"聚焦并全选输入框 + `Input.insertText` + `Accessibility.getFullAXTree`"，强制回收后每 2000 次同样增加约 1.2 MiB；去掉 AX 快照或改用脚本赋值时增量小且有界，DOM 不变时反复快照不增长，`Accessibility.disable` 不释放，页面导航后全部释放。这是 Chrome 在同一文档内交替编辑文本与读取 AX 树时保留的内存，不经过框架，也不在框架持有的资源中。长时间停留在同一页面、反复输入并调用 `browser_snapshot` 时会看到同样的增长，导航或重新加载页面即可释放。
-
-以上为单台主机的一次运行，不代表其他平台或负载下的结果。
+- **embedderHeapUsedSize**（Blink 堆）回收后的低点由约 1.3 MiB 升至约 7 MiB，约 1 KB/轮。只用原始 CDP 对同一页面反复执行"聚焦并全选输入框 + `Input.insertText` + `Accessibility.getFullAXTree`"，强制回收后每 2000 次同样增加约 1.2 MiB；去掉 AX 快照或改用脚本赋值时增量小且有界，DOM 不变时反复快照不增长，`Accessibility.disable` 不释放，页面导航后全部释放。这是 Chrome 在同一文档内交替编辑文本与读取 AX 树时保留的内存，不经过框架，也不在框架持有的资源中。长时间停留在同一页面、反复输入并调用 `browser_snapshot` 时会看到同样的增长，导航或重新加载页面即可释放。

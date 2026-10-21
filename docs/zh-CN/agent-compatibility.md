@@ -39,14 +39,14 @@ HTTP MCP session ID 随机生成，作用域同时绑定已认证主体与浏览
 
 取消后必须排空操作队列，后续写入才能继续。错误或断线不会自动重放输入。元素引用仍受文档与租约边界约束。
 
-人工交接需宿主启用、客户端声明 form elicitation 并实现处理器。六月版本的早期 `elicitation: {}` 视为表单支持。SDK 将 input-required 续传转换为 elicitation 往返；能力缺失返回错误，不代替用户自动确认。
+服务端会在工具结果之前依次发送 queued/running/completed 进度通知。官方 TypeScript 客户端 2.3.1 会延后执行通知回调，却在收到响应时立即清除回调状态；因此 stdio 消息被合并交付时，即使通知已送达，`onprogress` 回调也可能被跳过。最终状态以工具结果为准。
 
-在图形桌面的交互终端运行 `npm run bench:handoff:manual` 可进行真实验收。它只打开可丢弃浏览器和本地测试页；请用物理键鼠输入 `manual-check` 并点击 Complete，再在终端选择 `accept`、`decline` 或 `cancel`。接受时检查新 Accessibility Snapshot 确实包含页面变化；拒绝/取消时检查交接未完成。工具不代填、不代点、不代确认。`HANDOFF_TRANSPORT=http` 选择 HTTP（默认 stdio），`HANDOFF_PROTOCOL=2025-06-18` 选择六月协议（默认十一月）。结果及清理错误写入 `test-results/` 下带时间的 JSON；非交互运行直接拒绝。用户声明与 trusted 事件都不是物理输入的独立鉴证，这个 SDK 客户端也不代表 Pi TUI/模型验收。真实操作仍需人完成。
+人工交接是可选功能：需宿主启用，客户端声明 form elicitation 并实现处理器。2025-06-18 的 `elicitation: {}` 视为表单支持。SDK 将 input-required 续传转换为 elicitation 往返；能力缺失时返回错误，不会自动代替用户确认。
 
-进度按协议消息顺序验收：queued/running/completed 通知必须先于工具结果。固定的 SDK 2.3.1 客户端把通知回调延后执行，却在收到响应时同步清除回调状态；stdio 合并交付消息时，服务端正确发送也可能丢失 `onprogress` 回调。`node test/sdk-progress.mjs` 使用可控传输复现这一问题。测试直接核对消息顺序，服务端不增加影响分包时序的延时；最终状态以工具结果为准。
+如需手动体验交接，在图形桌面的交互终端运行 `npm run bench:handoff:manual`。它会在本地测试页上打开一个可丢弃的浏览器；输入 `manual-check` 并点击 Complete，再在终端回答 `accept`、`decline` 或 `cancel`，工具会检查新的无障碍快照是否反映了结果。它不会代填、代点或代确认。`HANDOFF_TRANSPORT=http` 选择 HTTP（默认 stdio），`HANDOFF_PROTOCOL=2025-06-18` 选择六月协议（默认十一月）。结果写入 `test-results/` 下带日期的 JSON 文件。
 
-## 证据与限制
+## 覆盖与限制
 
-集成矩阵覆盖两个 2025 版本及 stdio、Streamable HTTP：发现、资源、资源订阅/退订通知、进度、快照、引用、Unicode 填写、点击、截图、导航失效、取消后在期限内继续写入，以及模拟接受/拒绝/取消确认。另验证现代 stdio、严格 `/mcp` 拒绝旧协议、混合 envelope 拒绝、主体/租约隔离、容量、DELETE、空闲回收后引用仍可用，以及活动租约释放。`npm run test:mcp` 包含这些测试，常规集成 CI 也会执行；构建产物验收在 Node.js 24 上覆盖两个版本与两种传输的协商。
+集成测试在 stdio 与 Streamable HTTP 上运行两个 2025 版本：发现、资源与订阅、进度、快照、引用、Unicode 填写、点击、截图、导航失效、取消后继续写入，以及接受/拒绝/取消确认。还覆盖严格 `/mcp` 拒绝、混合 envelope 拒绝、主体/租约隔离、会话容量、DELETE、空闲回收与租约释放。`npm run test:mcp` 运行这些测试，构建产物检查也会在两种传输上协商两个版本。
 
-[Pi 1.3.0](pi.md) 是额外真实客户端证据，不定义本接口。尚未逐一认证其他 agent；不据此宣称支持更早 MCP 版本、旧式 HTTP+SSE 传输、OAuth、可恢复事件重放、远程不可信多租户或真实人工验收。客户端必须满足所列协议、传输及具体工具的能力要求。
+任何使用所列协议版本与对应传输、并声明所用工具所需能力的 agent 都可以接入，[Pi 1.3.0](pi.md) 即为一例。不支持更早的 MCP 版本、旧式 HTTP+SSE 传输、OAuth、可恢复事件重放与远程不可信多租户。

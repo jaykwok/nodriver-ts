@@ -74,12 +74,12 @@ Sibling attachments remain usable unless they share the destroyed/crashed target
 ends. A close-target operation can yield `detached` before `target-destroyed`, depending on Chrome's
 event order.
 
-Crash is a terminal **library** lifetime even though Chrome 155 on Windows allowed the original
+Crash is a terminal **library** lifetime even though Chrome itself lets the original
 CDP attachment to reload and evaluate after a renderer crash. The raw session is closed and
 its attachment is cleaned up. Observe the root `Target.targetCrashed` notification before
 reattaching for recovery: the session-level crash notification can arrive first. The caller
-may then attach again and send `Page.reload`. Existing high-level Tab crash/reload behavior is
-unchanged. A target can crash again; a new attachment is not a recovery guarantee.
+may then attach again and send `Page.reload`. High-level Tab crash/reload
+behavior is separate. A target can crash again; a new attachment is not a recovery guarantee.
 
 `detach()` closes the local lifetime synchronously, then awaits `Target.detachFromTarget`.
 Repeated calls share the same promise. A signal already aborted before the call leaves the
@@ -127,7 +127,7 @@ are isolated. Keep callbacks short; aborting from a callback cannot unsend the o
 protocol error code or error name on failure. Neither observer receives parameters or results.
 Existing `trace` callbacks still run on completion with their existing shape and stderr behavior.
 
-## Test support and evidence
+## Test support
 
 `ScriptedChrome.connect({ attach: 'none' })` uses the same real objects. The fixture models
 independent attachments, `detachSession(id)`, `crashTarget(id)`, and `destroyTarget(id)`.

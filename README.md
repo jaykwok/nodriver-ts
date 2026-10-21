@@ -11,9 +11,9 @@ nodriver-ts drives Chrome, Chromium and Edge directly over the Chrome DevTools P
 - **Input.** Clicks wait for the target to be visible, stable and unobscured before dispatching, and actions are never replayed. An optional seeded "human" policy adds pointer paths, key-event typing and wheel scrolling.
 - **Agent-ready MCP.** Tools take short stable element refs (`e12`) from an indented accessibility snapshot. An action returns a summary of what happened: navigation, new tabs, dialogs. HTTP clients get application-level leases, so browser state survives across requests and reconnects. MCP **2026-07-28** is the default; [opt-in compatibility](docs/agent-compatibility.md) supports 2025-11-25 / 2025-06-18 agents.
 - **Runtime.** The package runs on Node.js 24.22.0 or newer; the MCP HTTP server uses `node:http`.
-- **Native environment.** Headless UA masking is opt-in (`maskHeadless: true`); the default preserves native values across Workers and requests. See the measured [differential audit](docs/differential-audit.md).
+- **Native environment.** Headless UA masking is opt-in (`maskHeadless: true`); the default preserves native values across Workers and requests. See the [differential audit](docs/differential-audit.md).
 
-> No automation framework is undetectable. nodriver-ts removes the common CDP and WebDriver tells; it does not promise that any site will let you through. Read [the automation audit](docs/automation-audit.md) for what has and has not been measured.
+> No automation framework is undetectable. nodriver-ts removes the common CDP and WebDriver tells; it does not promise that any site will let you through. The [automation audit](docs/automation-audit.md) lists what the defaults cover and which signals remain observable.
 
 ## Requirements
 
@@ -21,9 +21,7 @@ nodriver-ts drives Chrome, Chromium and Edge directly over the Chrome DevTools P
 - A locally installed Chrome, Chromium or Edge. It is auto-detected on Windows, macOS and Linux, including on `PATH`; otherwise set `CHROME_PATH` or `executablePath`.
 - Chrome opens with a window by default (`headless: false`). Servers and CI without a display should pass `headless: true` / `--headless`. Run Linux as a normal user with Chrome's shared libraries installed; the library never adds `--no-sandbox`.
 
-The verified platforms and versions are listed in [docs/support.md](docs/support.md).
-
-Upgrading from 0.3.x? Read the [0.4 migration guide](docs/migration-0.4.md) for the Node.js requirement, native headless defaults, input seeds and opt-in MCP compatibility.
+Supported platforms are listed in [docs/support.md](docs/support.md).
 
 ## Install
 
@@ -102,7 +100,7 @@ nodriver-mcp --mcp-transport http --port 3100
 ```
 
 - **HTTP leases.** HTTP listens on loopback only. A client that omits `Browser-Lease-Id` uses the token's `default` lease. Any lease name made of letters, digits and `. _ -` creates a separate lease on first use, which lets several agents keep independent browser state. The lease id is echoed in the `Browser-Lease-Id` response header.
-- **Client requirements.** The default entrance requires MCP 2026-07-28 (`server/discover` with per-request metadata). With the official TypeScript client 2.3.1, pin `versionNegotiation: { mode: { pin: '2026-07-28' } }`. For 2025-11-25 / 2025-06-18 clients, add `--mcp-compat` to stdio arguments, or enable it on HTTP and connect to `/mcp/compat`. See [generic agent compatibility](docs/agent-compatibility.md) and [Pi 1.3.0 verification](docs/pi.md).
+- **Client requirements.** The default entrance requires MCP 2026-07-28 (`server/discover` with per-request metadata). With the official TypeScript client 2.3.1, pin `versionNegotiation: { mode: { pin: '2026-07-28' } }`. For 2025-11-25 / 2025-06-18 clients, add `--mcp-compat` to stdio arguments, or enable it on HTTP and connect to `/mcp/compat`. See [generic agent compatibility](docs/agent-compatibility.md) and [Pi 1.3.0](docs/pi.md).
 - **Browser launch.** Chrome starts lazily on the first `browser_open`, using the `agent` launch preset, which suppresses first-run and search-engine-choice UI and background throttling.
 
 Run `nodriver-mcp --help` for every flag. Some useful ones:
@@ -158,11 +156,11 @@ Simplified Chinese translations are in [docs/zh-CN](docs/zh-CN/).
 | [Browser handoff](docs/browser-handoff.md)   | Detached launch, release and reconnect, CDP event subscriptions   |
 | [Input](docs/input.md)                       | The human input policy, typing, pointer checks, cancellation      |
 | [Environment](docs/environment.md)           | Environment sampling, diagnostics, explicit alignment, WebRTC     |
-| [Automation audit](docs/automation-audit.md) | Default protocol behaviour, regression evidence, detector results |
+| [Automation audit](docs/automation-audit.md) | Default protocol behaviour, regression checks, remaining signals  |
 | [MCP](docs/mcp.md)                           | CLI, tools, refs, page JavaScript, embedding                      |
 | [MCP over HTTP](docs/mcp-http.md)            | Leases, authentication, limits, resources, hand-off               |
 | [MCP over socket](docs/mcp-socket.md)        | Unix socket / named pipe service and client                       |
-| [Support](docs/support.md)                   | Verified platforms, capabilities, limitations                     |
+| [Support](docs/support.md)                   | Platforms, capabilities, limitations                              |
 | [Performance](docs/performance.md)           | Benchmark method and baseline                                     |
 | [Soak test](docs/soak.md)                    | Long-running resource test                                        |
 | [Scripted testing](docs/testing.md)          | `ScriptedChrome` for testing code without launching Chrome        |

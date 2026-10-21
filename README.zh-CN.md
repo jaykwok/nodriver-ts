@@ -10,9 +10,7 @@
 
 安装：`npm install nodriver-ts`。源码开发与测试使用下列命令。
 
-包、源码开发与测试统一需要 Node.js 24.22.0+（直接运行 TypeScript 源码）。另需本机 Chrome/Chromium/Edge（Windows、macOS、Linux 常见路径与 `PATH` 自动探测，也可用 `CHROME_PATH` 或 `executablePath` 指定）。已验证的系统和版本见 [支持范围](docs/zh-CN/support.md)。
-
-从 0.3.x 升级时，请先阅读 [0.4 迁移说明](docs/zh-CN/migration-0.4.md)，了解 Node.js 要求、原生 headless 默认行为、输入种子及可选 MCP 兼容入口。
+包、源码开发与测试统一需要 Node.js 24.22.0+（直接运行 TypeScript 源码）。另需本机 Chrome/Chromium/Edge（Windows、macOS、Linux 常见路径与 `PATH` 自动探测，也可用 `CHROME_PATH` 或 `executablePath` 指定）。支持的系统见 [支持范围](docs/zh-CN/support.md)。
 
 ```sh
 npm ci
@@ -93,11 +91,11 @@ off();
 ## 自动化痕迹
 
 - 启动默认关闭 Chromium 的 `AutomationControlled` 特性，原生 `navigator.webdriver` 为 `false`；不注入 getter 补丁。
-- 无界面模式默认保留原生 UA。可显式启用 `maskHeadless: true` 去掉页面 UA/UA-CH 中的 HeadlessChrome；Dedicated Worker 继承，但 Shared/Service Worker 保留原值，会产生可观测差异，见[分阶段审计](docs/zh-CN/differential-audit.md)。
+- 无界面模式默认保留原生 UA。可显式启用 `maskHeadless: true` 去掉页面 UA/UA-CH 中的 HeadlessChrome；Dedicated Worker 继承，但 Shared/Service Worker 保留原值，会产生可观测差异，见[差分审计](docs/zh-CN/differential-audit.md)。
 - human 输入策略对 US 布局字符发送成对 keyDown/keyUp（含 Shift），其他文本（中日韩、emoji、换行）使用 insertText；按下时指针 pressure 为 0.5；首次指针位置随机，不从 (0,0) 起步；只在需要时把标签页置前。
 - 不伪造字体、WebGL、canvas、音频或硬件，也不解验证码。时区、locale、UA/Client Hints、视口和地理位置只能通过 `tab.setEnvironment()` 显式设置。
 
-更多边界、复现方法与已知信号见 [自动化痕迹审计](docs/zh-CN/automation-audit.md)。
+默认行为与仍可观测的信号见 [自动化痕迹审计](docs/zh-CN/automation-audit.md)。
 
 ## 状态、网络与文件
 
@@ -146,7 +144,7 @@ node dist/mcp/cli.js
 node dist/mcp/cli.js --mcp-transport http --port 3100
 ```
 
-安装包提供 `nodriver-mcp`，嵌入导出 `nodriver-ts/mcp`、`nodriver-ts/mcp/http`、`nodriver-ts/mcp/socket` 和 `nodriver-ts/mcp/compat`。所有入口共用同一工具工厂、manager/池/租约与 CDP 内核，默认 26 个工具；设置 `--upload-dir`、`--download-dir`、`--state-dir` 后分别增加限定目录的上传、下载和状态工具。默认 MCP **2026-07-28**，官方 client 2.3.1 需显式 pin 该版本。使用 2025-11-25 / 2025-06-18 的客户端，可给 stdio 参数加入 `--mcp-compat`，或在 HTTP 服务启用后连接 `/mcp/compat`。见[通用 Agent 兼容](docs/zh-CN/agent-compatibility.md)与 [Pi 1.3.0 实测](docs/zh-CN/pi.md)。
+安装包提供 `nodriver-mcp`，嵌入导出 `nodriver-ts/mcp`、`nodriver-ts/mcp/http`、`nodriver-ts/mcp/socket` 和 `nodriver-ts/mcp/compat`。所有入口共用同一工具工厂、manager/池/租约与 CDP 内核，默认 26 个工具；设置 `--upload-dir`、`--download-dir`、`--state-dir` 后分别增加限定目录的上传、下载和状态工具。默认 MCP **2026-07-28**，官方 client 2.3.1 需显式 pin 该版本。使用 2025-11-25 / 2025-06-18 的客户端，可给 stdio 参数加入 `--mcp-compat`，或在 HTTP 服务启用后连接 `/mcp/compat`。见[通用 Agent 兼容](docs/zh-CN/agent-compatibility.md)与 [Pi 1.3.0](docs/zh-CN/pi.md)。
 
 - `browser_snapshot` 返回带 `[e12]` 短引用的缩进可访问性树，支持 `interactiveOnly`、`root`、`offset` 分页；密码字段值不会回显。
 - 动作工具支持 `waitFor: auto|load|none` 与 `snapshot: true`，返回是否导航、新标签页、对话框等摘要。
@@ -163,11 +161,11 @@ node dist/mcp/cli.js --mcp-transport http --port 3100
 | [浏览器交接](docs/zh-CN/browser-handoff.md)      | 分离启动、交接与重连、CDP 事件订阅                   |
 | [输入](docs/zh-CN/input.md)                      | human 输入策略、文本与按键、点击检查、取消           |
 | [环境](docs/zh-CN/environment.md)                | 环境采样、诊断、显式对齐、代理与 WebRTC              |
-| [自动化痕迹审计](docs/zh-CN/automation-audit.md) | 默认协议行为、回归证据、检测结果                     |
+| [自动化痕迹审计](docs/zh-CN/automation-audit.md) | 默认协议行为、回归检查、仍可观测的信号               |
 | [MCP](docs/zh-CN/mcp.md)                         | CLI、工具、引用、页面 JavaScript、嵌入               |
 | [HTTP 接入](docs/zh-CN/mcp-http.md)              | 租约、认证、限额、资源、人工交互                     |
 | [socket 接入](docs/zh-CN/mcp-socket.md)          | Unix socket / 命名管道服务与客户端                   |
-| [支持范围](docs/zh-CN/support.md)                | 已验证平台、能力、限制                               |
+| [支持范围](docs/zh-CN/support.md)                | 支持平台、能力、限制                                 |
 | [性能](docs/zh-CN/performance.md)                | 基准方法与基线                                       |
 | [长稳测试](docs/zh-CN/soak.md)                   | 长时间资源回收测试                                   |
 | [脚本化测试](docs/zh-CN/testing.md)              | 用 `ScriptedChrome` 在不启动 Chrome 的情况下测试代码 |

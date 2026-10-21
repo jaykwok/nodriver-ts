@@ -65,7 +65,7 @@ launch 失败会断开连接并清理自有进程，connect 失败只断开连�
 新增事件订阅抛错。其他 attachment 保持可用，除非共享已崩溃/销毁的 target 或整个连接结束。
 关闭 target 时 Chrome 可能先发 detached，所以最终原因取决于事件顺序。
 
-crash 是库的逻辑生命周期终点。Windows Chrome 155 实测原 CDP attachment 在 crash 后仍可
+crash 是库的逻辑生命周期终点。虽然 Chrome 允许原 CDP attachment 在 crash 后继续
 reload/evaluate，但 raw API 会关闭旧 session 并清理 attachment，恢复必须重新 attach。
 先观察根 `Target.targetCrashed`，再重新 attach 和发送 `Page.reload`：
 session 级 crash 通知可能更早到达。高层 Tab 的 crash/reload 行为不变。

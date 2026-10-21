@@ -1,7 +1,7 @@
 # MCP server
 
 [简体中文](zh-CN/mcp.md)
-For clients using initialize, see [generic agent compatibility](agent-compatibility.md), including [Pi 1.3.0 evidence](pi.md).
+For clients using initialize, see [generic agent compatibility](agent-compatibility.md), including [Pi](pi.md).
 
 The built-in MCP server has four entry points: a long-running local Streamable HTTP service, stdio launched by the client, a local socket (Unix socket / Windows named pipe), and in-process InMemory. They share `createBrowserMcpServer`, `BrowserSessionManager`, the browser pool and leases, tool schemas, element refs, the operation queue and the same CDP core.
 
@@ -183,7 +183,7 @@ The server depends on pinned versions of the official SDK `@modelcontextprotocol
 - **Cancellation**: cancellation signals reach navigation, waits, queries, snapshots and actions that support cancellation. CDP commands and input already sent cannot be undone, and the queue does not let the next write operation start early just because the client stopped waiting.
 - **Errors**: tool errors return `isError: true` with the error name and message. Clicks, submits and other actions are never replayed automatically. Input schemas reject extra fields. Navigation entry points accept only HTTP(S) and about:blank; this is not network isolation, and page redirects, links and the browser's own requests still behave as Chrome does.
 - **Scope**: no remote multi-tenancy, arbitrary CDP or host script execution. File tools appear only once the host configures a directory, and are restricted to it. Tool descriptions and annotations are for clients to display; they are not an access-control mechanism.
-- **Traces**: AX snapshots do not require enabling Runtime, and tests confirm it is not enabled automatically. There is no claim that every means of observation is undetectable; see the [automation audit](automation-audit.md).
+- **Traces**: AX snapshots do not enable Runtime. Other observable signals are described in the [automation audit](automation-audit.md).
 
 ## Tests
 

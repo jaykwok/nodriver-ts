@@ -4,20 +4,23 @@ All notable changes are recorded here. The project follows [Semantic Versioning]
 
 ## 0.4.0 — 2026-10-21
 
-Migration from 0.3.x: [English](docs/migration-0.4.md) / [简体中文](docs/zh-CN/migration-0.4.md). The runtime floor and default headless/input behavior change in this minor release.
+### Breaking changes
 
-- Add opt-in, agent-independent MCP 2025-11-25 / 2025-06-18 compatibility on stdio and HTTP `/mcp/compat`, sharing the browser core, permissions and queues. Keep the default modern endpoint strict. Verify both revisions and Pi 1.3.0's actual client/native extension, including cancellation and capability gating; see [compatibility](docs/agent-compatibility.md).
+- Node.js ≥ 24.22.0 is required for package use, development and tests. Bun is no longer supported; the package uses Node.js HTTP and standard ESM throughout.
+- `maskHeadless` defaults to `false`: headless Chrome keeps its native UA and Client Hints. Pass `maskHeadless: true` for the previous behavior. Masking changes only the page and Dedicated Workers, so Shared/Service Workers can disagree with it.
+- Without an explicit seed, each input behavior picks a random seed once instead of using `1`. Pass `seed: 1` to keep the old repeatable sequence. Reconfiguring without a seed keeps the current stream, and input reports include the action-start PRNG state.
 
-- Require Node.js ≥ 24.22.0 for package use, development and tests; verify built-package acceptance on the minimum 24.22.0 release in CI.
-- Use Node.js HTTP and standard ESM implementations throughout; remove alternate-runtime adapters and test scripts.
-- Make headless UA masking opt-in after repeated page/Worker/request inconsistency measurements. Native UA values are preserved by default; explicit `maskHeadless: true` retains the previous behavior.
-- Generate one random seed per input behavior, preserve its stream when configuration omits seed, and include action-start PRNG state in input reports. Explicit seeds still reset deterministically.
-- Run font diagnostics in independent temporary CDP sessions so they cannot disable caller-owned DOM/CSS subscriptions.
-- Add reproducible local differential/Worker/preset audits, AX phase and queue measurements, Pi 1.3.0 connection probes, and an independent scheduled/manual/targeted-PR Beta/Dev/Canary regression workflow.
-- Gate differential audits on complete samples, stable native fields/descriptors, per-phase Worker/request consistency and resource cleanup; add same-document initialization/disconnect controls and verified headless/headful matrices.
-- Add an interactive manual handoff collector with explicit accept/decline/cancel and post-handoff page checks; physical input and Pi TUI/model validation still require separate human acceptance.
-- Add a six-strategy Worker startup experiment covering seven execution contexts, initial HTTP requests and first-script observations. Observe inherited Locale before requesting another override in the experimental control; keep language fallback differences separate from correctness judgments. This does not enable a production Worker override policy.
-- Record built-package shutdown command results, disconnect/exit timing and PID state, and upload the evidence even when CI fails. Keep the existing 10-second exit assertion; an earlier intermittent Windows shutdown timeout is not claimed fixed.
+### Added
+
+- Opt-in MCP 2025-11-25 / 2025-06-18 compatibility (`--mcp-compat`) on stdio and the HTTP `/mcp/compat` route, sharing the browser core, permissions and queues. The default `/mcp` entry point stays strict. Works with Pi 1.3.0's built-in MCP extension; see [agent compatibility](docs/agent-compatibility.md).
+- `npm run bench:audit`, a differential audit with a regression gate over native fields, descriptors, Worker/request consistency and cleanup, plus a manual collector for physical-input baselines.
+- `npm run bench:worker-environment`, which compares Worker startup configuration strategies across seven execution contexts.
+- `npm run bench:handoff:manual`, an interactive collector for testing human handoff end to end.
+- AX phase and queue benchmarks, and a Chrome Beta/Dev/Canary regression workflow.
+
+### Fixed
+
+- Font diagnostics run in independent temporary CDP sessions, so they no longer disable caller-owned DOM/CSS subscriptions.
 
 ## 0.3.0 — 2026-10-21
 

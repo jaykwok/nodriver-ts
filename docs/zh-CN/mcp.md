@@ -1,7 +1,7 @@
 # MCP 服务
 
 [English](../mcp.md)
-使用 initialize 的客户端见[通用 Agent 兼容](agent-compatibility.md)，包括 [Pi 1.3.0 实测](pi.md)。
+使用 initialize 的客户端见[通用 Agent 兼容](agent-compatibility.md)，包括 [Pi](pi.md)。
 
 内置 MCP 服务有四种接入：长期运行的本地 Streamable HTTP、由客户端启动的 stdio、本地 socket（Unix socket / Windows 命名管道），以及进程内 InMemory。它们共用 `createBrowserMcpServer`、`BrowserSessionManager`、浏览器池与租约、工具 schema、元素引用、操作队列和同一套 CDP 内核。
 
@@ -182,7 +182,7 @@ const handle = serveStdio(() => createBrowserMcpServer({ launch: { transport: 'p
 - **取消**：取消信号传递到导航、等待、查询、快照和支持取消的动作。已发出的 CDP 命令和输入不能撤销；队列不会因为客户端停止等待就提前放行下一个写操作。
 - **错误**：工具错误返回 `isError: true` 及错误名称与信息，不自动重放点击、提交或其他动作。输入 schema 拒绝多余字段；导航入口只接受 HTTP(S) 与 about:blank，这不是网络隔离，页面重定向、链接和浏览器自身请求仍按 Chrome 的行为进行。
 - **范围**：不提供远程多租户、任意 CDP 或宿主脚本执行。文件工具只在宿主配置目录后出现并限定在目录内。工具描述与 annotations 供客户端展示，不是访问控制机制。
-- **痕迹**：AX 快照不需要启用 Runtime，测试确认没有自动启用；不宣称所有观察方式都不可检测，见 [自动化痕迹审计](automation-audit.md)。
+- **痕迹**：AX 快照不启用 Runtime。其他仍可观测的信号见 [自动化痕迹审计](automation-audit.md)。
 
 ## 测试
 

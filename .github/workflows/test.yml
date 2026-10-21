@@ -77,14 +77,6 @@ jobs:
           retention-days: 30
       - name: Built package
         run: npm run test:dist
-      - name: Upload built-package shutdown evidence
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: raw-session-shutdown-${{ matrix.os }}
-          path: test-results/raw-session.json
-          if-no-files-found: ignore
-          retention-days: 30
 
   # Keep the declared >=24.22.0 floor honest as later 24.x releases add APIs.
   node-24-minimum:
@@ -102,11 +94,3 @@ jobs:
           echo "node $(node --version)"
           google-chrome --version
       - run: npm run test:dist
-      - name: Upload minimum-runtime shutdown evidence
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: raw-session-shutdown-node-minimum
-          path: test-results/raw-session.json
-          if-no-files-found: ignore
-          retention-days: 30

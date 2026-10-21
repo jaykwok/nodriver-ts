@@ -31,7 +31,7 @@ console.log(tab.inputBehavior.lastReport);
 
 Times are in milliseconds, and each range is a minimum/maximum: step counts 1–120, times 0–3000, `targetInset` (the fraction of the visible target's edge to exclude) 0–0.45. An omitted seed is generated once, using Node crypto, when the Tab's input behavior is created. It is retained when human mode is first enabled, across actions, mode switches and configure calls that omit seed. Other omitted policy fields still reset to their defaults. An explicit seed (including the current seed) resets only that behavior's stream. The seed determines each tab's random sequence. The same starting point, layout, configuration and call sequence reproduce the same planned trajectory and delays, but actual scheduling, frame rate and event timestamps are not guaranteed to match to the millisecond. The policy never introduces typos, extra submits or random business actions, and the policy cannot be changed while an action is running.
 
-`randomState` permits restarting the PRNG at an action boundary; seed alone requires the preceding random draws/action history. Reproducing an entire action also requires the same policy, layout, pointer/keyboard state and arguments. This change removes default deterministic repetition; no improvement in realism or detection rate is claimed.
+`randomState` permits restarting the PRNG at an action boundary; seed alone requires the preceding random draws/action history. Reproducing an entire action also requires the same policy, layout, pointer/keyboard state and arguments. Without an explicit seed, separate runs use different random sequences.
 
 ## Text and keys
 

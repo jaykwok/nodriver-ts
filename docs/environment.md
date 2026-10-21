@@ -83,7 +83,7 @@ The report keeps, separately: the current observation, the document baseline bef
 - **GeoIP**: only the timezone/geolocation fields selected in `fields` are applied, and an explicit `environment` takes precedence. Brand, UA-CH, hardware, precise location and language are never derived from an IP. The resolver receives a cancellation signal and the remaining deadline; the host is responsible for cancelling its external work.
 - **Accept-Language on its own**: the current UA and any available UA-CH are kept; no other brand identity is generated.
 - **Verification**: the document of each frame and a freshly created dedicated worker are verified separately. Fields that workers do not support (such as viewport) are recorded as unavailable, and real disagreements as mismatch. The locale is set only on the page's root session, so Intl is not guaranteed to agree in every renderer/worker. UA-CH is compared by the configured fields; when high-entropy values are unavailable, success is not faked. Geolocation is never granted automatically; the location is read for verification only if permission is already granted, otherwise it is unavailable.
-- **Partial failure**: `applicationError`, the session records and the actual report are kept. There is no claim of atomic rollback.
+- **Partial failure**: `applicationError`, the session records and the actual report are kept. Overrides are not rolled back atomically.
 
 `setEnvironment()` is the explicit override API without verification. Overrides of the UA, Client Hints, timezone and so on are not guaranteed to reach every Worker, SharedWorker or Service Worker. Headful mode keeps the real values by default; headless also preserves native values by default. Opt-in `maskHeadless: true` changes page UA/UA-CH and Dedicated Workers but can disagree with Shared/Service Workers and their requests; see the [differential audit](differential-audit.md). See the [automation audit](automation-audit.md).
 
@@ -99,7 +99,7 @@ This policy can reduce direct connectivity and media availability, so it is off 
 
 ## Tests
 
-For startup UA/language flags, paused Worker overrides, first-script observations and initial request headers, see the [Worker environment experiment](worker-environment.md). It records capabilities separately from successful collection and does not change production defaults.
+For startup UA/language flags, paused Worker overrides, first-script observations and initial request headers, see the [Worker startup environment benchmark](worker-environment.md).
 
 ```sh
 npm run test:compat    # set CHROME_PATH to the Chrome under test
@@ -116,4 +116,4 @@ The compatibility tests cover main/isolated evaluation in main pages, same-proce
 
 The signal tests cover the fonts actually rendered for Latin letters, Chinese and emoji in all four kinds of frame, and a Chinese/emoji round trip over a local two-peer WebRTC data channel without STUN. Different systems pick different fonts (for example Arial, Microsoft YaHei and Segoe UI Emoji on Windows, and DejaVu Sans on WSL); this reflects differences in installed system fonts.
 
-Verified platforms and versions are listed in [Support](support.md).
+Supported platforms are listed in [Support](support.md).

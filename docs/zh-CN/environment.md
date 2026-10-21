@@ -116,4 +116,4 @@ npm run test:signals   # 渲染字体、本机 HTTP 地址与 WebRTC 数据通�
 
 信号测试覆盖四类 frame 中拉丁字母、中文和 emoji 的实际渲染字体，以及无 STUN 的本地双 peer WebRTC 数据通道中文/emoji 往返。不同系统选用的字体不同（例如 Windows 为 Arial、Microsoft YaHei、Segoe UI Emoji，WSL 为 DejaVu Sans），这是系统字体资源差异。
 
-已验证的平台与版本见 [支持范围](support.md)。
+支持的平台见 [支持范围](support.md)。

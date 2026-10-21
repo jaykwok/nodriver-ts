@@ -2,7 +2,7 @@
 
 [English](../performance.md)
 
-[2026-10-21 AX 分阶段与队列结果](performance-phases.md)记录候选方案及保留完整读取和串行保护的依据。基准新增原始 AX 候选、观测器/分派/分派后耗时、纯快照与混合负载排队等待。
+AX 快照与操作队列的分阶段数据见 [AX 与队列测量](performance-phases.md)。
 
 `npm run bench:mcp` 运行 `benchmarks/mcp.ts`：原始 JSON 结果写 stdout，进度写 stderr。基准使用本地 fixture、全新临时 profile、显式 headless 和默认 sandbox，不访问外部站点。请在没有并行测试或其他高负载任务时运行；功能测试的耗时不能代替基准。
 
@@ -23,13 +23,11 @@
 
 端点采样只描述有限工作负载下的状态，不能证明不存在内存泄漏。
 
-历史 MCP 基线见 [0.2.0 发布文档](https://github.com/jaykwok/nodriver-ts/blob/v0.2.0/docs/performance.md#基线结果)。
-
 ## 与 Python nodriver 对照
 
 `npm run bench:compare` 运行 `benchmarks/compare.ts`：同一台机器、同一个 Chrome、headless、WebSocket、全新临时 profile 和同一个本地 fixture，两侧执行相同的工作负载。Python 侧通过 `uv` 以隔离模式运行 nodriver 0.50.6（Python 3.12，websockets 17.2），脚本位于 `benchmarks/compare/nodriver_bench.py`。默认先运行 TypeScript，`BENCH_PYTHON_FIRST=1` 时先运行 Python；`BENCH_SAMPLES` 调整往返样本数（默认 200）。
 
-- **冷启动**：启动浏览器并打开空白页，各 5 次。这次历史运行使用当时默认的 UA 探测/覆盖，nodriver 不做这一步，因此另测 `maskHeadless: false`。当前已改为显式启用覆盖，历史冷启动数字不代表当前默认。
+- **冷启动**：启动浏览器并打开空白页，各 5 次。
 - **往返**：预热 20 次后测 200 次 `Browser.getVersion` 与 200 次 `evaluate("1+1")`。
 - **查询**：1000 个按钮的页面上 100 次 `#b500`（nodriver 为 `tab.select`，本项目为 `tab.query`）。
 - **导航**：20 次同源导航到新 URL。本项目 `goto` 等待 load 事件；nodriver 的 `get` 在 load 前返回，脚本以 5 ms 间隔轮询 `document.readyState` 至 complete。
@@ -40,8 +38,7 @@ Ryzen 5 5600X、Windows 11、Chrome 155.0.8059.80，nodriver-ts 运行在 Node.j
 
 | 指标                 | nodriver-ts，TS 先行 | nodriver-ts，Python 先行 | nodriver，TS 先行 | nodriver，Python 先行 |
 | -------------------- | -------------------: | -----------------------: | ----------------: | --------------------: |
-| 冷启动（默认）       |       577.3 / 1033.6 |            442.0 / 539.1 |     374.4 / 801.6 |         342.7 / 354.3 |
-| 冷启动（不处理 UA）  |        333.6 / 347.9 |            329.3 / 333.5 |                 — |                     — |
+| 冷启动               |        333.6 / 347.9 |            329.3 / 333.5 |     374.4 / 801.6 |         342.7 / 354.3 |
 | `Browser.getVersion` |          0.18 / 0.44 |              0.18 / 0.39 |       0.24 / 0.34 |           0.29 / 0.41 |
 | `evaluate("1+1")`    |          0.24 / 0.31 |              0.24 / 0.33 |       0.34 / 0.61 |           0.34 / 0.73 |
 | CSS 查询             |          1.01 / 1.46 |              1.04 / 1.38 |     19.93 / 48.76 |         20.34 / 50.78 |
@@ -51,7 +48,4 @@ Ryzen 5 5600X、Windows 11、Chrome 155.0.8059.80，nodriver-ts 运行在 Node.j
 
 单次运行，结果只描述此工作负载在此机器上的表现；5 次冷启动的 p95 即最大样本，受偶发慢启动影响。查询差异来自实现方式不同（nodriver 的 `select` 每次以 `DOM.getDocument(depth=-1, pierce=true)` 取回完整 DOM 树，再在 Python 中递归查找节点），不代表 CDP 通信本身的差距；导航一项两侧的完成判定方式不同。
 
-## 未覆盖
-
-- 大页面高频查询的长期成本和多日资源曲线（长稳运行见 [长稳测试](soak.md)）。
-- 任何内存下降或吞吐提升比例的结论。
+长时间运行的资源表现见 [长稳测试](soak.md)。
