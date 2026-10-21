@@ -89,7 +89,8 @@
     "bench:audit": "node benchmarks/audit.ts",
     "bench:audit:manual": "node benchmarks/audit-manual.ts",
     "bench:handoff:manual": "node benchmarks/handoff-manual.ts",
-    "bench:ax-subtree": "node benchmarks/ax-subtree.ts"
+    "bench:ax-subtree": "node benchmarks/ax-subtree.ts",
+    "bench:worker-environment": "node benchmarks/worker-environment.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.3.1",

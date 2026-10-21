@@ -99,6 +99,8 @@ This policy can reduce direct connectivity and media availability, so it is off 
 
 ## Tests
 
+For startup UA/language flags, paused Worker overrides, first-script observations and initial request headers, see the [Worker environment experiment](worker-environment.md). It records capabilities separately from successful collection and does not change production defaults.
+
 ```sh
 npm run test:compat    # set CHROME_PATH to the Chrome under test
 npm run test:signals   # rendered fonts, local HTTP address and WebRTC data channel

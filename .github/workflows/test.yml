@@ -46,6 +46,11 @@ jobs:
           while IFS= read -r line; do echo "::warning title=Integration first attempt::${line//%/%25}"; done < test-results/integration-1-failures.txt
           { echo '### Integration first attempt failed'; echo '```'; cat test-results/integration-1-failures.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           npm run test:integration 2>&1 | tee test-results/integration-2.log
+      - name: Worker startup capability experiment
+        shell: bash
+        env:
+          WORKER_AUDIT_TRANSPORTS: pipe
+        run: node benchmarks/worker-environment.ts > test-results/worker-environment.log 2>&1
       - name: Upload test logs
         if: always()
         uses: actions/upload-artifact@v7
