@@ -6,6 +6,7 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { startBrowserMcpHttpServer } from '../dist/mcp/http.js';
+import { findExecutable } from '../dist/index.js';
 
 const packageDir = resolve(
   process.env.PI_MCP_PACKAGE ?? 'tmp/pi-1.3.0/node_modules/@earendil-works/pi-mcp',
@@ -19,6 +20,13 @@ const { McpServerConnection, createDefaultTransport } = await import(
   pathToFileURL(resolve(packageDir, '../pi-coding-agent/dist/extensions/mcp/runtime.js')).href
 );
 const token = 'pi-compat-local-test-token-32-characters';
+const executable = await findExecutable();
+const cliArgs = [
+  fileURLToPath(new URL('../dist/mcp/cli.js', import.meta.url)),
+  '--executable',
+  executable,
+  '--headless',
+];
 const server = await startBrowserMcpHttpServer({
   tokens: { [token]: 'pi-probe' },
   port: 0,
@@ -40,7 +48,7 @@ try {
       kind === 'stdio'
         ? new StdioTransport({
             command: process.execPath,
-            args: [fileURLToPath(new URL('../dist/mcp/cli.js', import.meta.url)), '--headless'],
+            args: cliArgs,
           })
         : new StreamableHttpTransport({
             url: `${server.url}/mcp`,
@@ -74,7 +82,7 @@ try {
       kind === 'stdio'
         ? {
             command: process.execPath,
-            args: [fileURLToPath(new URL('../dist/mcp/cli.js', import.meta.url)), '--headless'],
+            args: cliArgs,
           }
         : { url: `${server.url}/mcp`, headers: { Authorization: `Bearer ${token}` } };
     const connection = new McpServerConnection({
@@ -109,12 +117,7 @@ try {
       kind === 'stdio'
         ? {
             command: process.execPath,
-            args: [
-              fileURLToPath(new URL('../dist/mcp/cli.js', import.meta.url)),
-              '--headless',
-              '--mcp-compat',
-              '--allow-handoff',
-            ],
+            args: [...cliArgs, '--mcp-compat', '--allow-handoff'],
           }
         : { url: `${server.url}/mcp/compat`, headers: { Authorization: `Bearer ${token}` } };
     for (const layer of ['client', 'native-extension']) {

@@ -10,6 +10,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import { startBrowserMcpHttpServer } from '../src/mcp/http.ts';
 import { MCP_COMPATIBLE_VERSIONS } from '../src/mcp/protocol.ts';
 import { serve } from '../test/fixtures/serve.ts';
+import { findExecutable } from '../src/index.ts';
 
 if (!process.stdin.isTTY || !process.stdout.isTTY)
   throw new Error(
@@ -104,6 +105,8 @@ try {
       command: process.execPath,
       args: [
         fileURLToPath(new URL('../src/mcp/cli.ts', import.meta.url)),
+        '--executable',
+        await findExecutable(),
         '--headful',
         '--mcp-compat',
         '--allow-handoff',

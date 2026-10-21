@@ -12,6 +12,7 @@ import { startBrowserMcpHttpServer, type BrowserMcpHttpServer } from '../../src/
 import { MCP_COMPATIBLE_VERSIONS } from '../../src/mcp/protocol.ts';
 import { fixtureServer } from '../fixtures/server.ts';
 import { poll } from '../../src/utils.ts';
+import { findExecutable } from '../../src/index.ts';
 
 const alice = 'a'.repeat(40),
   bob = 'b'.repeat(40);
@@ -76,6 +77,9 @@ for (const version of MCP_COMPATIBLE_VERSIONS)
             command: process.execPath,
             args: [
               cli,
+              // The SDK intentionally filters child environment variables, including CHROME_PATH.
+              '--executable',
+              await findExecutable(),
               '--headless',
               '--browser-transport',
               'pipe',
