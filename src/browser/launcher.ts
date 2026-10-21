@@ -55,9 +55,9 @@ export interface LaunchOptions extends WaitOptions, ConnectionOptions {
     | 'default_public_interface_only'
     | 'default_public_and_private_interfaces'
     | 'disable_non_proxied_udp';
-  /** Browser-wide User-Agent (`--user-agent`). Prefer it to per-tab overrides when possible. */
+  /** Startup UA string (`--user-agent`); does not synthesize matching UA Client Hints. */
   userAgent?: string;
-  /** Browser UI and default Accept-Language (`--lang`), e.g. "en-US". */
+  /** Chromium language switch (`--lang`); verify Intl, navigator and HTTP values on the host. */
   lang?: string;
   /** Initial window size (`--window-size`). */
   windowSize?: { width: number; height: number };

@@ -99,6 +99,8 @@ MCP 宿主可在 `BrowserSessionManagerOptions.environmentDiagnostics` 中配置
 
 ## 测试
 
+启动 UA/语言参数、暂停 Worker 后覆盖、首段脚本和初始请求头的验证，请参阅 [Worker 环境实验](worker-environment.md)。它分开记录实际能力和采集是否完成，不改变生产默认行为。
+
 ```sh
 npm run test:compat    # 用 CHROME_PATH 指定待验证的 Chrome
 npm run test:signals   # 渲染字体、本机 HTTP 地址与 WebRTC 数据通道

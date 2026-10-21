@@ -10,6 +10,7 @@ on:
       - 'src/transport/**'
       - 'benchmarks/audit*'
       - 'benchmarks/audit/**'
+      - 'benchmarks/worker-environment*'
   schedule:
     - cron: '23 3 * * 1'
   workflow_dispatch:
@@ -67,6 +68,11 @@ jobs:
           AUDIT_TRANSPORTS: pipe
           AUDIT_VARIANTS: default-native,default-masked,explicit-environment
         run: node benchmarks/audit.ts > test-results/differential.json 2> test-results/differential.log
+      - name: Worker startup capability experiment
+        if: success() || failure()
+        env:
+          WORKER_AUDIT_TRANSPORTS: pipe
+        run: node benchmarks/worker-environment.ts > test-results/worker-environment.log 2>&1
       - name: Preview report
         if: always()
         run: |
