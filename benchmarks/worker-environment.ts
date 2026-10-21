@@ -4,7 +4,7 @@ import { dirname, resolve } from 'node:path';
 import { arch, platform, release } from 'node:os';
 import { isDeepStrictEqual } from 'node:util';
 import type { Protocol } from 'devtools-protocol';
-import { Browser, type Session, type Command, type Params } from '../src/index.ts';
+import { Browser, type Session, type Command, type Params, type Result } from '../src/index.ts';
 import {
   workerContexts,
   workerEnvironmentFixture,
@@ -18,6 +18,7 @@ const variants = [
   'paused-overrides',
   'combined',
   'prepared-navigation',
+  'prepared-locale-check',
 ] as const;
 type Variant = (typeof variants)[number];
 const markerUA = 'Local-Worker-Audit/1.0';
@@ -59,8 +60,71 @@ interface Attachment {
   resumedAt?: number;
   resumeError?: string;
   preparedBeforeNavigation?: boolean;
+  localeCheck?: {
+    before?: string;
+    after?: string;
+    action: 'unavailable' | 'already-observed' | 'override' | 'override-before-context';
+    error?: string;
+  };
   commands: Array<{ method: string; status: 'ok' | 'error'; durationMs: number; error?: string }>;
 }
+
+function recorder(session: Session, record: Attachment, signal?: AbortSignal) {
+  return async <M extends Command>(
+    method: M,
+    ...params: Params<M>
+  ): Promise<Result<M> | undefined> => {
+    const start = performance.now();
+    try {
+      const result = await session.sendWith(method, { timeout: 2000, signal }, ...params);
+      record.commands.push({ method, status: 'ok', durationMs: performance.now() - start });
+      return result;
+    } catch (error) {
+      record.commands.push({
+        method,
+        status: 'error',
+        durationMs: performance.now() - start,
+        error: String(error),
+      });
+    }
+  };
+}
+
+async function checkLocale(command: ReturnType<typeof recorder>, record: Attachment) {
+  const observation: NonNullable<Attachment['localeCheck']> = { action: 'unavailable' };
+  record.localeCheck = observation;
+  if (record.type === 'iframe') {
+    // An OOPIF can be paused before it has a default execution context. Retain the
+    // explicit override there and use the fixture's first statement for verification.
+    observation.action = 'override-before-context';
+    await command('Emulation.setLocaleOverride', { locale: requested.locale });
+    return;
+  }
+  async function read() {
+    // Controlled fresh fixture contexts only. This executes JS before the fixture's
+    // first statement; it does not establish ownership or safety on arbitrary pages.
+    const response = await command('Runtime.evaluate', {
+      expression: 'Intl.DateTimeFormat().resolvedOptions().locale',
+      returnByValue: true,
+    });
+    if (response?.exceptionDetails || typeof response?.result.value !== 'string') {
+      observation.error = response?.exceptionDetails?.text ?? 'Locale read unavailable';
+      return undefined;
+    }
+    return response.result.value as string;
+  }
+  observation.before = await read();
+  if (observation.before === undefined) return;
+  if (observation.before.toLowerCase() === requested.locale.toLowerCase()) {
+    observation.action = 'already-observed';
+    return;
+  }
+  observation.action = 'override';
+  await command('Emulation.setLocaleOverride', { locale: requested.locale });
+  // Keep rejected commands even if a concurrent owner subsequently supplies the value.
+  observation.after = await read();
+}
+
 export function summarizeWorkerEnvironment(samples: WorkerSample[], requests: WorkerRequest[]) {
   const document = samples.find((s) => s.kind === 'document');
   const missing = workerContexts.filter((kind) => !samples.some((s) => s.kind === kind));
@@ -107,8 +171,8 @@ export function summarizeWorkerEnvironment(samples: WorkerSample[], requests: Wo
     .filter((r) => r.kind && workerContexts.includes(r.kind as (typeof workerContexts)[number]))
     .map((request) => {
       const sample = samples.find((s) => s.kind === request.kind);
-      // Preserve q-values in the raw header, but compare the ordered language ranges.
-      // Matching only the first language would hide startup-only fallback preferences.
+      // This is a literal observation, not a correctness or automation verdict. Chrome
+      // can add language-only fallbacks to HTTP headers. Preserve raw values and q-values.
       const ranges = request.headers['accept-language']
         ?.split(',')
         .map((value) => value.split(';')[0]!.trim().toLowerCase());
@@ -143,7 +207,8 @@ async function run(
   repeat: number,
 ) {
   const name = `${variant}-${transport}-${repeat}`;
-  const prepared = variant === 'prepared-navigation';
+  const checkedLocale = variant === 'prepared-locale-check';
+  const prepared = variant === 'prepared-navigation' || checkedLocale;
   const startup = variant === 'launch-flags' || variant === 'combined' || prepared;
   const paused = variant === 'paused-overrides' || variant === 'combined' || prepared;
   const commands: Array<{ method: string; sessionId?: string; at: number }> = [];
@@ -202,20 +267,7 @@ async function run(
         controller.abort(new Error('Target preparation exceeded 5000ms'));
         void resume();
       }, 5000);
-      async function command<M extends Command>(s: Session, method: M, ...params: Params<M>) {
-        const start = performance.now();
-        try {
-          await s.sendWith(method, { timeout: 2000, signal: controller.signal }, ...params);
-          record.commands.push({ method, status: 'ok', durationMs: performance.now() - start });
-        } catch (error) {
-          record.commands.push({
-            method,
-            status: 'error',
-            durationMs: performance.now() - start,
-            error: String(error),
-          });
-        }
-      }
+      const command = recorder(session, record, controller.signal);
       try {
         if (!record.owned) return;
         // Release unexpected duplicate pauses immediately. Do not treat this as verified
@@ -224,19 +276,20 @@ async function run(
           errors.push(`Duplicate fixture attachment: ${record.type}`);
           return;
         }
-        await command(session, 'Target.setAutoAttach', {
+        await command('Target.setAutoAttach', {
           autoAttach: true,
           waitForDebuggerOnStart: true,
           flatten: true,
           filter: childFilter,
         });
-        await command(session, 'Emulation.setUserAgentOverride', {
+        await command('Emulation.setUserAgentOverride', {
           userAgent: markerUA,
           acceptLanguage: 'fr-FR,fr',
           userAgentMetadata: metadata,
         });
-        await command(session, 'Emulation.setTimezoneOverride', { timezoneId: requested.timezone });
-        await command(session, 'Emulation.setLocaleOverride', { locale: requested.locale });
+        await command('Emulation.setTimezoneOverride', { timezoneId: requested.timezone });
+        if (checkedLocale) await checkLocale(command, record);
+        else await command('Emulation.setLocaleOverride', { locale: requested.locale });
       } finally {
         clearTimeout(watchdog);
         await resume();
@@ -286,11 +339,13 @@ async function run(
         { timeout: 2000 },
         { timezoneId: requested.timezone },
       );
-      await session.sendWith(
-        'Emulation.setLocaleOverride',
-        { timeout: 2000 },
-        { locale: requested.locale },
-      );
+      if (checkedLocale) await checkLocale(recorder(session, record), record);
+      else
+        await session.sendWith(
+          'Emulation.setLocaleOverride',
+          { timeout: 2000 },
+          { locale: requested.locale },
+        );
       record.preparedBeforeNavigation = true;
       await session.sendWith('Page.navigate', { timeout: 10000 }, { url });
     }
@@ -341,6 +396,7 @@ async function run(
     configuration: {
       startup: startup ? { userAgent: markerUA, lang: requested.language } : null,
       pausedOverrides: paused ? { ...requested, userAgentMetadata: metadata } : null,
+      localeStrategy: checkedLocale ? 'observe-before-override' : paused ? 'always-override' : null,
     },
     errors,
     cleanup,
@@ -417,7 +473,7 @@ if (import.meta.main) {
               headerMismatches: result.summary.headers.filter(
                 (h) => h.matchesFirstScriptUA === false,
               ).length,
-              languageHeaderMismatches: result.summary.headers.filter(
+              languageHeaderDifferences: result.summary.headers.filter(
                 (h) => h.matchesFirstScriptLanguages === false,
               ).length,
               commandErrors: result.attachments
@@ -441,6 +497,8 @@ if (import.meta.main) {
             'Initial synchronous properties are captured by the first statement of the controlled fixture. High-entropy CH is asynchronous.',
             'Initial requests and later sample POSTs are recorded separately. An attached/paused target may already have made requests.',
             'CDP command success, field agreement and requested-value agreement are separate results. Protocol/field differences do not fail this capability experiment.',
+            'Language tags do not indicate automation. Header/language-list differences are observations; native fallbacks and preferences must be considered before classifying a regression.',
+            'prepared-locale-check reads Intl on the controlled blank page and Workers; paused OOPIFs may not have an execution context yet. Observing the requested locale does not grant override ownership or prove persistence after an owner detaches.',
             'Missing samples, failed resume/cleanup, or forbidden commands do fail the runner.',
             'Fresh worker startup only; persistent profiles, Service Worker update/restart, existing targets and external browser ownership are not certified.',
           ],
