@@ -174,7 +174,7 @@ const handle = serveStdio(() => createBrowserMcpServer({ launch: { transport: 'p
 
 第二个参数 `BrowserMcpBinding` 可传入已有的 `BrowserSessionManager`、已验证的 principal 和 leaseId，此时 `server.close()` 只关闭适配器，租约由 manager 管理，见 [HTTP 接入](mcp-http.md)。
 
-依赖固定版本的官方 SDK `@modelcontextprotocol/server` 2.3.1 与 Zod 4.6.7。HTTP 与字节流入口使用 SDK 的 `legacy: 'reject'`，`server.connect(InMemory)` 同样走现代路由；额外的薄边界拒绝 initialize、其他版本和缺少版本元数据的请求，解析、envelope 校验、MRTR、订阅和取消由 SDK 处理。参见 [协议规范](https://modelcontextprotocol.io/specification/2026-07-28)。
+依赖固定版本的官方 SDK `@modelcontextprotocol/server` 2.3.1 与 Zod 4.6.7。默认 HTTP 与字节流入口使用 SDK 的 `legacy: 'reject'`，`server.connect(InMemory)` 同样走现代路由；这些默认入口拒绝 initialize、其他版本和缺少版本元数据的请求。显式启用的兼容入口采用独立协商配置，见[通用 Agent 兼容](agent-compatibility.md)。解析、envelope 校验、MRTR、订阅和取消由 SDK 处理。参见 [协议规范](https://modelcontextprotocol.io/specification/2026-07-28)。
 
 ## 并发、取消与边界
 
@@ -191,4 +191,4 @@ npm run test:mcp
 npm run test:all
 ```
 
-测试使用官方 MCP 客户端，以真实 stdio 子进程和两种 Chrome 传输运行，并验证旧协议被拒绝；覆盖四类 frame、closed shadow root、引用失效与跨标签页拒绝、中文输入、checkbox/select、截图、非法参数、取消、JS 对话框和下载等待。嵌入测试审计实际 CDP 命令，并验证关闭后清理自有 profile、保留外部 Chrome；EOF 测试只关闭 stdin 并等待服务自行退出，验证持久 profile 保留、锁与 `DevToolsActivePort` 已删除且调试端口已退出。
+测试使用官方 MCP 客户端，以真实 stdio 子进程和两种 Chrome 传输运行，并验证默认入口拒绝旧协议；兼容测试另行验证两种受支持的 2025 协议协商、取消、会话隔离与能力检查。测试还覆盖四类 frame、closed shadow root、引用失效与跨标签页拒绝、中文输入、checkbox/select、截图、非法参数、取消、JS 对话框和下载等待。嵌入测试审计实际 CDP 命令，并验证关闭后清理自有 profile、保留外部 Chrome；EOF 测试只关闭 stdin 并等待服务自行退出，验证持久 profile 保留、锁与 `DevToolsActivePort` 已删除且调试端口已退出。

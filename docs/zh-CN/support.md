@@ -2,13 +2,13 @@
 
 [English](../support.md)
 
-当前未发布版本的包、源码开发与测试统一要求 Node.js 24.22.0 及以上。下方旧版记录属于历史验证，不代表当前运行时支持范围。
+0.4 版本的包、源码开发与测试统一要求 Node.js 24.22.0 及以上，见[迁移说明](migration-0.4.md)。下方旧版记录属于历史验证，不代表当前运行时支持范围。
 
 ## 运行环境
 
-当前未发布改动于 2026-10-21 在本机 Windows x64、Chrome 155.0.8059.85、Node.js 24.22.0 下全量通过 95 项单测、107 项集成及构建产物验收。Pi 实际客户端与内置扩展在 Node.js 24.22.0 的操作流程也通过。独立 headless、headful 差分矩阵分别通过 13,878、7,768 项断言。证据边界见[本地差分审计](differential-audit.md)、[分阶段性能](performance-phases.md)、[通用兼容](agent-compatibility.md)和 [Pi 1.3.0](pi.md)。
+0.4 开发期间的改动于 2026-10-21 在本机 Windows x64、Chrome 155.0.8059.85、Node.js 24.22.0 下全量通过 95 项单测、107 项集成及构建产物验收。Pi 实际客户端与内置扩展在 Node.js 24.22.0 的操作流程也通过。独立 headless、headful 差分矩阵分别通过 13,878、7,768 项断言。证据边界见[本地差分审计](differential-audit.md)、[分阶段性能](performance-phases.md)、[通用兼容](agent-compatibility.md)和 [Pi 1.3.0](pi.md)。
 
-[提升运行时下限前的远程稳定 CI](https://github.com/jaykwok/nodriver-ts/actions/runs/39541325347) 已通过 Windows/Linux 源码套件；Linux 差分报告通过 4,693 项断言，失败为 0。[预览 CI](https://github.com/jaykwok/nodriver-ts/actions/runs/39541325419) 在 Beta 157.0.8103.6、Dev 158.0.8106.0、Canary 158.0.8114.0 上通过严格 objectId/Runtime、导航/OOPIF 与差分检查。链接标明具体受测提交，不代表未来通道版本或预览版全部 API 的兼容承诺；包含 Node.js 24.22.0 构建产物验收的当前提交结果见 [PR #1](https://github.com/jaykwok/nodriver-ts/pull/1)。
+[合并后 main 回归](https://github.com/jaykwok/nodriver-ts/actions/runs/39565019989) 通过 Windows/Linux 源码套件与构建产物检查，以及精确 Node.js 24.22.0 最低版本验收。[Worker 实验预览回归](https://github.com/jaykwok/nodriver-ts/actions/runs/39563343110) 在 Beta 157.0.8103.6、Dev 158.0.8106.0、Canary 158.0.8114.0 上通过，产物包含六组配置；边界见 [Worker 证据](worker-environment.md)。链接对应具体受测提交，不代表未来通道或完整平台认证。此前一次 Windows push 验收在等待已交接 Chrome 退出时超时，同一提交的 PR 回归及合并后 main 回归均通过；该偶发失败保留记录，尚未宣称修复。
 
 - **运行时**：包、开发工具与测试统一要求 Node.js ≥ 24.22.0。测试使用 `node:test` 与 `expect`，直接运行 TypeScript 源码。CI 在 Windows/Ubuntu 检查当前 Node.js 24，并在最低版本 24.22.0 验收构建产物。包管理使用 npm。
 - **浏览器**：本机 Chrome、Chromium 或 Edge。Windows、macOS、Linux 的常见安装位置与 `PATH` 自动探测，也可用 `CHROME_PATH` 或 `executablePath` 指定。

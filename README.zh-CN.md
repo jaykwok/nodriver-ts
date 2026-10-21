@@ -12,6 +12,8 @@
 
 包、源码开发与测试统一需要 Node.js 24.22.0+（直接运行 TypeScript 源码）。另需本机 Chrome/Chromium/Edge（Windows、macOS、Linux 常见路径与 `PATH` 自动探测，也可用 `CHROME_PATH` 或 `executablePath` 指定）。已验证的系统和版本见 [支持范围](docs/zh-CN/support.md)。
 
+从 0.3.x 升级时，请先阅读 [0.4 迁移说明](docs/zh-CN/migration-0.4.md)，了解 Node.js 要求、原生 headless 默认行为、输入种子及可选 MCP 兼容入口。
+
 ```sh
 npm ci
 npm run check

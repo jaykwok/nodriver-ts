@@ -2,7 +2,9 @@
 
 All notable changes are recorded here. The project follows [Semantic Versioning](https://semver.org/); before 1.0, minor versions may contain breaking changes.
 
-## Unreleased
+## 0.4.0 — 2026-10-21
+
+Migration from 0.3.x: [English](docs/migration-0.4.md) / [简体中文](docs/zh-CN/migration-0.4.md). The runtime floor and default headless/input behavior change in this minor release.
 
 - Add opt-in, agent-independent MCP 2025-11-25 / 2025-06-18 compatibility on stdio and HTTP `/mcp/compat`, sharing the browser core, permissions and queues. Keep the default modern endpoint strict. Verify both revisions and Pi 1.3.0's actual client/native extension, including cancellation and capability gating; see [compatibility](docs/agent-compatibility.md).
 
@@ -14,6 +16,8 @@ All notable changes are recorded here. The project follows [Semantic Versioning]
 - Add reproducible local differential/Worker/preset audits, AX phase and queue measurements, Pi 1.3.0 connection probes, and an independent scheduled/manual/targeted-PR Beta/Dev/Canary regression workflow.
 - Gate differential audits on complete samples, stable native fields/descriptors, per-phase Worker/request consistency and resource cleanup; add same-document initialization/disconnect controls and verified headless/headful matrices.
 - Add an interactive manual handoff collector with explicit accept/decline/cancel and post-handoff page checks; physical input and Pi TUI/model validation still require separate human acceptance.
+- Add a six-strategy Worker startup experiment covering seven execution contexts, initial HTTP requests and first-script observations. Observe inherited Locale before requesting another override in the experimental control; keep language fallback differences separate from correctness judgments. This does not enable a production Worker override policy.
+- Record built-package shutdown command results, disconnect/exit timing and PID state, and upload the evidence even when CI fails. Keep the existing 10-second exit assertion; an earlier intermittent Windows shutdown timeout is not claimed fixed.
 
 ## 0.3.0 — 2026-10-21
 
