@@ -126,7 +126,7 @@ export class Browser {
           );
         if (
           browser.attachPolicy !== 'none' &&
-          (options.maskHeadless ?? options.headless === true) &&
+          options.maskHeadless === true &&
           !options.userAgent
         ) {
           const configuring = step();

@@ -439,6 +439,8 @@ export class BrowserMcpSession {
     const frame = rootElement?.frame ?? this.frame(tabId, options.frameId);
     const session = frame.session,
       generation = frame.generation;
+    // Keep complete reads even for root: queryAXTree can stall on complex frame pages,
+    // and partial/depth-limited reads omit descendants. See benchmarks/ax-subtree.ts.
     const { nodes } = await session.sendWith('Accessibility.getFullAXTree', wait, {
       frameId: frame.id,
     });

@@ -83,9 +83,7 @@ async function typescript() {
       axNodes = (await tab.cdp.send('Accessibility.getFullAXTree')).nodes.length;
     });
     return {
-      runtime: process.versions.bun
-        ? `Bun ${process.versions.bun}`
-        : `Node.js ${process.versions.node}`,
+      runtime: `Node.js ${process.versions.node}`,
       library: 'nodriver-ts (this commit)',
       coldStart,
       coldStartUnmasked,

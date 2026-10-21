@@ -2,6 +2,8 @@
 
 [简体中文](zh-CN/browser-handoff.md)
 
+The `await using` examples below require Node.js 24+. On Node.js 22, use the built package with `try/finally` and `close()`, closing child resources before their Browser.
+
 `nodriver-ts` can be used directly as an in-process library. Browser handoff does not go through MCP and does not change the MCP protocol version.
 
 ## Launch, hand off and reconnect

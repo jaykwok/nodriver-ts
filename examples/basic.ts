@@ -6,7 +6,7 @@ const tab = await context.newTab();
 await tab.goto(
   'data:text/html,<meta charset="utf-8"><input id="name"><button onclick="document.querySelector(\'output\').textContent=document.querySelector(\'input\').value">提交</button><output></output>',
 );
-await (await tab.waitForSelector('#name')).fill('你好，Bun 😀');
+await (await tab.waitForSelector('#name')).fill('你好，Node.js 😀');
 await (await tab.waitForSelector('button')).click();
 console.log(await (await tab.waitForSelector('output')).text());
 console.log(browser.version.product);

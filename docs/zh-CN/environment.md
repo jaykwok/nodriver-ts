@@ -38,7 +38,7 @@ const diagnosis = await tab.diagnoseEnvironment({
 
 诊断汇总标签页内所有 frame 的文档与 Worker、字体、WebGL 和显式网络探针。报告区分 observed / unavailable / not-requested，以及 match / mismatch / unavailable / not-tested；未采集的项目不算通过。
 
-- **字体**：显式启用 DOM/CSS 域，读取 `CSS.getPlatformFontsForNode` 返回的实际渲染字体。结果是浏览器选用的字体，不保证每个字符都有字形，也不安装字体。
+- **字体**：在独立临时 session 上显式启用 DOM/CSS，结束时 detach，不会关闭调用方订阅；读取 `CSS.getPlatformFontsForNode` 返回的实际渲染字体。结果是浏览器选用的字体，不保证每个字符都有字形，也不安装字体。
 - **HTTP 探针**：由页面发起，省略凭证、禁止重定向，受 CSP/CORS 与网络影响；返回的 headers 只是调用方服务的反射观测。
 - **STUN**：只接受显式给出的最多四个 STUN 端点，不请求音视频权限或 TURN 凭证，限时后关闭数据通道和 peer。
 - **地址差异**：HTTP 与 STUN 的出口地址可以不同，不能据此认定伪装、泄漏或某种代理机制。网络调用失败时保留缺测原因。
@@ -69,7 +69,7 @@ await tab.alignEnvironment(
 - **核验**：每个 frame 的文档与新建 dedicated Worker 分别核验；Worker 不支持的字段（如 viewport）记为 unavailable，实际不一致记为 mismatch。locale 只在页面根 session 设置，不保证所有 renderer/Worker 的 Intl 同步。UA-CH 按配置字段比较，高熵值不可用时不伪造成功。Geolocation 不自动授权，只有权限已为 granted 时才读取位置核验，否则为 unavailable。
 - **部分失败**：保留 `applicationError`、session 记录和实际报告，不声称原子回滚。
 
-`setEnvironment()` 是不带核验的显式覆盖接口。UA、Client Hints、时区等覆盖不保证传播到所有 Worker、SharedWorker 或 Service Worker。有界面模式默认保留真实值；headless 默认只把 UA/UA-CH 中的 HeadlessChrome 改为 Chrome（`maskHeadless: false` 可关闭），见 [自动化痕迹审计](automation-audit.md)。
+`setEnvironment()` 是不带核验的显式覆盖接口。UA、Client Hints、时区等覆盖不保证传播到所有 Worker、SharedWorker 或 Service Worker。有界面模式默认保留真实值；headless 也默认保留原生值。显式 `maskHeadless: true` 改变页面 UA/UA-CH 与 Dedicated Worker，但会与 Shared/Service Worker 及其请求不一致，见[分阶段审计](differential-audit.md)，见 [自动化痕迹审计](automation-audit.md)。
 
 MCP 宿主可在 `BrowserSessionManagerOptions.environmentDiagnostics` 中配置 `httpProbe`/`stunServers`，并注入 `geoIPResolver`；工具只能选择是否使用这些配置，不能传入任意探测 URL。
 

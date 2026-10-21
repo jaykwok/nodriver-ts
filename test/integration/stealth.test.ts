@@ -8,7 +8,7 @@ test('headless mask, pointer pressure, screen offsets and key-event typing stay 
   const headless = process.env.NODRIVER_HEADFUL !== '1';
   const fixture = await fixtureServer(),
     audit = recordWire('pipe'),
-    browser = await Browser.launch({ transport: 'pipe', headless });
+    browser = await Browser.launch({ transport: 'pipe', headless, maskHeadless: true });
   try {
     const tab = await browser.newTab(fixture.base + '/input-events');
     const ua = await tab.evaluate<string>('navigator.userAgent');

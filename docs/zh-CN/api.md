@@ -82,7 +82,7 @@
 | 选项                              | 行为                                                                                                                                           |
 | --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
 | `headless`                        | 默认 `false`。无图形桌面时须显式 `true`；显示环境不可用时不会自动切换                                                                          |
-| `maskHeadless`                    | headless 且未指定 `userAgent` 时默认开启，去掉 UA 与 UA-CH 中的 HeadlessChrome                                                                 |
+| `maskHeadless`                    | 默认关闭；显式 true 且未指定 `userAgent` 时去掉页面 UA/UA-CH 中的 HeadlessChrome，Shared/Service Worker 可能不一致                             |
 | `automationControlled`            | 默认 `false`：加入 `--disable-blink-features=AutomationControlled`（与调用者的其他禁用特性合并），webdriver getter 保持原生；`true` 不加该开关 |
 | `preset: 'agent'`                 | 追加 `AGENT_ARGS`：关闭首次运行、搜索引擎选择、崩溃恢复气泡与后台节流                                                                          |
 | `userAgent`、`lang`、`windowSize` | 启动时设置 UA、BCP 47 语言和窗口尺寸                                                                                                           |
@@ -97,7 +97,7 @@
 
 确认同机 `.nodriver.lock` 持有进程仍存活，或 `DevToolsActivePort` 仍提供原浏览器服务时，抛出带 `profile` 路径的 `ProfileInUseError`。Windows 另探测 Chrome 原生 `lockfile` 的共享冲突（`EBUSY`），因此未开放调试端口的已运行 Chrome 也会得到该类型错误；仅存在但未锁定的残留文件不视为占用，权限错误不误报为占用。Unix 原生 `SingletonLock`/`SingletonSocket` 暂不额外解析，未开放调试端口时仍可能报告普通启动退出错误。
 
-`await using` 在正常退出和异常展开时关闭资源，`close()` 幂等。宿主被强制终止或断电时，JavaScript 无法保证清理。
+Node.js 22 请用 `try/finally` 与 `close()`；Node.js 24+ 可用 `await using` 在正常退出和异常展开时关闭资源，`close()` 幂等。宿主被强制终止或断电时，JavaScript 无法保证清理。
 
 `await browser.release()` 返回 WebSocket endpoint 并放弃进程所有权，之后 `owned` 为 `false`，`close()` 与异步析构只断开连接。自有浏览器必须以 `detached: true` 启动；pipe 会明确拒绝交接且不改变连接。交接保留 profile 与 `DevToolsActivePort`，移除记录宿主 PID 的 `.nodriver.lock`。`disconnect()` 不放弃所有权，pipe Chrome 在管道断开时会退出。独立启动的 stderr 不可用，交接前宿主崩溃可能遗留 Chrome。完整示例、清理责任和事件接口见[浏览器交接与事件](browser-handoff.md)。
 

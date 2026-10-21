@@ -10,8 +10,14 @@ import { cancellableBody } from './body.ts';
 import { MCP_PROTOCOL_VERSION } from './protocol.ts';
 import { serveFetch } from './serve.ts';
 import { LeaseError } from './manager.ts';
+import { createCompatibleBrowserMcpHttpEndpoint } from './compat.ts';
 
 export interface BrowserMcpHttpOptions {
+  /** Enable a separate stateful 2025-era /mcp/compat endpoint. /mcp stays modern-only. */
+  compatibility?: boolean;
+  maxCompatibilitySessionsPerLease?: number;
+  /** Idle MCP sessions expire independently of their browser lease; default five minutes. */
+  compatibilitySessionIdleMs?: number;
   /** Local, explicitly provisioned bearer token -> trusted principal. Not clientInfo. */
   tokens: Record<string, string>;
   manager?: BrowserSessionManager;
@@ -44,6 +50,7 @@ export interface BrowserMcpHttpServer extends BrowserMcpHttpService {
 }
 interface Endpoint {
   modern: McpHttpHandler;
+  compatible?: ReturnType<typeof createCompatibleBrowserMcpHttpEndpoint>;
   off: () => void;
   pending: number;
 }
@@ -68,6 +75,14 @@ export function createBrowserMcpHttpService(options: BrowserMcpHttpOptions): Bro
     closing: Promise<void> | undefined;
   const maxBody = integer(options.maxRequestBodySize ?? 256 * 1024, 'body size');
   const maxRequests = integer(options.maxRequestsPerLease ?? 16, 'requests per lease');
+  const maxCompatibilitySessions = integer(
+    options.maxCompatibilitySessionsPerLease ?? 4,
+    'compatibility sessions per lease',
+  );
+  const compatibilityIdleMs = integer(
+    options.compatibilitySessionIdleMs ?? 300000,
+    'compatibility session idle time',
+  );
   const operation = manager.limits.operationTimeout;
   const timeout = integer(
     options.requestTimeout ?? Math.max(35000, operation + 5000),
@@ -88,6 +103,7 @@ export function createBrowserMcpHttpService(options: BrowserMcpHttpOptions): Bro
     endpoints.delete(id);
     endpoint.off();
     await endpoint.modern.close();
+    await endpoint.compatible?.close();
   };
   const offRetired = manager.retired.on((id) => {
     void remove(id).catch(report);
@@ -116,6 +132,19 @@ export function createBrowserMcpHttpService(options: BrowserMcpHttpOptions): Bro
     });
     endpoint = {
       modern,
+      ...(options.compatibility
+        ? {
+            compatible: createCompatibleBrowserMcpHttpEndpoint(
+              { manager, principal, leaseId: id },
+              {
+                maxSessions: maxCompatibilitySessions,
+                maxBody,
+                idleMs: compatibilityIdleMs,
+                onerror: report,
+              },
+            ),
+          }
+        : {}),
       pending: 0,
       off: () => {
         off();
@@ -288,7 +317,8 @@ export function createBrowserMcpHttpService(options: BrowserMcpHttpOptions): Bro
           return error(404, 'Unknown or unauthorized lease');
         }
       }
-      if (url.pathname !== '/mcp') return error(404, 'Unknown endpoint');
+      const compatible = options.compatibility === true && url.pathname === '/mcp/compat';
+      if (url.pathname !== '/mcp' && !compatible) return error(404, 'Unknown endpoint');
       const requested = original.headers.get('browser-lease-id');
       if (!requested && options.requireLeaseHeader)
         return error(400, 'Browser-Lease-Id is required');
@@ -301,7 +331,12 @@ export function createBrowserMcpHttpService(options: BrowserMcpHttpOptions): Bro
         // Without a lease header a GET/DELETE has nothing to look up; answer like any other
         // unsupported method instead of reporting a missing default lease.
         if (!requested && original.method !== 'POST')
-          return error(405, `MCP ${MCP_PROTOCOL_VERSION} only supports POST`);
+          return error(
+            compatible ? 400 : 405,
+            compatible
+              ? 'Initialize a compatibility MCP session first'
+              : `MCP ${MCP_PROTOCOL_VERSION} only supports POST`,
+          );
         if (cause instanceof LeaseError && cause.code === 'invalid')
           return error(400, 'Invalid Browser-Lease-Id or lease name');
         if (cause instanceof LeaseError && cause.code === 'capacity')
@@ -309,16 +344,16 @@ export function createBrowserMcpHttpService(options: BrowserMcpHttpOptions): Bro
         return error(404, 'Unknown, unauthorized or expired browser lease');
       }
       const endpoint = endpointFor(principal, leaseId);
-      if (original.headers.has('mcp-session-id')) {
+      if (!compatible && original.headers.has('mcp-session-id')) {
         release();
         return error(400, `MCP ${MCP_PROTOCOL_VERSION} uses Browser-Lease-Id, not MCP sessions`);
       }
-      if (original.method !== 'POST') {
+      if (!compatible && original.method !== 'POST') {
         release();
         return error(405, `MCP ${MCP_PROTOCOL_VERSION} only supports POST`);
       }
       const version = original.headers.get('mcp-protocol-version');
-      if (version && version !== MCP_PROTOCOL_VERSION) {
+      if (!compatible && version && version !== MCP_PROTOCOL_VERSION) {
         release();
         return Response.json(
           {
@@ -365,7 +400,9 @@ export function createBrowserMcpHttpService(options: BrowserMcpHttpOptions): Bro
           signal: AbortSignal.any([original.signal, lifetime.signal, abort.signal]),
           ...(original.method === 'POST' ? { body: JSON.stringify(body) } : {}),
         });
-        const response = await endpoint.modern.fetch(request, { authInfo, parsedBody: body });
+        const response = compatible
+          ? await endpoint.compatible!.fetch(request, body, authInfo)
+          : await endpoint.modern.fetch(request, { authInfo, parsedBody: body });
         clearTimeout(deadline);
         streaming = true;
         return withLease(
@@ -402,7 +439,7 @@ export function createBrowserMcpHttpService(options: BrowserMcpHttpOptions): Bro
 }
 
 /**
- * Explicit foreground loopback server (Bun.serve on Bun, node:http on Node).
+ * Explicit foreground loopback server using node:http.
  * No background process or client config changes.
  */
 export async function startBrowserMcpHttpServer(

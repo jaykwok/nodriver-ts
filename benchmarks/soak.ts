@@ -116,9 +116,7 @@ async function writeStatus(extra: Record<string, unknown> = {}) {
     status,
     pid: process.pid,
     platform: process.platform,
-    runtime: process.versions.bun
-      ? `Bun ${process.versions.bun}`
-      : `Node.js ${process.versions.node}`,
+    runtime: `Node.js ${process.versions.node}`,
     startedAt: new Date(started).toISOString(),
     plannedEnd: new Date(until).toISOString(),
     updatedAt: new Date().toISOString(),

@@ -6,12 +6,14 @@
 
 ## Runtime environment
 
+The current unreleased changes were checked locally on 2026-10-21 with Windows x64, Chrome 155.0.8059.85 and Node.js 24.22.0: the full run passed 91 unit tests, 106 integration tests and built-package acceptance. A subsequent 53-test MCP run included the added lease-release case; the final seven-case compatibility matrix also passed. Built compatibility discovery passed on Node 22.19.0 and 24.22.0; Pi's actual client/native extension passed their operation flow on both runtimes. See [local differential audit](differential-audit.md), [performance phases](performance-phases.md), [generic compatibility](agent-compatibility.md) and [Pi 1.3.0](pi.md) for evidence boundaries; new remote CI has not been run here.
+
 - **Runtime**: the package supports Node.js ≥ 22, and the tests use `node:test` and `expect`. Node.js ≥ 24 runs the TypeScript sources directly, so developing and testing from source needs Node.js 24 or newer; Node.js 22 is covered by smoke tests of the build output. npm is the package manager.
 - **Browser**: a locally installed Chrome, Chromium or Edge. Common install locations on Windows, macOS and Linux, and `PATH`, are detected automatically; `CHROME_PATH` or `executablePath` can also be set.
-- **Protocol**: CDP types are pinned to devtools-protocol 0.0.1718299; only MCP 2026-07-28 is supported.
+- **Protocol**: CDP types are pinned to devtools-protocol 0.0.1718299; MCP 2026-07-28 is the default, with opt-in [2025-era compatibility](agent-compatibility.md).
 - **Linux**: run as a normal user and install the shared libraries Chrome needs (such as libnspr4 and libnss3). The library never adds `--no-sandbox` and never turns off site isolation. Headful mode on WSL needs WSLg or another display server.
 - **macOS**: when Chrome runs on macOS, key events carry Chrome's editing commands, so `Meta+A`, `Meta+C/X/V/Z`, `Shift+Meta+Z`, and arrow and delete keys combined with Alt/Meta behave as on a physical keyboard. Cross-platform scripts should select all with `Meta+A` or `Control+A` depending on the platform. GitHub-hosted macOS VMs cannot resolve mDNS (`.local`) host candidates, so local WebRTC stays at ICE `new`; in that environment the platform matrix launches the WebRTC test browser with `--disable-features=WebRtcHideLocalIpsWithMdns`. The project never adds this flag automatically.
-- **WebSocket**: uses the JS protocol parser of the pinned npm `ws` 8.22.0, with per-message compression off. The adapter explicitly resolves the npm package's public entry point, so the normal npm file layout must be kept.
+- **WebSocket**: uses the JS protocol parser of the pinned npm `ws` 8.22.0, with per-message compression off. It is imported through the package's standard Node ESM entry.
 
 ## Verified combinations
 

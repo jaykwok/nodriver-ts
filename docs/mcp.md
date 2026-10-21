@@ -1,10 +1,11 @@
 # MCP server
 
 [简体中文](zh-CN/mcp.md)
+For clients using initialize, see [generic agent compatibility](agent-compatibility.md), including [Pi 1.3.0 evidence](pi.md).
 
 The built-in MCP server has four entry points: a long-running local Streamable HTTP service, stdio launched by the client, a local socket (Unix socket / Windows named pipe), and in-process InMemory. They share `createBrowserMcpServer`, `BrowserSessionManager`, the browser pool and leases, tool schemas, element refs, the operation queue and the same CDP core.
 
-- Only MCP **2026-07-28** is supported (`server/discover` with per-request `_meta` version metadata). A client that only sends the legacy `initialize` is rejected explicitly before any browser operation; there is no downgrade. The official TypeScript client 2.3.1 must set `versionNegotiation: { mode: { pin: '2026-07-28' } }` explicitly. The supported version can be read from `MCP_PROTOCOL_VERSION`, exported by `nodriver-ts/mcp`.
+- The default is MCP **2026-07-28** (`server/discover` with per-request `_meta` version metadata). Legacy initialize is rejected on the default entrance. Opt in with `--mcp-compat` for **2025-11-25 / 2025-06-18** on stdio or the separate HTTP `/mcp/compat` route. The official TypeScript client 2.3.1 must explicitly pin `versionNegotiation: { mode: { pin: '2026-07-28' } }` for modern requests. `MCP_PROTOCOL_VERSION` is exported by `nodriver-ts/mcp`.
 - `Runtime.enable` is never sent automatically. The in-page JavaScript tool `browser_evaluate` is provided; there are no tools for arbitrary CDP or host code execution.
 - Chrome launches lazily on the first `browser_open`, headful by default. Without a desktop pass `--headless`, or use `launch: { headless: true }` when embedding. `--headful` and `--headless` cannot be combined, and neither can be used with `--endpoint`; connecting to an existing Chrome does not change its window mode.
 
@@ -47,6 +48,7 @@ Run `nodriver-mcp --help` for every option.
 | Option                                                     | Effect                                                                                                                       |
 | ---------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
 | `--mcp-transport stdio\|http\|socket`                      | MCP transport; stdio by default                                                                                              |
+| `--mcp-compat`                                             | Enable standard 2025-era clients on stdio or HTTP `/mcp/compat`; `/mcp` remains modern                                       |
 | `--port`, `--socket-path`, `--token-env NAME`              | HTTP port (3100 by default), socket path, environment variable holding the token                                             |
 | `--headful` / `--headless`                                 | Window mode; headful by default                                                                                              |
 | `--browser-transport pipe\|websocket`                      | CDP transport; pipe by default. `--transport` is an alias                                                                    |

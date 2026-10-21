@@ -1,10 +1,11 @@
 # MCP 服务
 
 [English](../mcp.md)
+使用 initialize 的客户端见[通用 Agent 兼容](agent-compatibility.md)，包括 [Pi 1.3.0 实测](pi.md)。
 
 内置 MCP 服务有四种接入：长期运行的本地 Streamable HTTP、由客户端启动的 stdio、本地 socket（Unix socket / Windows 命名管道），以及进程内 InMemory。它们共用 `createBrowserMcpServer`、`BrowserSessionManager`、浏览器池与租约、工具 schema、元素引用、操作队列和同一套 CDP 内核。
 
-- 仅支持 MCP **2026-07-28**（`server/discover` 与逐请求 `_meta` 版本元数据）。只发送旧版 `initialize` 的客户端在任何浏览器操作之前被明确拒绝，不降级。官方 TypeScript client 2.3.1 需显式设置 `versionNegotiation: { mode: { pin: '2026-07-28' } }`。支持的版本可从 `nodriver-ts/mcp` 导出的 `MCP_PROTOCOL_VERSION` 查询。
+- 默认 MCP **2026-07-28**（`server/discover` 与逐请求 `_meta` 版本元数据），默认入口拒绝旧版 initialize。显式启用 `--mcp-compat` 后，stdio 或独立 HTTP `/mcp/compat` 支持 **2025-11-25 / 2025-06-18**。官方 TypeScript client 2.3.1 的现代请求需显式设置 `versionNegotiation: { mode: { pin: '2026-07-28' } }`。`nodriver-ts/mcp` 导出 `MCP_PROTOCOL_VERSION`。
 - 不自动发送 `Runtime.enable`。提供页面内 JavaScript 工具 `browser_evaluate`，不提供任意 CDP 或宿主代码执行工具。
 - Chrome 在首次 `browser_open` 时懒启动，默认有界面；无桌面环境传 `--headless`，嵌入时用 `launch: { headless: true }`。`--headful` 与 `--headless` 不能同时使用，也不能与 `--endpoint` 合用；连接已有 Chrome 不改变其窗口模式。
 

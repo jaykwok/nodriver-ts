@@ -3,3 +3,5 @@ dist/
 dev/
 docs/dev/
 package-lock.json
+
+tmp/

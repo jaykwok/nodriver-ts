@@ -2,6 +2,8 @@
 
 [English](../testing.md)
 
+下列 `await using` 示例需要 Node.js 24+。Node.js 22 运行构建产物时请使用 `try/finally` 与 `close()`，先关闭子资源，再关闭所属 Browser。
+
 从 **`nodriver-ts/testing`** 导入 `ScriptedChrome`，即可用真实的 `Browser`、`Tab`、`Frame` 和 `Session` 实例测试代码，不必启动 Chrome，也不必把手写 mock 强转成带私有字段的类。
 
 该 fixture 监听一个临时的 loopback WebSocket 端口，应答库的浏览器与页面启动握手，创建 target 和 context，并连同参数记录收到的命令。它没有渲染器、DOM 或 JavaScript 引擎：应用层命令必须事先编写回复。缺少预期回复时明确失败，不会静默返回 `{}`。

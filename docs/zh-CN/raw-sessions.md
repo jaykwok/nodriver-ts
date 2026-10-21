@@ -35,7 +35,7 @@ none 的 ready 条件是连接建立及 `Browser.getVersion`、`Target.getBrowse
 `Target.setDiscoverTargets({ discover: true })`、`Target.getTargets` 完成，不等待启动页；
 可以在零页面时就绪。用 `pageTargets` 和根 session 的 `Target.*` 事件追踪页面。
 
-none 跳过默认 headless UA 探针和覆盖；显式 `maskHeadless: true` 会报错。Chrome 启动参数仍然生效。
+none 跳过可选 headless UA 探针和覆盖；显式 `maskHeadless: true` 会报错。Chrome 启动参数仍然生效。
 每次 raw attach 只发送 `Target.attachToTarget({ targetId, flatten: true })`，
 不发送 `Page.enable`、`Page.setLifecycleEventsEnabled`、`Target.setAutoAttach` 或任何 `Runtime.*`。
 域初始化、录屏帧 ack 和停止录屏由调用方负责。

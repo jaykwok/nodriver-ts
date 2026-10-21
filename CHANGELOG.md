@@ -2,6 +2,18 @@
 
 All notable changes are recorded here. The project follows [Semantic Versioning](https://semver.org/); before 1.0, minor versions may contain breaking changes.
 
+## Unreleased
+
+- Add opt-in, agent-independent MCP 2025-11-25 / 2025-06-18 compatibility on stdio and HTTP `/mcp/compat`, sharing the browser core, permissions and queues. Keep the default modern endpoint strict. Verify both revisions and Pi 1.3.0's actual client/native extension, including cancellation and capability gating; see [compatibility](docs/agent-compatibility.md).
+
+- Use Node.js HTTP and standard ESM implementations throughout; remove alternate-runtime adapters and test scripts. Keep Node.js 22 built-package and Node.js 24 source-development support.
+- Make headless UA masking opt-in after repeated page/Worker/request inconsistency measurements. Native UA values are preserved by default; explicit `maskHeadless: true` retains the previous behavior.
+- Generate one random seed per input behavior, preserve its stream when configuration omits seed, and include action-start PRNG state in input reports. Explicit seeds still reset deterministically.
+- Run font diagnostics in independent temporary CDP sessions so they cannot disable caller-owned DOM/CSS subscriptions.
+- Add reproducible local differential/Worker/preset audits, AX phase and queue measurements, Pi 1.3.0 connection probes, and an independent scheduled/manual/targeted-PR Beta/Dev/Canary regression workflow.
+- Gate differential audits on complete samples, stable native fields/descriptors, per-phase Worker/request consistency and resource cleanup; add same-document initialization/disconnect controls and verified headless/headful matrices.
+- Add an interactive manual handoff collector with explicit accept/decline/cancel and post-handoff page checks; physical input and Pi TUI/model validation still require separate human acceptance.
+
 ## 0.3.0 — 2026-10-21
 
 - Add `attach: 'none'` to launch/connect and independent `Browser.attachSession()` attachments without Tab/Frame initialization. Raw mode skips headless UA masking and rejects high-level Tab creation.

@@ -39,7 +39,7 @@ Readiness in `none` means the connection and these commands have completed:
 and `Target.getTargets`. It does not wait for a startup page, and may return with no page targets.
 Use `pageTargets` and root `Target.*` events, not `tabs`, to track pages.
 
-`none` skips the default headless UA masking probe and overrides; explicit `maskHeadless: true`
+`none` skips any optional headless UA masking probe and overrides; explicit `maskHeadless: true`
 is rejected. Chrome launch flags still apply. Each raw attach sends only
 `Target.attachToTarget({ targetId, flatten: true })`. It does not send `Page.enable`,
 `Page.setLifecycleEventsEnabled`, `Target.setAutoAttach`, or any `Runtime.*` command.

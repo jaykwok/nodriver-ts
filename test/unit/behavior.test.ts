@@ -4,6 +4,84 @@ import { expect } from '../fixtures/expect.ts';
 import { InputBehavior, InputCoordinator, InputActionError } from '../../src/input/behavior.ts';
 import { Mouse, Keyboard } from '../../src/input/input.ts';
 import type { Session } from '../../src/protocol/connection.ts';
+
+test('input seed is generated once per behavior and configure preserves its stream unless explicit', async () => {
+  let draws = 0;
+  const create = () =>
+    new InputBehavior(
+      (task) => task(),
+      () => {},
+      undefined,
+      undefined,
+      () => {
+        draws++;
+        return 123;
+      },
+    );
+  const first = create(),
+    other = create();
+  expect(draws).toBe(2); // A deterministic generator seam, no probabilistic uniqueness assertion.
+  expect(first.policy.seed).toBe(123);
+  first.configure({ mode: 'human' });
+  const initial = first.random();
+  const state = first.randomState;
+  first.configure({ mode: 'human', pause: [0, 0] });
+  expect(first.randomState).toBe(state);
+  expect(first.random()).not.toBe(initial);
+  expect(other.random()).toBe(initial);
+  first.configure({ mode: 'instant' });
+  const continued = first.randomState;
+  first.configure({ mode: 'human' });
+  expect(first.randomState).toBe(continued);
+  first.configure({ mode: 'human', seed: 123 });
+  expect(first.random()).toBe(initial);
+  const before = first.randomState;
+  const report = await first.action('probe', {}, async () => {
+    first.random();
+  });
+  expect(report.seed).toBe(123);
+  expect(report.randomState).toBe(before);
+  const replay = create();
+  replay.configure({ seed: report.randomState });
+  replay.random();
+  expect(replay.randomState).toBe(first.randomState);
+  expect(draws).toBe(3);
+  const native = new InputBehavior(
+    (task) => task(),
+    () => {},
+  );
+  expect(Number.isInteger(native.policy.seed)).toBe(true);
+  expect(native.policy.seed).toBeGreaterThanOrEqual(0);
+  expect(native.policy.seed).toBeLessThanOrEqual(0xffff_ffff);
+  const coordinator = new InputCoordinator();
+  const queued = new InputBehavior(
+    (task) => coordinator.run(task),
+    () => {},
+    undefined,
+    undefined,
+    () => 9,
+  );
+  let release!: () => void, started!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const active = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  const firstAction = queued.action('first', {}, async () => {
+    started();
+    await gate;
+    queued.random();
+  });
+  await active;
+  expect(() => queued.configure({ seed: 1 })).toThrow('during an action');
+  const nextAction = queued.action('queued', {}, async () => {});
+  release();
+  await firstAction;
+  const nextReport = await nextAction;
+  expect(nextReport.randomState).toBe(queued.randomState);
+  expect(nextReport.randomState).not.toBe(9); // State is captured on lock acquisition, not submission.
+});
 test('input policy validates ranges and a browser coordinator serializes tasks with reentrant calls', async () => {
   const queue = new InputCoordinator(),
     behavior = new InputBehavior(

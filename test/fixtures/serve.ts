@@ -17,7 +17,7 @@ export interface ServeOptions {
   fetch(request: Request): Response | Promise<Response>;
 }
 
-/** Test fixture server: a fetch-style handler on node:http, identical under Node and Bun. */
+/** Test fixture server: a fetch-style handler on node:http. */
 export async function serve(options: ServeOptions): Promise<Served> {
   const sockets = new Set<Socket>();
   const peers = new WeakMap<Request, string>();

@@ -2,8 +2,58 @@ import assert from 'node:assert/strict';
 import { request } from 'node:http';
 import { test } from 'node:test';
 import { serveFetch } from '../dist/mcp/serve.js';
+import { startBrowserMcpHttpServer } from '../dist/mcp/http.js';
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
+import { fileURLToPath } from 'node:url';
+import { serveCompatibleBrowserMcpStdio } from '../dist/mcp/compat.js';
 
-assert.equal(typeof globalThis.Bun, 'undefined', 'run this file with node');
+test('built compatibility exports negotiate both 2025 revisions on HTTP and stdio', async () => {
+  assert.equal(typeof serveCompatibleBrowserMcpStdio, 'function');
+  const token = 'local-built-compat-token-32-characters';
+  const server = await startBrowserMcpHttpServer({
+    tokens: { [token]: 'built-agent' },
+    compatibility: true,
+    port: 0,
+  });
+  try {
+    for (const revision of ['2025-11-25', '2025-06-18'])
+      for (const kind of ['stdio', 'http']) {
+        const client = new Client(
+          { name: 'built-compat', version: '1' },
+          { supportedProtocolVersions: [revision], versionNegotiation: { mode: 'legacy' } },
+        );
+        const transport =
+          kind === 'http'
+            ? new StreamableHTTPClientTransport(new URL(server.url + '/mcp/compat'), {
+                requestInit: { headers: { authorization: `Bearer ${token}` } },
+              })
+            : new StdioClientTransport({
+                command: process.execPath,
+                args: [
+                  fileURLToPath(new URL('../dist/mcp/cli.js', import.meta.url)),
+                  '--mcp-compat',
+                ],
+                stderr: 'pipe',
+              });
+        try {
+          await client.connect(transport);
+          assert.equal(client.getNegotiatedProtocolVersion(), revision);
+          assert.equal((await client.listTools()).tools.length, 26);
+          assert.equal(
+            (await client.callTool({ name: 'browser_tabs' })).structuredContent.connected,
+            false,
+          );
+        } finally {
+          if (kind === 'http') await transport.terminateSession();
+          await client.close();
+        }
+      }
+    assert.equal(server.manager.stats().browsers, 0);
+  } finally {
+    await server.close();
+  }
+});
 
 test('disconnecting an active streaming response cancels its producer', async () => {
   let canceled;

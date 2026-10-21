@@ -2,6 +2,8 @@
 
 [English](../browser-handoff.md)
 
+下列 `await using` 示例需要 Node.js 24+。Node.js 22 运行构建产物时请使用 `try/finally` 与 `close()`，先关闭子资源，再关闭所属 Browser。
+
 `nodriver-ts` 可以直接作为进程内的库使用。浏览器交接不经过 MCP，也不改变 MCP 协议版本。
 
 ## 启动、交接与重连

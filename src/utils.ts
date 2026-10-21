@@ -148,7 +148,7 @@ export class EventHub<T> {
 const BUSY = new Set(['EBUSY', 'EPERM', 'EACCES', 'ENOTEMPTY', 'EMFILE', 'ENFILE']);
 /**
  * Recursively removes a directory, retrying while Windows reports files as busy (Chrome's
- * helper processes can outlive the browser process briefly). Bun ignores rm's own maxRetries.
+ * helper processes can outlive the browser process briefly).
  */
 export async function removeTree(path: string, timeout = 10_000): Promise<void> {
   const end = Date.now() + timeout;

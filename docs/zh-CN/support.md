@@ -6,12 +6,14 @@
 
 ## 运行环境
 
+当前未发布改动于 2026-10-21 在本机 Windows x64、Chrome 155.0.8059.85、Node.js 24.22.0 下全量通过 91 项单测、106 项集成及构建产物验收。随后 53 项 MCP 回归包含新增租约释放用例，最终七项兼容矩阵也通过。构建后的兼容发现通过 Node 22.19.0、24.22.0；Pi 实际客户端与内置扩展在两个运行时均通过操作流程。证据边界见[本地差分审计](differential-audit.md)、[分阶段性能](performance-phases.md)、[通用兼容](agent-compatibility.md)和 [Pi 1.3.0](pi.md)；新增远程 CI 尚未在此运行。
+
 - **运行时**：包支持 Node.js ≥ 22，测试使用 `node:test` 与 `expect`；Node.js ≥ 24 直接运行 TypeScript 源码，因此从源码开发和测试需要 Node.js 24 及以上，Node.js 22 以构建产物的冒烟测试覆盖。包管理使用 npm。
 - **浏览器**：本机 Chrome、Chromium 或 Edge。Windows、macOS、Linux 的常见安装位置与 `PATH` 自动探测，也可用 `CHROME_PATH` 或 `executablePath` 指定。
-- **协议**：CDP 类型固定为 devtools-protocol 0.0.1718299；MCP 仅支持 2026-07-28。
+- **协议**：CDP 类型固定为 devtools-protocol 0.0.1718299；默认 MCP 2026-07-28，可显式启用 [2025 协议兼容](agent-compatibility.md)。
 - **Linux**：以普通用户运行，安装 Chrome 所需共享库（如 libnspr4、libnss3）。框架不添加 `--no-sandbox`，也不关闭站点隔离。WSL 的有界面模式需要 WSLg 或其他显示服务。
 - **macOS**：Chrome 运行在 macOS 上时，按键事件附带 Chrome 的编辑命令，`Meta+A`、`Meta+C/X/V/Z`、`Shift+Meta+Z` 及 Alt/Meta 组合的方向键与删除键与物理键盘行为一致；跨平台脚本的全选应按平台使用 `Meta+A` 或 `Control+A`。GitHub 托管的 macOS 虚拟机无法解析 mDNS（`.local`）主机候选，本地 WebRTC 会停在 ICE `new`；平台矩阵在该环境中以 `--disable-features=WebRtcHideLocalIpsWithMdns` 启动 WebRTC 测试的浏览器，本项目不会自动添加此参数。
-- **WebSocket**：使用固定版本 npm `ws` 8.22.0 的 JS 协议解析器，关闭 per-message compression。适配层显式解析 npm 包的公开入口，需要保留正常的 npm 文件布局。
+- **WebSocket**：使用固定版本 npm `ws` 8.22.0 的 JS 协议解析器，关闭 per-message compression。通过标准 Node ESM 入口导入。
 
 ## 已验证组合
 

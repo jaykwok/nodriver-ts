@@ -2,7 +2,7 @@
 
 [English](../mcp-http.md)
 
-HTTP 是常驻本地服务的主入口，与 stdio、socket、InMemory 共用工具实现、`BrowserSessionManager`、浏览器池与租约和 CDP 内核；工具与边界见 [MCP](mcp.md)。服务在 Node.js 22+ 下使用 `node:http` 适配（fetch 处理器，流式 SSE 带背压）。仅支持 MCP **2026-07-28**；应用级 `Browser-Lease-Id` 让浏览器状态跨请求保持，不使用 MCP session，也不面向远程不可信多租户部署。
+HTTP 是常驻本地服务的主入口，与 stdio、socket、InMemory 共用工具实现、`BrowserSessionManager`、浏览器池与租约和 CDP 内核；工具与边界见 [MCP](mcp.md)。服务在 Node.js 22+ 下使用 `node:http` 适配（fetch 处理器，流式 SSE 带背压）。默认 `/mcp` 要求 MCP **2026-07-28**，用应用级 `Browser-Lease-Id` 保持状态，不使用 MCP session。可选[通用兼容入口](agent-compatibility.md)在 `/mcp/compat` 提供 2025 协议会话，作用域限制在同一已认证浏览器租约内。服务面向本地预配置客户端。
 
 ## 启动
 
@@ -135,7 +135,7 @@ SSE 断流会取消对应请求，但不释放租约，也不影响其他请求�
 
 `browser_handoff({ tabId })` 请用户在可访问的浏览器界面中完成手工任务并确认。它不收集密码，不提供远程桌面，也不自动登录或恢复之前的点击。使用条件：显式 `--headful` / `launch.headless: false`，或宿主确认界面可访问后设置 `humanInteraction: true`，并且客户端声明 `elicitation.form`；否则返回明确错误。默认有窗口不代表远程调用者能访问它，因此不会自动放开人工接管。
 
-人工交互使用 2026-07-28 的 InputRequiredResult/MRTR，不启用 SDK 的 legacy elicitation shim。requestState 是有期限的随机标识，服务端保存其标签页、租约和阶段；篡改、跨租约或未知的状态被拒绝，已完成的状态不会再执行前置步骤。完成后只返回当前页面状态，调用者应重新 snapshot。秘密应由用户直接在浏览器中输入。
+`/mcp` 的人工交互使用 2026-07-28 的 InputRequiredResult/MRTR；可选兼容入口启用 SDK 的 legacy elicitation shim。requestState 是有期限的随机标识，服务端保存其标签页、租约和阶段；篡改、跨租约或未知的状态被拒绝，已完成的状态不会再执行前置步骤。完成后只返回当前页面状态，调用者应重新 snapshot。秘密应由用户直接在浏览器中输入。
 
 ## 测试覆盖
 

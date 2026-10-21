@@ -6,7 +6,7 @@ import { timeoutValue } from '../utils.ts';
 export interface DiagnoseEnvironmentOptions extends WaitOptions {
   worker?: boolean;
   webgl?: boolean;
-  /** Actual selected platform fonts in the current document. DOM/CSS diagnostic domains are enabled explicitly. */
+  /** Actual selected platform fonts. DOM/CSS are enabled on temporary independent sessions. */
   fontSelectors?: string[];
   /** Explicit opt-in only. Browser fetch: no credentials, redirects rejected. Expected JSON {ip, headers?}. */
   httpProbe?: string;
@@ -119,28 +119,31 @@ export async function diagnoseEnvironment(
       const values: NonNullable<EnvironmentDiagnostics['fonts']['value']> = [];
       for (const f of tab.frames) {
         wait();
-        await f.session.send('DOM.enable');
+        const { targetInfo } = await f.session.sendWith('Target.getTargetInfo', wait());
+        const probe = await tab.browser.attachSession(targetInfo.targetId, wait());
         try {
-          await f.session.send('CSS.enable');
-          try {
-            await f.session.send('DOM.getDocument', { depth: 0 });
-            for (const selector of options.fontSelectors) {
-              const el = await f.query(selector);
-              if (!el) continue;
-              const { nodeIds } = await f.session.send('DOM.pushNodesByBackendIdsToFrontend', {
+          await probe.sendWith('DOM.enable', wait());
+          await probe.sendWith('CSS.enable', wait());
+          await probe.sendWith('DOM.getDocument', wait(), { depth: 0 });
+          for (const selector of options.fontSelectors) {
+            const el = await f.query(selector);
+            if (!el) continue;
+            const { nodeIds } = await probe.sendWith(
+              'DOM.pushNodesByBackendIdsToFrontend',
+              wait(),
+              {
                 backendNodeIds: [el.backendNodeId],
-              });
-              const { fonts } = await f.session.send('CSS.getPlatformFontsForNode', {
-                nodeId: nodeIds[0]!,
-              });
-              values.push({ frameId: f.id, selector, fonts });
-            }
-          } finally {
-            // CSS agents track every stylesheet change while enabled; release them promptly.
-            await f.session.send('CSS.disable').catch(() => {});
+              },
+            );
+            const { fonts } = await probe.sendWith('CSS.getPlatformFontsForNode', wait(), {
+              nodeId: nodeIds[0]!,
+            });
+            values.push({ frameId: f.id, selector, fonts });
           }
         } finally {
-          await f.session.send('DOM.disable').catch(() => {});
+          // Detach only our agents; disabling the caller's DOM/CSS domains could
+          // silently stop its active subscriptions or another concurrent diagnostic.
+          await probe.detach().catch(() => {});
         }
       }
       report.fonts = {

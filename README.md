@@ -9,8 +9,9 @@ nodriver-ts drives Chrome, Chromium and Edge directly over the Chrome DevTools P
 - **Quiet by default.** The library never sends `Runtime.enable`, `Runtime.addBinding`, `Console.enable` or `Debugger.enable`, and never falls back to them. It finds the main world through the frame's document and `DOM.resolveNode`. It does not inject getters, init scripts or a bridge. Chrome's sandbox and site isolation stay on.
 - **Frames.** Same-process iframes, out-of-process iframes (OOPIF) and nested OOPIFs each run in their own CDP session. Queries pierce open and closed shadow roots.
 - **Input.** Clicks wait for the target to be visible, stable and unobscured before dispatching, and actions are never replayed. An optional seeded "human" policy adds pointer paths, key-event typing and wheel scrolling.
-- **Agent-ready MCP.** Tools take short stable element refs (`e12`) from an indented accessibility snapshot. An action returns a summary of what happened: navigation, new tabs, dialogs. HTTP clients get application-level leases, so browser state survives across requests and reconnects. Only MCP **2026-07-28** is accepted.
+- **Agent-ready MCP.** Tools take short stable element refs (`e12`) from an indented accessibility snapshot. An action returns a summary of what happened: navigation, new tabs, dialogs. HTTP clients get application-level leases, so browser state survives across requests and reconnects. MCP **2026-07-28** is the default; [opt-in compatibility](docs/agent-compatibility.md) supports 2025-11-25 / 2025-06-18 agents.
 - **Runtime.** The package runs on Node.js 22 or newer; the MCP HTTP server uses `node:http`.
+- **Native environment.** Headless UA masking is opt-in (`maskHeadless: true`); the default preserves native values across Workers and requests. See the measured [differential audit](docs/differential-audit.md).
 
 > No automation framework is undetectable. nodriver-ts removes the common CDP and WebDriver tells; it does not promise that any site will let you through. Read [the automation audit](docs/automation-audit.md) for what has and has not been measured.
 
@@ -41,20 +42,20 @@ npm run build
 
 ## Library quick start
 
-```ts
+```js
 import { Browser } from 'nodriver-ts';
 
-await using browser = await Browser.launch({ transport: 'pipe' }); // headful by default; WebSocket if omitted
-const tab = await browser.newTab('https://example.com');
-console.log(await (await tab.waitForSelector('h1')).text());
-
-await (await tab.waitForSelector('#name')).fill('Unicode works: 中文 😀');
-await Promise.all([
-  tab.waitForNavigation({ waitUntil: 'networkidle' }),
-  (await tab.query({ text: 'Submit', exact: true }))!.click(),
-]);
-await tab.screenshot({ path: 'page.png', fullPage: true });
+const browser = await Browser.launch({ transport: 'pipe' }); // headful by default
+try {
+  const tab = await browser.newTab('https://example.com');
+  console.log(await (await tab.waitForSelector('h1')).text());
+  await tab.screenshot({ path: 'page.png', fullPage: true });
+} finally {
+  await browser.close();
+}
 ```
+
+This JavaScript example runs on Node.js 22+. On Node.js 24+, `await using browser = await Browser.launch(...)` can replace `try/finally`; `close()` is idempotent. Repository source examples require Node.js 24+ and npm.
 
 - **Main world.** `evaluate` runs there by default (`{ world: 'isolated' }` is also available); functions are serialized into the page.
 - **Frames.** `tab.frames` lists every frame, including OOPIFs, and queries never cross frames silently.
@@ -99,7 +100,7 @@ nodriver-mcp --mcp-transport http --port 3100
 ```
 
 - **HTTP leases.** HTTP listens on loopback only. A client that omits `Browser-Lease-Id` uses the token's `default` lease. Any lease name made of letters, digits and `. _ -` creates a separate lease on first use, which lets several agents keep independent browser state. The lease id is echoed in the `Browser-Lease-Id` response header.
-- **Client requirements.** Clients must speak MCP 2026-07-28 (`server/discover` with per-request metadata). With the official TypeScript client 2.3.1, pin `versionNegotiation: { mode: { pin: '2026-07-28' } }`. Legacy `initialize` is rejected before any browser work.
+- **Client requirements.** The default entrance requires MCP 2026-07-28 (`server/discover` with per-request metadata). With the official TypeScript client 2.3.1, pin `versionNegotiation: { mode: { pin: '2026-07-28' } }`. For 2025-11-25 / 2025-06-18 clients, add `--mcp-compat` to stdio arguments, or enable it on HTTP and connect to `/mcp/compat`. See [generic agent compatibility](docs/agent-compatibility.md) and [Pi 1.3.0 verification](docs/pi.md).
 - **Browser launch.** Chrome starts lazily on the first `browser_open`, using the `agent` launch preset, which suppresses first-run and search-engine-choice UI and background throttling.
 
 Run `nodriver-mcp --help` for every flag. Some useful ones:
@@ -130,7 +131,7 @@ What the defaults do:
 
 - No automatic `Runtime`, `Console` or `Debugger` domains, no bindings and no init scripts in the main world.
 - Chromium's `AutomationControlled` feature is disabled, so `navigator.webdriver` is natively `false`. No getter is patched.
-- In headless mode, "HeadlessChrome" is removed from the UA string and the UA client hints by a per-target override (`maskHeadless`, on by default for headless). Dedicated workers inherit the override; shared and service workers may not. Headful remains the recommended mode.
+- Headless mode preserves native UA values by default. Explicit `maskHeadless: true` removes HeadlessChrome from page UA/UA-CH and Dedicated Workers; Shared/Service Workers and their requests can retain native values. See the [differential audit](docs/differential-audit.md).
 - Human-mode input dispatches keyDown/keyUp pairs that match the US layout, gives pointer presses a realistic `pressure`, starts the pointer at a random point instead of (0, 0), and only brings a tab to the front when it is not already there.
 
 These measures are not cloaking. They do not spoof fonts, WebGL, canvas, audio or hardware, and they do not solve CAPTCHAs. Environment overrides (timezone, locale, UA-CH, viewport, geolocation) are explicit opt-ins; see [docs/environment.md](docs/environment.md).

@@ -8,3 +8,6 @@ coverage/
 test-results/
 .tmp/
 .claude/scheduled_tasks.lock
+
+# Downloaded client compatibility fixtures
+/tmp/

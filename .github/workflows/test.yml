@@ -54,6 +54,22 @@ jobs:
           path: test-results/
           if-no-files-found: ignore
           retention-days: 30
+      - name: Local differential audit (functional checks, no timing thresholds)
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          AUDIT_REPEATS: '1'
+          AUDIT_TRANSPORTS: pipe
+          AUDIT_VARIANTS: default-native,default-masked,explicit-environment
+        run: node benchmarks/audit.ts > test-results/local-audit.json 2> test-results/local-audit.log
+      - name: Upload local audit report
+        if: always() && runner.os == 'Linux'
+        uses: actions/upload-artifact@v7
+        with:
+          name: local-differential-audit
+          path: test-results/local-audit.*
+          if-no-files-found: ignore
+          retention-days: 30
       - name: Built package
         run: npm run test:dist
 
