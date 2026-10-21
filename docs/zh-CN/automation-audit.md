@@ -21,9 +21,9 @@
 | 输入                | human 模式下 US 布局字符发送成对 keyDown/keyUp（大写与上档符号自动按 Shift），修饰键与无文本键用 rawKeyDown；按下及按住移动时 pointer pressure 为 0.5；首个指针位置在视口 15–85% 随机；只在其他标签页可能处于前台时调用 `Page.bringToFront`                                              |
 | 浏览器机制          | 保留 sandbox、站点隔离和 CSP。Pipe 不监听调试 TCP 端口，WebSocket 仍支持本地与远程连接。agent 预设只关闭首次运行、搜索引擎选择、崩溃恢复气泡和后台节流                                                                                                                                   |
 
-Chromium 在未指定上下文时把 DOM 节点包装到所属 frame 的主世界，见 [ResolveNode 源码](https://github.com/chromium/chromium/blob/main/third_party/blink/renderer/core/inspector/resolve_node.cc)。[V8 的 objectId 格式](https://github.com/v8/v8/blob/main/src/inspector/remote-object-id.cc)是内部实现，CDP 不保证其稳定，因此支持范围限定在已实测的 Chrome 154/155。
+Chromium 在未指定上下文时把 DOM 节点包装到所属 frame 的主世界，见 [ResolveNode 源码](https://github.com/chromium/chromium/blob/main/third_party/blink/renderer/core/inspector/resolve_node.cc)。[V8 的 objectId 格式](https://github.com/v8/v8/blob/main/src/inspector/remote-object-id.cc)是内部实现，CDP 不保证其稳定。证据仅限[支持范围](support.md)中记录的具体稳定版、预览版及其受测套件。
 
-独立的 [Chromium 预览版工作流](../../.github/workflows/chromium-preview.yml) 每周及手动运行 Dev/Canary，环境为 Linux/Node.js 24。它记录实际浏览器版本，运行 `test:audit` 与 `test:compat`（Pipe/WebSocket 的主世界发现、导航、OOPIF 和上下文失效），保留失败与日志且不重试，不作为 push/PR 的稳定版发布门禁。这是对 V8 objectId 内部格式依赖的预警，不代表未经实测的浏览器已获支持；失败时仍禁止回退 `Runtime.enable`。新增远程工作流尚未运行。
+独立的 [Chromium 预览版工作流](../../.github/workflows/chromium-preview.yml) 每周、手动及修改相关核心/审计文件的 PR 运行 Beta、Dev、Canary，环境为 Linux/Node.js 24。它记录实际浏览器版本，运行 `test:audit`、`test:compat`（Pipe/WebSocket 的主世界发现、导航、OOPIF 和上下文失效）及差分回归门槛，保留失败与日志且不重试，独立于稳定版发布要求。[首次远程运行的三个通道均已通过](https://github.com/jaykwok/nodriver-ts/actions/runs/39541325419)。这仅证明具体版本的这些检查通过，不代表未测试的浏览器已获支持；失败时仍禁止回退 `Runtime.enable`。
 
 AX 的计算/传输/解析成本已在 100/1000/10000 按钮页面测量，见[分阶段性能结果](performance-phases.md)。[长稳调查](soak.md)还用原始 CDP 复现了文本编辑 + 完整 AX 读取的 Blink 内存保留：导航释放，Accessibility.disable 不释放。这些成本不能证明稳定的页面可见检测信号。既有页面探针在已测条件下没有发现专门的直接 AX 信号，不代表 AX 无法被观察。[本地差分审计](differential-audit.md)分离启动参数、端点、原始连接、库初始化、覆盖与操作，并明确 headful/物理输入/平台限制。
 

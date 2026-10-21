@@ -6,7 +6,9 @@
 
 ## 运行环境
 
-当前未发布改动于 2026-10-21 在本机 Windows x64、Chrome 155.0.8059.85、Node.js 24.22.0 下全量通过 91 项单测、106 项集成及构建产物验收。随后 53 项 MCP 回归包含新增租约释放用例，最终七项兼容矩阵也通过。构建后的兼容发现通过 Node 22.19.0、24.22.0；Pi 实际客户端与内置扩展在两个运行时均通过操作流程。证据边界见[本地差分审计](differential-audit.md)、[分阶段性能](performance-phases.md)、[通用兼容](agent-compatibility.md)和 [Pi 1.3.0](pi.md)；新增远程 CI 尚未在此运行。
+当前未发布改动于 2026-10-21 在本机 Windows x64、Chrome 155.0.8059.85、Node.js 24.22.0 下全量通过 95 项单测、107 项集成及构建产物验收。Node 22.19.0 构建产物验收，以及 Pi 实际客户端与内置扩展在两个运行时的操作流程均通过。独立 headless、headful 差分矩阵分别通过 13,878、7,768 项断言。证据边界见[本地差分审计](differential-audit.md)、[分阶段性能](performance-phases.md)、[通用兼容](agent-compatibility.md)和 [Pi 1.3.0](pi.md)。
+
+[远程稳定 CI](https://github.com/jaykwok/nodriver-ts/actions/runs/39541325347) 已通过 Windows/Linux 源码套件与 Node 22 构建产物验收；Linux 差分报告通过 4,693 项断言，失败为 0。[预览 CI](https://github.com/jaykwok/nodriver-ts/actions/runs/39541325419) 在 Beta 157.0.8103.6、Dev 158.0.8106.0、Canary 158.0.8114.0 上通过严格 objectId/Runtime、导航/OOPIF 与差分检查。链接标明具体受测提交，不代表未来通道版本或预览版全部 API 的兼容承诺；当前提交结果见 [PR #1](https://github.com/jaykwok/nodriver-ts/pull/1)。
 
 - **运行时**：包支持 Node.js ≥ 22，测试使用 `node:test` 与 `expect`；Node.js ≥ 24 直接运行 TypeScript 源码，因此从源码开发和测试需要 Node.js 24 及以上，Node.js 22 以构建产物的冒烟测试覆盖。包管理使用 npm。
 - **浏览器**：本机 Chrome、Chromium 或 Edge。Windows、macOS、Linux 的常见安装位置与 `PATH` 自动探测，也可用 `CHROME_PATH` 或 `executablePath` 指定。
@@ -59,7 +61,7 @@ Node.js 22 不支持 `await using` 语法，调用方可用 `try/finally` 和 `c
 
 ## 限制
 
-- **浏览器版本**：只对上表的 Chrome 154/155 与 Edge 154 建立了证据，不宣称兼容所有版本。主世界发现依赖经严格校验的 V8 objectId 内部格式；不兼容时明确报错，不退回 `Runtime.enable`。
+- **浏览器版本**：稳定版证据见上表，新增预览版本只覆盖明确列出的检查，不宣称兼容所有版本。主世界发现依赖经严格校验的 V8 objectId 内部格式；不兼容时明确报错，不退回 `Runtime.enable`。
 - **检测**：默认不发送 `Runtime.enable`，并以原生启动开关关闭 AutomationControlled。隔离世界仍共享 DOM，headless 的屏幕尺寸等特征仍可观察；没有任何外部挑战必过的承诺，见 [自动化痕迹审计](automation-audit.md)。
 - **查询**：XPath 不穿越 shadow root，frame 查询不隐式跨 frame。识别 closed shadow root 需要全量 DOM，大页面上的高频轮询成本未做长期测量。
 - **状态**：快照不含跨站 iframe 的分区 localStorage、sessionStorage、IndexedDB 和 Service Worker。第三方分区 Cookie 没有独立的端到端用例。
