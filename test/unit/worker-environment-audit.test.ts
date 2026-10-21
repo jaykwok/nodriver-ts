@@ -43,6 +43,7 @@ test('complete matching measurements preserve native absence of Worker HTTP clie
   assert.deepEqual(report.missingRequests, []);
   assert.ok(report.comparisons.every((c) => c.status === 'match'));
   assert.ok(report.headers.every((h) => h.matchesFirstScriptUA));
+  assert.ok(report.headers.every((h) => h.matchesFirstScriptLanguages));
   assert.deepEqual(report.headers.find((h) => h.kind === 'service')!.clientHints, {});
 });
 test('first-script and initial request discrepancies remain visible when later headers agree', () => {
@@ -62,6 +63,26 @@ test('first-script and initial request discrepancies remain visible when later h
   );
   assert.equal(
     report.headers.find((h) => h.kind === 'shared' && h.path === '/sample')!.matchesFirstScriptUA,
+    true,
+  );
+});
+test('initial language fallback differences survive a later matching header and a matching UA', () => {
+  const { samples, requests } = evidence();
+  requests.find((r) => r.kind === 'service' && r.path === '/worker.js')!.headers[
+    'accept-language'
+  ] = 'en-US,en;q=0.9';
+  requests.find((r) => r.kind === 'service' && r.path === '/sample')!.headers['accept-language'] =
+    'EN-us;q=1.0';
+  const report = summarizeWorkerEnvironment(samples, requests);
+  assert.ok(report.headers.every((h) => h.matchesFirstScriptUA));
+  assert.equal(
+    report.headers.find((h) => h.kind === 'service' && h.path === '/worker.js')!
+      .matchesFirstScriptLanguages,
+    false,
+  );
+  assert.equal(
+    report.headers.find((h) => h.kind === 'service' && h.path === '/sample')!
+      .matchesFirstScriptLanguages,
     true,
   );
 });

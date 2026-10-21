@@ -46,7 +46,7 @@ Windows x64、Chrome **156.0.8078.48**、Node **24.22.0**：五组配置、两�
 - `launch-flags`：本次 Windows 实验中，UA 字符串和语言值一致。UA-CH 仍保留 Chromium 品牌，部分高熵字段为空；修改 UA 字符串并未生成与之对应的自定义品牌/元数据。
 - `paused-overrides`：Shared/Service Worker 的 `navigator.userAgent` 保留启动值，但后续请求头已采用覆盖值。即使挂载事件报告 `waitingForDebugger`，主文档仍可能在配置完成前执行夹具的第一条语句。初始脚本请求与后续请求也可能不同。
 - `combined`：启动 UA 消除了本夹具中的 UA/请求头不匹配，但直接导航仍暴露早期语言列表、Intl 和 UA-CH 差异。
-- `prepared-navigation`：本地五次运行中，请求的同步字段、含异步高熵值的跨上下文观测，以及 UA/请求头比较均一致。但每次仍记录 **4 个 Locale 命令冲突**；值一致不代表这些命令成功，也不代表 Locale 能按 Target 独立控制。
+- `prepared-navigation`：本地五次运行中，请求的同步字段、含异步高熵值的跨上下文观测，以及 UA/请求头比较均一致。但 Service Worker 和嵌套 Worker 的初始请求仍保留启动时的 Accept-Language 回退列表（`fr-FR,fr,en-US,en`），后续请求才采用 CDP 列表（`fr-FR,fr`）；q 值保留在原始请求头中。报告将有序语言列表与首段脚本中的 `navigator.languages` 比较，避免只匹配第一种语言就漏掉差异。此外每次仍记录 **4 个 Locale 命令冲突**；值一致不代表这些命令成功，也不代表 Locale 能按 Target 独立控制。
 
 上述结果只描述这份夹具、浏览器版本和宿主环境，不证明任意 Target 的启动过程、没有时序副作用或完整 HTTP Client Hints 等价。Worker 请求中缺少的 Client Hints 按实际缺失记录，不人为补成页面请求的样子。持久化 Profile、Service Worker 激活/更新/重启、既有 Worker、弹窗、外部浏览器所有权与跨客户端隔离不在本次验证范围内。
 

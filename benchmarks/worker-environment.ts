@@ -107,6 +107,11 @@ export function summarizeWorkerEnvironment(samples: WorkerSample[], requests: Wo
     .filter((r) => r.kind && workerContexts.includes(r.kind as (typeof workerContexts)[number]))
     .map((request) => {
       const sample = samples.find((s) => s.kind === request.kind);
+      // Preserve q-values in the raw header, but compare the ordered language ranges.
+      // Matching only the first language would hide startup-only fallback preferences.
+      const ranges = request.headers['accept-language']
+        ?.split(',')
+        .map((value) => value.split(';')[0]!.trim().toLowerCase());
       return {
         kind: request.kind,
         path: request.path,
@@ -119,6 +124,13 @@ export function summarizeWorkerEnvironment(samples: WorkerSample[], requests: Wo
         matchesFirstScriptUA: sample
           ? request.headers['user-agent'] === sample.initial.userAgent
           : null,
+        matchesFirstScriptLanguages:
+          sample && ranges
+            ? isDeepStrictEqual(
+                ranges,
+                sample.initial.languages.map((value) => value.toLowerCase()),
+              )
+            : null,
       };
     });
   return { missing, missingRequests, comparisons, headers };
@@ -404,6 +416,9 @@ if (import.meta.main) {
               fieldMismatches: result.requestedFields.filter((f) => f.status === 'mismatch').length,
               headerMismatches: result.summary.headers.filter(
                 (h) => h.matchesFirstScriptUA === false,
+              ).length,
+              languageHeaderMismatches: result.summary.headers.filter(
+                (h) => h.matchesFirstScriptLanguages === false,
               ).length,
               commandErrors: result.attachments
                 .flatMap((a) => a.commands)
