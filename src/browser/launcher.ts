@@ -63,8 +63,8 @@ export interface LaunchOptions extends WaitOptions, ConnectionOptions {
   windowSize?: { width: number; height: number };
   /**
    * In headless mode, replaces "HeadlessChrome" in the UA string and UA-CH brands of every page
-   * session. Defaults to true when headless. Dedicated Workers inherit it; shared/service
-   * Workers are separate targets and may keep the native value.
+   * session. Opt-in, false by default: shared/service Workers are separate targets and
+   * keep their native UA, creating observable cross-context differences. Dedicated Workers inherit it.
    */
   maskHeadless?: boolean;
   /** "agent" adds flags that remove first-run UI and background throttling; see AGENT_ARGS. */

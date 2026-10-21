@@ -8,6 +8,7 @@ import { Client, InMemoryTransport, type CallToolResult } from '@modelcontextpro
 import { Browser } from '../src/index.ts';
 import { BrowserSessionManager, createBrowserMcpServer } from '../src/mcp/server.ts';
 import { BrowserMcpSession } from '../src/mcp/session.ts';
+import { OperationQueue } from '../src/mcp/queue.ts';
 import { serve } from '../test/fixtures/serve.ts';
 
 // Run explicitly; benchmarks are not correctness tests or performance promises.
@@ -38,6 +39,7 @@ const fixture = await serve({
     const n = Number(new URL(request.url).searchParams.get('nodes') ?? 1);
     return new Response(
       '<!doctype html><meta charset="utf-8"><label>Name<input id="name" oninput="document.querySelector(\'#echo\').textContent=this.value"></label><p id="echo"></p><button id="click" onclick="this.dataset.clicks=String(Number(this.dataset.clicks||0)+1)">Click</button>' +
+        '<section id="scope" aria-label="Scope"><button>Scoped action</button><div><button>Nested scoped action</button></div></section>' +
         Array.from({ length: n }, (_, i) => `<button>Item ${i} 中文</button>`).join(''),
       { headers: { 'content-type': 'text/html; charset=utf-8' } },
     );
@@ -57,24 +59,59 @@ function instrument(browser: Browser) {
   const wire = browser.connection.transport,
     send = wire.send.bind(wire),
     receive = wire.onmessage;
-  const ax = new Set<number>();
-  const messages: { bytes: number; nodes: number }[] = [];
+  const ax = new Map<number, { method: string; sentAt: number }>();
+  const messages: Array<{
+    method: string;
+    bytes: number;
+    nodes: number;
+    sendToReceiveMs: number;
+    observerMs: number;
+    dispatchMs: number;
+    dispatchedAt: number;
+  }> = [];
   wire.send = (message) => {
     const parsed = JSON.parse(message) as { id: number; method: string };
     if (forbidden.has(parsed.method)) forbiddenCount++;
-    if (parsed.method === 'Accessibility.getFullAXTree') ax.add(parsed.id);
+    if (parsed.method.startsWith('Accessibility.'))
+      ax.set(parsed.id, { method: parsed.method, sentAt: performance.now() });
     return send(message);
   };
   wire.onmessage = (message) => {
+    const receivedAt = performance.now();
     const parsed = JSON.parse(message) as { id?: number; result?: { nodes?: unknown[] } };
-    if (parsed.id !== undefined && ax.delete(parsed.id))
-      messages.push({
+    const pending = parsed.id === undefined ? undefined : ax.get(parsed.id);
+    if (pending) {
+      ax.delete(parsed.id!);
+      const entry = {
+        method: pending.method,
         bytes: Buffer.byteLength(message),
         nodes: parsed.result?.nodes?.length ?? 0,
-      });
-    receive?.(message);
+        sendToReceiveMs: receivedAt - pending.sentAt,
+        observerMs: 0,
+        dispatchMs: 0,
+        dispatchedAt: 0,
+      };
+      const dispatchStart = performance.now();
+      entry.observerMs = dispatchStart - receivedAt;
+      receive?.(message);
+      entry.dispatchedAt = performance.now();
+      entry.dispatchMs = entry.dispatchedAt - dispatchStart;
+      messages.push(entry);
+    } else receive?.(message);
   };
   return messages;
+}
+// Benchmark-only observation: no production scheduling policy changes. Session queue wait
+// includes the time previous operations spent waiting for their browser queue.
+function observeQueue(queue: OperationQueue, waits: number[]) {
+  const run = queue.run.bind(queue);
+  queue.run = (signal, task) => {
+    const submittedAt = performance.now();
+    return run(signal, () => {
+      waits.push(performance.now() - submittedAt);
+      return task();
+    });
+  };
 }
 async function memory(browsers: Browser[]) {
   const processes = new Map<number, number>();
@@ -125,9 +162,7 @@ async function memory(browsers: Browser[]) {
 }
 const report: Record<string, unknown> = {
   date: new Date().toISOString(),
-  runtime: process.versions.bun
-    ? `Bun ${process.versions.bun}`
-    : `Node.js ${process.versions.node}`,
+  runtime: `Node.js ${process.versions.node}`,
   os: {
     platform: platform(),
     release: release(),
@@ -138,7 +173,7 @@ const report: Record<string, unknown> = {
   },
   config: { repeats, rounds, sizes, leaseCounts },
   methodology:
-    'Local fixture; fresh profiles, default sandbox, explicit headless. Cold launch excludes close. RTT is Browser.getVersion. AX measures complete wire response separately from bounded snapshot output. Pool tasks use official InMemory MCP: fill, click, snapshot; pre-created refs, one warmup, browser-wide serialization retained. Memory is endpoint RSS, summed over CDP-reported Chrome processes (excludes crash handler; shared pages may be double-counted), not peak/PSS. CPU is controller plus CDP-reported Chrome process CPU during measured workload; exited process CPU may be absent. No Python comparison or multi-day soak.',
+    'Local fixture; fresh profiles, default sandbox, explicit headless. Cold launch excludes close. RTT is Browser.getVersion. AX measures complete wire response separately from bounded snapshot output. Pool tasks use official InMemory MCP: snapshot-only reads and mixed fill, click, snapshot; pre-created refs, one warmup, browser-wide serialization retained. Memory is endpoint RSS, summed over CDP-reported Chrome processes (excludes crash handler; shared pages may be double-counted), not peak/PSS. CPU is controller plus CDP-reported Chrome process CPU during measured workload; exited process CPU may be absent. No Python comparison or multi-day soak.',
 };
 try {
   const transportResults: unknown[] = [];
@@ -169,13 +204,15 @@ try {
         await session.snapshot(tab.id, { limit: 200 }, {}); // warmup
         const durations: number[] = [],
           inbound: unknown[] = [],
-          outputs: number[] = [];
+          outputs: number[] = [],
+          afterDispatch: number[] = [];
         const before = await memory([browser]);
         for (let i = 0; i < repeats; i++) {
           const start = performance.now();
           const value = await session.snapshot(tab.id, { limit: 200 }, {});
           durations.push(performance.now() - start);
           inbound.push(wire.at(-1));
+          afterDispatch.push(performance.now() - wire.at(-1)!.dispatchedAt);
           outputs.push(Buffer.byteLength(JSON.stringify(value)));
           assert.ok(value.nodes.length <= 200);
           if (nodes >= 1000) assert.equal(value.truncated, true);
@@ -185,9 +222,49 @@ try {
           limit: 200,
           elapsedMs: distribution(durations),
           axWire: inbound,
+          afterDispatchMs: distribution(afterDispatch),
           outputBytes: distribution(outputs),
           memoryBefore: before,
           memoryAfter: await memory([browser]),
+        });
+        // Experiments only: depth/partial results are never substituted for a complete snapshot.
+        const scope = (await tab.query('#scope'))!;
+        const scoped = { ref: session.addRef(scope) };
+        const scopedSnapshot = await session.snapshot(tab.id, { root: scoped.ref, limit: 200 }, {});
+        assert.ok(scopedSnapshot.nodes.some((n) => n.name === 'Nested scoped action'));
+        const rootWire = wire.at(-1);
+        const alternatives: unknown[] = [];
+        for (const mode of ['full', 'depth1', 'depth2', 'partial', 'queryRoot'] as const) {
+          const elapsed: number[] = [],
+            samples: unknown[] = [];
+          for (let i = 0; i < repeats; i++) {
+            const start = performance.now();
+            const response =
+              mode === 'partial'
+                ? await tab.cdp.send('Accessibility.getPartialAXTree', {
+                    backendNodeId: scope.backendNodeId,
+                    fetchRelatives: true,
+                  })
+                : mode === 'queryRoot'
+                  ? await tab.cdp.send('Accessibility.queryAXTree', {
+                      backendNodeId: scope.backendNodeId,
+                    })
+                  : await tab.cdp.send('Accessibility.getFullAXTree', {
+                      frameId: tab.mainFrame.id,
+                      ...(mode === 'full' ? {} : { depth: mode === 'depth1' ? 1 : 2 }),
+                    });
+            elapsed.push(performance.now() - start);
+            const nested = response.nodes.some((n) => n.name?.value === 'Nested scoped action');
+            if (mode === 'full' || mode === 'queryRoot') assert.equal(nested, true);
+            samples.push({ ...wire.at(-1), containsNestedScopedAction: nested });
+          }
+          alternatives.push({ mode, elapsedMs: distribution(elapsed), samples });
+        }
+        snapshots.push({
+          buttons: nodes,
+          experiment: 'raw AX alternatives',
+          rootSnapshot: { totalNodes: scopedSnapshot.totalNodes, axWire: rootWire },
+          alternatives,
         });
       }
       transportResults.push({
@@ -202,124 +279,148 @@ try {
   }
   report.transports = transportResults;
   const pools: unknown[] = [];
-  for (const count of leaseCounts) {
-    console.error(`Benchmark pool: ${count} contexts, ${rounds} measured rounds`);
-    const manager = new BrowserSessionManager({
-      launch: { headless: true, transport: 'pipe' },
-      maxBrowsers: Math.ceil(count / 4),
-      contextsPerBrowser: 4,
-      maxLeases: count,
-      queueLimit: 128,
-      operationTimeout: 60000,
-      browserIdleMs: 1,
-    });
-    const clients: Client[] = [];
-    const leases: string[] = [];
-    const browsers = new Set<Browser>();
-    const records: { client: Client; tabId: unknown; input: string; button: string }[] = [];
-    try {
-      const setup = performance.now();
-      for (let i = 0; i < count; i++) {
-        const lease = manager.create('benchmark');
-        leases.push(lease.id);
-        const adapter = createBrowserMcpServer(
-          {},
-          { manager, principal: 'benchmark', leaseId: lease.id },
-        );
-        const client = new Client(
-          { name: 'benchmark', version: '1' },
-          { versionNegotiation: { mode: { pin: '2026-07-28' } } },
-        );
-        clients.push(client);
-        const [a, b] = InMemoryTransport.createLinkedPair();
-        await adapter.connect(b);
-        await client.connect(a);
-        const { tabId } = result(
-          await client.callTool({ name: 'browser_open', arguments: { url } }),
-        );
-        const browser = await manager
-          .session('benchmark', lease.id)
-          .getBrowser(new AbortController().signal);
-        if (!browsers.has(browser)) {
-          browsers.add(browser);
-          instrument(browser);
-        }
-        const find = async (selector: string) =>
-          (
-            result(await client.callTool({ name: 'browser_find', arguments: { tabId, selector } }))
-              .elements as { ref: string }[]
-          )[0]!.ref;
-        records.push({ client, tabId, input: await find('#name'), button: await find('#click') });
-      }
-      const setupMs = performance.now() - setup;
-      const latencies: number[] = [],
-        errors: string[] = [];
-      const task = async (round: number, measured: boolean) =>
-        Promise.all(
-          records.map(async (r, i) => {
-            const text = `bench-${round}-${i}`,
-              start = performance.now();
-            try {
-              result(
-                await r.client.callTool({
-                  name: 'browser_fill',
-                  arguments: { tabId: r.tabId, ref: r.input, text },
-                }),
-              );
-              result(
-                await r.client.callTool({
-                  name: 'browser_click',
-                  arguments: { tabId: r.tabId, ref: r.button },
-                }),
-              );
-              const snapshot = result(
-                await r.client.callTool({
-                  name: 'browser_snapshot',
-                  arguments: { tabId: r.tabId },
-                }),
-              );
-              assert.ok(JSON.stringify(snapshot).includes(text));
-            } catch (error) {
-              errors.push(String(error));
-            } finally {
-              if (measured) latencies.push(performance.now() - start);
-            }
-          }),
-        );
-      await task(-1, false);
-      const before = await memory([...browsers]),
-        cpu = process.cpuUsage(),
-        start = performance.now();
-      for (let round = 0; round < rounds; round++) await task(round, true);
-      const elapsedMs = performance.now() - start,
-        controllerCpu = process.cpuUsage(cpu),
-        after = await memory([...browsers]);
-      const stats = manager.stats();
-      for (const client of clients) await client.close();
-      for (const id of leases) await manager.release('benchmark', id);
-      await sleep(5);
-      await manager.sweep();
-      pools.push({
-        contexts: count,
-        setupMs,
-        stats,
-        taskMs: distribution(latencies),
-        elapsedMs,
-        completed: count * rounds - errors.length,
-        errors,
-        tasksPerSecond: (count * rounds - errors.length) / (elapsedMs / 1000),
-        controllerCpuSeconds: (controllerCpu.user + controllerCpu.system) / 1e6,
-        chromeCpuSeconds: after.chromeCpuSeconds - before.chromeCpuSeconds,
-        memoryBefore: before,
-        memoryAfter: after,
-        afterRelease: manager.stats(),
-        controllerAfterRelease: process.memoryUsage(),
+  for (const workload of ['reads', 'mixed'] as const) {
+    for (const count of leaseCounts) {
+      console.error(`Benchmark pool: ${workload}, ${count} contexts, ${rounds} measured rounds`);
+      const manager = new BrowserSessionManager({
+        launch: { headless: true, transport: 'pipe' },
+        maxBrowsers: Math.ceil(count / 4),
+        contextsPerBrowser: 4,
+        maxLeases: count,
+        queueLimit: 128,
+        operationTimeout: 60000,
+        browserIdleMs: 1,
       });
-      assert.deepEqual(errors, []);
-      assert.equal(manager.stats().browsers, 0);
-    } finally {
-      await Promise.allSettled(clients.map((c) => c.close()));
-      await manager.close();
+      const clients: Client[] = [];
+      const leases: string[] = [];
+      const browsers = new Set<Browser>();
+      const records: { client: Client; tabId: unknown; input: string; button: string }[] = [];
+      try {
+        const setup = performance.now();
+        for (let i = 0; i < count; i++) {
+          const lease = manager.create('benchmark');
+          leases.push(lease.id);
+          const adapter = createBrowserMcpServer(
+            {},
+            { manager, principal: 'benchmark', leaseId: lease.id },
+          );
+          const client = new Client(
+            { name: 'benchmark', version: '1' },
+            { versionNegotiation: { mode: { pin: '2026-07-28' } } },
+          );
+          clients.push(client);
+          const [a, b] = InMemoryTransport.createLinkedPair();
+          await adapter.connect(b);
+          await client.connect(a);
+          const { tabId } = result(
+            await client.callTool({ name: 'browser_open', arguments: { url } }),
+          );
+          const browser = await manager
+            .session('benchmark', lease.id)
+            .getBrowser(new AbortController().signal);
+          if (!browsers.has(browser)) {
+            browsers.add(browser);
+            instrument(browser);
+          }
+          const find = async (selector: string) =>
+            (
+              result(
+                await client.callTool({ name: 'browser_find', arguments: { tabId, selector } }),
+              ).elements as { ref: string }[]
+            )[0]!.ref;
+          records.push({ client, tabId, input: await find('#name'), button: await find('#click') });
+        }
+        const setupMs = performance.now() - setup;
+        const sessionWait: number[] = [],
+          browserWait: number[] = [];
+        const observed = new Set<OperationQueue>();
+        for (const id of leases) {
+          const session = manager.session('benchmark', id);
+          const queue = Reflect.get(session, 'queue') as OperationQueue;
+          const allocation = Reflect.get(session, 'allocation') as { queue: OperationQueue };
+          observeQueue(queue, sessionWait);
+          if (!observed.has(allocation.queue)) {
+            observed.add(allocation.queue);
+            observeQueue(allocation.queue, browserWait);
+          }
+        }
+        const latencies: number[] = [],
+          errors: string[] = [];
+        const task = async (round: number, measured: boolean) =>
+          Promise.all(
+            records.map(async (r, i) => {
+              const text = `bench-${round}-${i}`,
+                start = performance.now();
+              try {
+                if (workload === 'mixed') {
+                  result(
+                    await r.client.callTool({
+                      name: 'browser_fill',
+                      arguments: { tabId: r.tabId, ref: r.input, text },
+                    }),
+                  );
+                  result(
+                    await r.client.callTool({
+                      name: 'browser_click',
+                      arguments: { tabId: r.tabId, ref: r.button },
+                    }),
+                  );
+                }
+                const snapshot = result(
+                  await r.client.callTool({
+                    name: 'browser_snapshot',
+                    arguments: { tabId: r.tabId },
+                  }),
+                );
+                if (workload === 'mixed') assert.ok(JSON.stringify(snapshot).includes(text));
+                else assert.ok(JSON.stringify(snapshot).includes('Scoped action'));
+              } catch (error) {
+                errors.push(String(error));
+              } finally {
+                if (measured) latencies.push(performance.now() - start);
+              }
+            }),
+          );
+        await task(-1, false);
+        assert.deepEqual(errors, [], 'Warmup workload failed');
+        sessionWait.length = browserWait.length = 0;
+        errors.length = 0;
+        const before = await memory([...browsers]),
+          cpu = process.cpuUsage(),
+          start = performance.now();
+        for (let round = 0; round < rounds; round++) await task(round, true);
+        const elapsedMs = performance.now() - start,
+          controllerCpu = process.cpuUsage(cpu),
+          after = await memory([...browsers]);
+        const stats = manager.stats();
+        for (const client of clients) await client.close();
+        for (const id of leases) await manager.release('benchmark', id);
+        await sleep(5);
+        await manager.sweep();
+        pools.push({
+          workload,
+          contexts: count,
+          queueWaitMs: { session: distribution(sessionWait), browser: distribution(browserWait) },
+          setupMs,
+          stats,
+          taskMs: distribution(latencies),
+          elapsedMs,
+          completed: count * rounds - errors.length,
+          errors,
+          tasksPerSecond: (count * rounds - errors.length) / (elapsedMs / 1000),
+          controllerCpuSeconds: (controllerCpu.user + controllerCpu.system) / 1e6,
+          chromeCpuSeconds: after.chromeCpuSeconds - before.chromeCpuSeconds,
+          memoryBefore: before,
+          memoryAfter: after,
+          afterRelease: manager.stats(),
+          controllerAfterRelease: process.memoryUsage(),
+        });
+        assert.deepEqual(errors, []);
+        assert.equal(manager.stats().browsers, 0);
+      } finally {
+        await Promise.allSettled(clients.map((c) => c.close()));
+        await manager.close();
+      }
     }
   }
   report.pools = pools;

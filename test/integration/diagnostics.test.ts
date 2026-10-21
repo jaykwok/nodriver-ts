@@ -28,6 +28,25 @@ for (const transport of ['pipe', 'websocket'] as const) {
       expect(native.frames).toHaveLength(4);
       expect(native.fonts.status).toBe('observed');
       expect(native.fonts.value).toHaveLength(12);
+      // A diagnostic owns independent DOM/CSS agents, never the caller's subscriptions.
+      await tab.cdp.send('DOM.enable');
+      await tab.cdp.send('CSS.enable');
+      const marker = audit.messages.length;
+      const again = await tab.diagnoseEnvironment({ fontSelectors: ['#latin'] });
+      expect(again.fonts.status).toBe('observed');
+      expect(
+        audit.messages
+          .slice(marker)
+          .filter(
+            (m) =>
+              m.sessionId === tab.session.id && ['DOM.disable', 'CSS.disable'].includes(m.method),
+          ),
+      ).toEqual([]);
+      const stylesheet = tab.cdp.waitFor('CSS.styleSheetAdded', () => true, { timeout: 3000 });
+      await tab.evaluate(
+        "document.head.appendChild(document.createElement('style')).textContent='body { --diagnostic-probe: 1; }'",
+      );
+      expect((await stylesheet).header.styleSheetId).toBeTruthy();
       expect(native.http.status).toBe('observed');
       expect(native.webrtc.status).toBe('observed');
       expect(native.webrtc.value!.complete).toBe(true);

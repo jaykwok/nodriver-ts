@@ -2,6 +2,8 @@
 
 [简体中文](zh-CN/testing.md)
 
+The package and examples require Node.js 24.22.0+. Use `await using` or `try/finally` with `close()`, closing child resources before their Browser.
+
 Import `ScriptedChrome` from **`nodriver-ts/testing`** to test code against real `Browser`, `Tab`,
 `Frame`, and `Session` instances without launching Chrome or casting a handwritten mock to a
 class with private fields.

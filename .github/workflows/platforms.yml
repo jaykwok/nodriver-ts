@@ -33,7 +33,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
-          node-version: '24'
+          node-version: '^24.22.0'
       # See test.yml: systemd-coredump delays renderer-crash reports.
       - name: Disable piped core dumps
         if: runner.os == 'Linux'

@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { randomInt } from 'node:crypto';
 import { delay, timeoutValue, type WaitOptions } from '../utils.ts';
 import { TimeoutError } from '../errors.ts';
 
@@ -25,6 +26,8 @@ export interface InputReport {
   action: string;
   status: 'completed' | 'interrupted';
   seed: number;
+  /** PRNG state when this action acquired the input lock, before its first draw. */
+  randomState: number;
   completedSegments: number;
   events: number;
   trace: Array<{ type: string; x?: number; y?: number; delay?: number }>;
@@ -61,7 +64,6 @@ export class InputCoordinator {
 }
 const defaults = {
   mode: 'instant' as 'instant' | 'human',
-  seed: 1,
   moveDuration: [90, 220],
   moveSteps: [8, 18],
   pause: [0, 15],
@@ -71,10 +73,10 @@ const defaults = {
   targetInset: 0.2,
   typing: 'auto' as 'auto' | 'keys' | 'insertText',
   scroll: 'auto' as 'auto' | 'wheel' | 'dom',
-} satisfies Required<InputPolicy>;
+} satisfies Omit<Required<InputPolicy>, 'seed'>;
 export class InputBehavior {
-  policy: Required<InputPolicy> = structuredClone(defaults);
-  private state = 1;
+  policy: Required<InputPolicy>;
+  private state: number;
   lastReport?: InputReport;
   private active = 0;
   readonly run: <T>(task: () => Promise<T>) => Promise<T>;
@@ -86,7 +88,14 @@ export class InputBehavior {
     guard: () => void,
     snapshotGuard: () => () => void = () => () => {},
     prepare: () => Promise<void> = async () => {},
+    seedSource: () => number = () => randomInt(0, 0x1_0000_0000),
   ) {
+    // One independent stream per behavior (normally per Tab), including instant mode.
+    const seed = seedSource();
+    if (!Number.isSafeInteger(seed) || seed < 0 || seed > 0xffff_ffff)
+      throw new RangeError('Invalid generated input seed');
+    this.policy = { ...structuredClone(defaults), seed };
+    this.state = seed;
     this.run = run;
     this.guard = guard;
     this.snapshotGuard = snapshotGuard;
@@ -94,7 +103,11 @@ export class InputBehavior {
   }
   configure(policy: InputPolicy): void {
     if (this.active) throw new Error('Cannot change input policy during an action');
-    const next = { ...structuredClone(defaults), ...structuredClone(policy) };
+    const next = {
+      ...structuredClone(defaults),
+      ...structuredClone(policy),
+      seed: policy.seed === undefined ? this.policy.seed : policy.seed,
+    };
     if (!['instant', 'human'].includes(next.mode) || !Number.isSafeInteger(next.seed))
       throw new TypeError('Invalid input mode or seed');
     if (!['auto', 'keys', 'insertText'].includes(next.typing))
@@ -126,7 +139,11 @@ export class InputBehavior {
     if (!Number.isFinite(next.targetInset) || next.targetInset < 0 || next.targetInset > 0.45)
       throw new RangeError('Invalid targetInset');
     this.policy = next;
-    this.state = next.seed >>> 0;
+    // Reconfiguration without an explicit seed preserves the stream, even when changing mode.
+    if (policy.seed !== undefined) this.state = next.seed >>> 0;
+  }
+  get randomState(): number {
+    return this.state;
   }
   random(): number {
     this.state = (Math.imul(1664525, this.state) + 1013904223) >>> 0;
@@ -147,6 +164,8 @@ export class InputBehavior {
     const context = new InputAction(this, action, options);
     return this.run(async () => {
       this.active++;
+      context.report.seed = this.policy.seed;
+      context.report.randomState = this.state;
       try {
         await context.check();
         await this.prepare();
@@ -183,6 +202,7 @@ export class InputAction {
       action,
       status: 'completed',
       seed: behavior.policy.seed,
+      randomState: behavior.randomState,
       completedSegments: 0,
       events: 0,
       trace: [],

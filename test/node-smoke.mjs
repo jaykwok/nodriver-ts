@@ -5,7 +5,6 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import { Browser } from '../dist/index.js';
 import { startBrowserMcpHttpServer } from '../dist/mcp/http.js';
 
-assert.equal(typeof globalThis.Bun, 'undefined', 'run this file with node');
 const headless = process.env.NODRIVER_HEADFUL !== '1';
 const page = `<!doctype html><title>smoke</title><button id="b" onclick="this.textContent='done'">Go</button><input id="i" aria-label="Name">`;
 const site = createServer((_, res) =>

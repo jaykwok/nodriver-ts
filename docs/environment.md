@@ -2,7 +2,23 @@
 
 [简体中文](zh-CN/environment.md)
 
-Three APIs build on each other: `inspectEnvironment()` only reads, `diagnoseEnvironment()` summarizes observations across a whole tab, and `alignEnvironment()` applies an explicit configuration and verifies it. By default nothing rewrites navigator, the UA or device properties, and nothing goes out to the network. The MCP tool `browser_environment` uses the same APIs.
+Three APIs build on each other: `inspectEnvironment()` samples without applying overrides, `diagnoseEnvironment()` summarizes observations across a whole tab, and `alignEnvironment()` applies an explicit configuration and verifies it. By default nothing rewrites navigator, the UA or device properties, and nothing goes out to the network. The MCP tool `browser_environment` uses the same APIs.
+
+## Choosing a diagnostic workflow
+
+Use these APIs to investigate a configuration, reproduce a locale/viewport issue, or compare controlled browser runs. Start on a test page you control, keep the Chrome version, profile setup and host environment comparable, and save the requested configuration alongside the report.
+
+| Need                                                                      | API                     |
+| ------------------------------------------------------------------------- | ----------------------- |
+| A sample of one frame's current environment                               | `inspectEnvironment()`  |
+| Frame comparisons, rendered fonts or explicitly configured network probes | `diagnoseEnvironment()` |
+| Apply a specific test configuration and inspect the result                | `alignEnvironment()`    |
+
+Sampling without overrides is not zero-cost or unobservable: Worker/WebGL probes create temporary resources, font probes attach temporary DOM/CSS sessions, and HTTP/STUN probes generate traffic when requested. Enable only the measurements needed for the investigation. To measure an operation's effects, run the same probes in the control and treatment groups; include the probes themselves in the measured workload.
+
+The `worker` option samples a **new Dedicated Worker**. It does not inspect existing workers, Shared Workers, Service Workers, their initial script requests, or first-script execution. Use the [differential audit fixture](differential-audit.md) for its documented Worker and request-header coverage. A matching report, a successful CDP command, or a site's label alone cannot establish consistency in unmeasured contexts.
+
+`alignEnvironment()` changes browser state and can partially succeed. It is useful for an explicit test configuration, not automatic repair of a device fingerprint: it does not change OS fonts, GPU hardware or native window decorations. Compare geometry, media settings and renderer values against a matching native baseline instead of imposing a fixed browser-toolbar height or assuming software rendering is invalid.
 
 ## Sampling: inspectEnvironment
 
@@ -38,7 +54,7 @@ const diagnosis = await tab.diagnoseEnvironment({
 
 The diagnosis summarizes the documents and workers of every frame in the tab, fonts, WebGL and explicit network probes. The report distinguishes observed / unavailable / not-requested, and match / mismatch / unavailable / not-tested. Items that were not collected do not count as passing.
 
-- **Fonts**: the DOM/CSS domains are enabled explicitly to read the fonts actually used for rendering, as returned by `CSS.getPlatformFontsForNode`. The result is the font the browser picked; it does not guarantee a glyph for every character, and no fonts are installed.
+- **Fonts**: the DOM/CSS domains on independent temporary sessions are enabled explicitly to read the fonts actually used for rendering, as returned by `CSS.getPlatformFontsForNode`. The result is the font the browser picked; it does not guarantee a glyph for every character, and no fonts are installed.
 - **HTTP probe**: sent by the page, without credentials and with redirects forbidden, and subject to CSP/CORS and the network. The returned headers are only what the caller's service reflects back.
 - **STUN**: only explicitly listed STUN endpoints are used, at most four. No audio/video permission or TURN credentials are requested, and the data channel and peer are closed after a time limit.
 - **Address differences**: the HTTP and STUN egress addresses can differ; that alone does not indicate spoofing, a leak or any particular proxy mechanism. When a network call fails, the reason it was not measured is kept.
@@ -69,7 +85,7 @@ The report keeps, separately: the current observation, the document baseline bef
 - **Verification**: the document of each frame and a freshly created dedicated worker are verified separately. Fields that workers do not support (such as viewport) are recorded as unavailable, and real disagreements as mismatch. The locale is set only on the page's root session, so Intl is not guaranteed to agree in every renderer/worker. UA-CH is compared by the configured fields; when high-entropy values are unavailable, success is not faked. Geolocation is never granted automatically; the location is read for verification only if permission is already granted, otherwise it is unavailable.
 - **Partial failure**: `applicationError`, the session records and the actual report are kept. There is no claim of atomic rollback.
 
-`setEnvironment()` is the explicit override API without verification. Overrides of the UA, Client Hints, timezone and so on are not guaranteed to reach every Worker, SharedWorker or Service Worker. Headful mode keeps the real values by default; headless by default only changes HeadlessChrome to Chrome in the UA/UA-CH (`maskHeadless: false` turns this off). See the [automation audit](automation-audit.md).
+`setEnvironment()` is the explicit override API without verification. Overrides of the UA, Client Hints, timezone and so on are not guaranteed to reach every Worker, SharedWorker or Service Worker. Headful mode keeps the real values by default; headless also preserves native values by default. Opt-in `maskHeadless: true` changes page UA/UA-CH and Dedicated Workers but can disagree with Shared/Service Workers and their requests; see the [differential audit](differential-audit.md). See the [automation audit](automation-audit.md).
 
 An MCP host can configure `httpProbe`/`stunServers` in `BrowserSessionManagerOptions.environmentDiagnostics` and inject a `geoIPResolver`. Tools can only choose whether to use this configuration; they cannot pass arbitrary probe URLs.
 

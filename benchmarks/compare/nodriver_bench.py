@@ -1,4 +1,4 @@
-"""Python nodriver half of `bun benchmarks/compare.ts`; prints one JSON object to stdout.
+"""Python nodriver half of `node benchmarks/compare.ts`; prints one JSON object to stdout.
 
 Usage: python nodriver_bench.py BASE_URL CHROME_PATH SAMPLES
 """

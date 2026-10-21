@@ -10,7 +10,7 @@
 
 安装：`npm install nodriver-ts`。源码开发与测试使用下列命令。
 
-包需要 Node.js 22+；从源码构建和测试需要 Node.js 24+（直接运行 TypeScript 源码）。另需本机 Chrome/Chromium/Edge（Windows、macOS、Linux 常见路径与 `PATH` 自动探测，也可用 `CHROME_PATH` 或 `executablePath` 指定）。已验证的系统和版本见 [支持范围](docs/zh-CN/support.md)。
+包、源码开发与测试统一需要 Node.js 24.22.0+（直接运行 TypeScript 源码）。另需本机 Chrome/Chromium/Edge（Windows、macOS、Linux 常见路径与 `PATH` 自动探测，也可用 `CHROME_PATH` 或 `executablePath` 指定）。已验证的系统和版本见 [支持范围](docs/zh-CN/support.md)。
 
 ```sh
 npm ci
@@ -22,16 +22,19 @@ npm run test:dist   # 构建后对包与 MCP HTTP 做冒烟测试
 
 默认打开有界面 Chrome（`headless: false`）；没有图形桌面的服务器或 CI 请显式设置 `headless: true`。Linux 应使用普通用户运行并安装 Chrome 所需共享库；框架不会自动添加 `--no-sandbox`。WSL 的默认有界面模式需要 WSLg 或其他可用显示服务。
 
-```ts
+```js
 import { Browser } from 'nodriver-ts';
 
-await using browser = await Browser.launch({ transport: 'websocket' });
-await using context = await browser.newContext();
-const tab = await context.newTab('https://example.com');
-console.log(await (await tab.waitForSelector('h1')).text());
+const browser = await Browser.launch({ transport: 'pipe' });
+try {
+  const tab = await browser.newTab('https://example.com');
+  console.log(await (await tab.waitForSelector('h1')).text());
+} finally {
+  await browser.close();
+}
 ```
 
-`await using` 在正常退出和异常展开时关闭资源。也可使用 `try/finally` 调用幂等 `close()`。库默认不接管宿主信号；`handleSignals: true` 可启用拥有进程的 SIGINT/SIGTERM 清理。强制终止控制器或机器断电无法由 JavaScript 保证清理。
+也可选用 `await using browser = await Browser.launch(...)` 在正常退出和异常展开时关闭资源；`close()` 幂等。包与仓库内示例统一需要 Node.js 24.22.0+，包管理使用 npm。库默认不接管宿主信号；`handleSignals: true` 可启用拥有进程的 SIGINT/SIGTERM 清理。强制终止控制器或机器断电无法由 JavaScript 保证清理。
 
 - **Raw session。** `attach: 'none'` 只发现 target，不创建 Tab。`attachSession()` 提供独立 session、明确的生命周期、取消清理及发送时观察，详见 [raw session](docs/zh-CN/raw-sessions.md)。
 
@@ -88,7 +91,7 @@ off();
 ## 自动化痕迹
 
 - 启动默认关闭 Chromium 的 `AutomationControlled` 特性，原生 `navigator.webdriver` 为 `false`；不注入 getter 补丁。
-- 无界面模式默认（`maskHeadless`）通过逐目标覆盖去掉 UA 字符串与 UA-CH 中的 HeadlessChrome；专用 Worker 继承该覆盖，Shared/Service Worker 可能保留原值。仍推荐有界面模式。
+- 无界面模式默认保留原生 UA。可显式启用 `maskHeadless: true` 去掉页面 UA/UA-CH 中的 HeadlessChrome；Dedicated Worker 继承，但 Shared/Service Worker 保留原值，会产生可观测差异，见[分阶段审计](docs/zh-CN/differential-audit.md)。
 - human 输入策略对 US 布局字符发送成对 keyDown/keyUp（含 Shift），其他文本（中日韩、emoji、换行）使用 insertText；按下时指针 pressure 为 0.5；首次指针位置随机，不从 (0,0) 起步；只在需要时把标签页置前。
 - 不伪造字体、WebGL、canvas、音频或硬件，也不解验证码。时区、locale、UA/Client Hints、视口和地理位置只能通过 `tab.setEnvironment()` 显式设置。
 
@@ -141,7 +144,7 @@ node dist/mcp/cli.js
 node dist/mcp/cli.js --mcp-transport http --port 3100
 ```
 
-安装包提供 `nodriver-mcp`，嵌入导出 `nodriver-ts/mcp`、`nodriver-ts/mcp/http`、`nodriver-ts/mcp/socket`。所有入口共用同一工具工厂、manager/池/租约与 CDP 内核，默认 26 个工具；设置 `--upload-dir`、`--download-dir`、`--state-dir` 后分别增加限定目录的上传、下载和状态工具。仅支持 MCP **2026-07-28**，旧协议在浏览器动作前拒绝；官方 client 2.3.1 需显式 pin 该版本。
+安装包提供 `nodriver-mcp`，嵌入导出 `nodriver-ts/mcp`、`nodriver-ts/mcp/http`、`nodriver-ts/mcp/socket` 和 `nodriver-ts/mcp/compat`。所有入口共用同一工具工厂、manager/池/租约与 CDP 内核，默认 26 个工具；设置 `--upload-dir`、`--download-dir`、`--state-dir` 后分别增加限定目录的上传、下载和状态工具。默认 MCP **2026-07-28**，官方 client 2.3.1 需显式 pin 该版本。使用 2025-11-25 / 2025-06-18 的客户端，可给 stdio 参数加入 `--mcp-compat`，或在 HTTP 服务启用后连接 `/mcp/compat`。见[通用 Agent 兼容](docs/zh-CN/agent-compatibility.md)与 [Pi 1.3.0 实测](docs/zh-CN/pi.md)。
 
 - `browser_snapshot` 返回带 `[e12]` 短引用的缩进可访问性树，支持 `interactiveOnly`、`root`、`offset` 分页；密码字段值不会回显。
 - 动作工具支持 `waitFor: auto|load|none` 与 `snapshot: true`，返回是否导航、新标签页、对话框等摘要。

@@ -8,7 +8,7 @@ try {
   console.log(
     [
       `os: ${process.platform} ${process.arch}`,
-      `runtime: ${process.versions.bun ? `Bun ${process.versions.bun}` : `Node.js ${process.versions.node}`}`,
+      `runtime: Node.js ${process.versions.node}`,
       `browser: ${browser.version.product} (${path})`,
       `protocol: ${browser.version.protocolVersion}`,
     ].join('\n'),

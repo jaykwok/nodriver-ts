@@ -39,7 +39,7 @@ Readiness in `none` means the connection and these commands have completed:
 and `Target.getTargets`. It does not wait for a startup page, and may return with no page targets.
 Use `pageTargets` and root `Target.*` events, not `tabs`, to track pages.
 
-`none` skips the default headless UA masking probe and overrides; explicit `maskHeadless: true`
+`none` skips any optional headless UA masking probe and overrides; explicit `maskHeadless: true`
 is rejected. Chrome launch flags still apply. Each raw attach sends only
 `Target.attachToTarget({ targetId, flatten: true })`. It does not send `Page.enable`,
 `Page.setLifecycleEventsEnabled`, `Target.setAutoAttach`, or any `Runtime.*` command.
@@ -139,5 +139,5 @@ Real-browser tests cover raw evaluation, crash/recovery, target close, release/r
 closing the last window while Chrome stays alive. The latter uses
 `--no-startup-window --keep-alive-for-test`: it is a controlled background-process test,
 not a test of a particular installed extension's background policy. Windows runs it headful;
-Linux without a display uses headless Chrome. Node 22.19 runs built-package acceptance;
-Node 24 runs the source suite.
+Linux without a display uses headless Chrome. Node.js 24 runs the source suite and
+built-package acceptance; CI also checks the minimum supported release, Node.js 24.22.0.

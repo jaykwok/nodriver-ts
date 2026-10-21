@@ -2,38 +2,41 @@
 
 [简体中文](zh-CN/support.md)
 
-0.3.0 raw-session acceptance passed locally on Windows, Chrome 155.0.8059.85, Node.js 24.22.0 and Node.js 22.19.0 (built package). The full Node 24 run passed 88 unit tests and 98 integration tests, plus build-output tests. The background-window test ran headful using `--no-startup-window --keep-alive-for-test`. The Node 22 CI job is pinned to 22.19.0. See [raw sessions](raw-sessions.md).
+The current unreleased version requires Node.js 24.22.0 or newer for package use, development and tests. Earlier release records below describe historical verification, not the current runtime support policy.
 
 ## Runtime environment
 
-- **Runtime**: the package supports Node.js ≥ 22, and the tests use `node:test` and `expect`. Node.js ≥ 24 runs the TypeScript sources directly, so developing and testing from source needs Node.js 24 or newer; Node.js 22 is covered by smoke tests of the build output. npm is the package manager.
+The current unreleased changes were checked locally on 2026-10-21 with Windows x64, Chrome 155.0.8059.85 and Node.js 24.22.0: the full run passed 95 unit tests, 107 integration tests and built-package acceptance. Pi's actual client/native extension operation flows also passed on Node.js 24.22.0. Separate headless and headful differential matrices passed 13,878 and 7,768 assertions. See [local differential audit](differential-audit.md), [performance phases](performance-phases.md), [generic compatibility](agent-compatibility.md) and [Pi 1.3.0](pi.md) for evidence boundaries.
+
+[Remote stable CI before the runtime floor changed](https://github.com/jaykwok/nodriver-ts/actions/runs/39541325347) passed Windows/Linux source suites. Its Linux differential report passed 4,693 assertions with no failures. [Preview CI](https://github.com/jaykwok/nodriver-ts/actions/runs/39541325419) passed strict objectId/Runtime, navigation/OOPIF and differential checks on Beta 157.0.8103.6, Dev 158.0.8106.0 and Canary 158.0.8114.0. These links identify the tested commit; they do not certify future channel builds or the full API on every preview. Current PR checks, including Node.js 24.22.0 built-package acceptance, are available on [PR #1](https://github.com/jaykwok/nodriver-ts/pull/1).
+
+- **Runtime**: the package, development tools and tests require Node.js ≥ 24.22.0. Tests use `node:test` and `expect`, with TypeScript sources run directly. CI checks current Node.js 24 on Windows/Ubuntu and the minimum 24.22.0 release against the built package. npm is the package manager.
 - **Browser**: a locally installed Chrome, Chromium or Edge. Common install locations on Windows, macOS and Linux, and `PATH`, are detected automatically; `CHROME_PATH` or `executablePath` can also be set.
-- **Protocol**: CDP types are pinned to devtools-protocol 0.0.1718299; only MCP 2026-07-28 is supported.
+- **Protocol**: CDP types are pinned to devtools-protocol 0.0.1718299; MCP 2026-07-28 is the default, with opt-in [2025-era compatibility](agent-compatibility.md).
 - **Linux**: run as a normal user and install the shared libraries Chrome needs (such as libnspr4 and libnss3). The library never adds `--no-sandbox` and never turns off site isolation. Headful mode on WSL needs WSLg or another display server.
 - **macOS**: when Chrome runs on macOS, key events carry Chrome's editing commands, so `Meta+A`, `Meta+C/X/V/Z`, `Shift+Meta+Z`, and arrow and delete keys combined with Alt/Meta behave as on a physical keyboard. Cross-platform scripts should select all with `Meta+A` or `Control+A` depending on the platform. GitHub-hosted macOS VMs cannot resolve mDNS (`.local`) host candidates, so local WebRTC stays at ICE `new`; in that environment the platform matrix launches the WebRTC test browser with `--disable-features=WebRtcHideLocalIpsWithMdns`. The project never adds this flag automatically.
-- **WebSocket**: uses the JS protocol parser of the pinned npm `ws` 8.22.0, with per-message compression off. The adapter explicitly resolves the npm package's public entry point, so the normal npm file layout must be kept.
+- **WebSocket**: uses the JS protocol parser of the pinned npm `ws` 8.22.0, with per-message compression off. It is imported through the package's standard Node ESM entry.
 
 ## Verified combinations
 
-The table keeps the Node.js verification records from the 0.1.0 release; test counts are unit / integration / compatibility matrix (WebSocket and Pipe transports). 0.2.0 passed 60 unit tests, 95 integration tests and the build-output tests locally on Windows, Node.js 24.22.0 and Chrome 155.0.8059.85. CI since then runs only Node.js: full tests on Node.js 24 on Windows/Ubuntu, and build-output tests on Node.js 22.
+The table keeps the Node.js verification records from the 0.1.0 release; test counts are unit / integration / compatibility matrix (WebSocket and Pipe transports). 0.2.0 passed 60 unit tests, 95 integration tests and the build-output tests locally on Windows, Node.js 24.22.0 and Chrome 155.0.8059.85. The current minimum is Node.js 24.22.0.
 
-| Platform and browser                                                          | Runtime         | Result                                                                                        |
-| ----------------------------------------------------------------------------- | --------------- | --------------------------------------------------------------------------------------------- |
-| Windows 11 x64, Chrome 155.0.8059.80 (local)                                  | Node.js 24.22.0 | 53 / 85 passed; type check, format check and build-output tests passed                        |
-| WSL2 Ubuntu 26.04, Chrome for Testing 155.0.8059.79 and 154.0.8037.92 (local) | Node.js 24.22.0 | 53 / 85 / 8 + 8 passed; 4 native signal tests and build-output tests passed                   |
-| GitHub Actions Windows x64, Chrome 155.0.8059.40                              | Node.js 24.21.0 | 53 / 85 passed, integration tests on the first attempt; build-output tests passed             |
-| GitHub Actions Ubuntu x64, Chrome 155.0.8059.84                               | Node.js 24.22.0 | 53 / 85 passed, integration tests on the first attempt; build-output tests passed             |
-| GitHub Actions Ubuntu x64, Chrome 155.0.8059.39                               | Node.js 22.23.3 | Build-output smoke tests (WebSocket and Pipe) and the HTTP disconnect-reclamation test passed |
-| GitHub Actions macOS ARM64, Chrome 155.0.8059.40                              | Node.js 24.21.0 | 53 / 85 / 8 passed (for the WebRTC test, see the macOS note above)                            |
-| GitHub Actions Ubuntu ARM64, Chrome for Testing 155.0.8059.84                 | Node.js 24.22.0 | 53 / 85 / 8 passed                                                                            |
-| GitHub Actions Ubuntu x64, Chrome for Testing 154.0.8037.92                   | Node.js 24.21.0 | 53 / 85 / 8 passed                                                                            |
-| GitHub Actions Windows x64, Microsoft Edge 154.0.4258.62                      | Node.js 24.21.0 | 53 / 85 / 8 passed                                                                            |
+| Platform and browser                                                          | Runtime         | Result                                                                            |
+| ----------------------------------------------------------------------------- | --------------- | --------------------------------------------------------------------------------- |
+| Windows 11 x64, Chrome 155.0.8059.80 (local)                                  | Node.js 24.22.0 | 53 / 85 passed; type check, format check and build-output tests passed            |
+| WSL2 Ubuntu 26.04, Chrome for Testing 155.0.8059.79 and 154.0.8037.92 (local) | Node.js 24.22.0 | 53 / 85 / 8 + 8 passed; 4 native signal tests and build-output tests passed       |
+| GitHub Actions Windows x64, Chrome 155.0.8059.40                              | Node.js 24.21.0 | 53 / 85 passed, integration tests on the first attempt; build-output tests passed |
+| GitHub Actions Ubuntu x64, Chrome 155.0.8059.84                               | Node.js 24.22.0 | 53 / 85 passed, integration tests on the first attempt; build-output tests passed |
+| GitHub Actions macOS ARM64, Chrome 155.0.8059.40                              | Node.js 24.21.0 | 53 / 85 / 8 passed (for the WebRTC test, see the macOS note above)                |
+| GitHub Actions Ubuntu ARM64, Chrome for Testing 155.0.8059.84                 | Node.js 24.22.0 | 53 / 85 / 8 passed                                                                |
+| GitHub Actions Ubuntu x64, Chrome for Testing 154.0.8037.92                   | Node.js 24.21.0 | 53 / 85 / 8 passed                                                                |
+| GitHub Actions Windows x64, Microsoft Edge 154.0.4258.62                      | Node.js 24.21.0 | 53 / 85 / 8 passed                                                                |
 
 The last four rows come from the on-demand platform matrix (`.github/workflows/platforms.yml`), where each suite runs once without retries; all passed on the first attempt. In push CI, failed integration tests are retried once, and the first failure is recorded in the job summary and the log artifact. Which tests call each public API directly is listed in the [API test map](test-map.md).
 
 Package: after the tarball produced by `npm pack` is installed into an empty project, Node.js 24 can import every entry point, TypeScript 7.0.2 and 5.9.3 type-check it with `skipLibCheck: false` under both `nodenext` and `bundler` resolution, and `npx nodriver-mcp` runs. A 24-hour soak run was completed on Windows with Node.js 24.22.0; see the [soak test](soak.md) for the results.
 
-Node.js 22 does not support the `await using` syntax; callers can manage resources with `try/finally` and `close()`.
+On supported Node.js versions, callers can use `await using` or manage resources with `try/finally` and `close()`.
 
 Integration tests use only local fixtures. Cross-site OOPIFs are built from 127.0.0.1 and localhost, and the owning session confirms they are real out-of-process frames. The tests enable `--site-per-process` explicitly and turn off no isolation. Proxy tests use local HTTP/SOCKS fixtures, including deliberately fragmented responses.
 
@@ -57,7 +60,7 @@ Integration tests use only local fixtures. Cross-site OOPIFs are built from 127.
 
 ## Limitations
 
-- **Browser versions**: evidence exists only for Chrome 154/155 and Edge 154 in the table above; there is no claim of compatibility with every version. Main-world discovery depends on the internal V8 objectId format, validated strictly; an incompatible format fails explicitly instead of falling back to `Runtime.enable`.
+- **Browser versions**: stable evidence is listed in the table above; additional preview versions have only the explicitly listed checks. There is no claim of compatibility with every version. Main-world discovery depends on the internal V8 objectId format, validated strictly; an incompatible format fails explicitly instead of falling back to `Runtime.enable`.
 - **Detection**: `Runtime.enable` is not sent by default, and AutomationControlled is turned off with the native launch switch. Isolated worlds still share the DOM, and headless signals such as the screen size are still observable. There is no promise to pass any external challenge; see the [automation audit](automation-audit.md).
 - **Queries**: XPath does not cross shadow roots, and frame queries never cross frames implicitly. Finding closed shadow roots needs the full DOM, and the cost of high-frequency polling on large pages has not been measured over the long term.
 - **State**: snapshots exclude partitioned localStorage of cross-site iframes, sessionStorage, IndexedDB and Service Workers. Third-party partitioned cookies have no dedicated end-to-end test.

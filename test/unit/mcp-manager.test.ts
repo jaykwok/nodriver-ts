@@ -1,4 +1,3 @@
-import { setTimeout as sleep } from 'node:timers/promises';
 import { test } from 'node:test';
 import { expect } from '../fixtures/expect.ts';
 import { OperationQueue } from '../../src/mcp/queue.ts';
@@ -66,7 +65,9 @@ test('HTTP body deadlines cancel slow readers and never allocate browser state',
   }
 });
 
-test('leases bind authenticated principals, expire idle state and protect active work', async () => {
+test('leases bind authenticated principals, expire idle state and protect active work', async (t) => {
+  let now = 1000;
+  t.mock.method(Date, 'now', () => now);
   const manager = new BrowserSessionManager({
     maxLeases: 2,
     leaseIdleMs: 20,
@@ -78,13 +79,16 @@ test('leases bind authenticated principals, expire idle state and protect active
     expect(() => manager.session('bob', a.id)).toThrow('unauthorized');
     expect(() => manager.create('alice')).toThrow('capacity');
     const release = manager.retain('alice', a.id);
-    await sleep(30);
+    now += 20;
     await manager.sweep();
     expect(manager.list('bob')).toEqual([]);
     expect(manager.list('alice')).toHaveLength(1);
     expect(() => manager.session('bob', b.id)).toThrow('expired');
     release();
-    await sleep(30);
+    now += 19;
+    await manager.sweep();
+    expect(manager.stats().leases).toBe(1);
+    now++;
     await manager.sweep();
     expect(manager.stats().leases).toBe(0);
   } finally {

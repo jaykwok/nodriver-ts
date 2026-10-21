@@ -6,24 +6,26 @@
 
 ## 默认行为
 
-| 检查项              | 行为                                                                                                                                                                                                                                                                                         |
-| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Runtime.enable      | 主页面、popup、同进程 iframe、嵌套 OOPIF 和重连都不自动发送，也不先 enable 再 disable；Console、Debugger 域同样不启用                                                                                                                                                                        |
-| 主世界定位          | `Page.createIsolatedWorld` 获取精确 frame；隔离世界 Document → `DOM.describeNode` → `DOM.resolveNode`（省略 executionContextId）得到同一 Document 的主世界对象                                                                                                                               |
-| objectId 校验       | 严格检查 V8 格式、上下文范围、隔离世界官方 ID、isolate 一致性和主世界 Document 的 backendNodeId；不兼容时抛 `UnsupportedError`，不退回启用 Runtime                                                                                                                                           |
-| 上下文生命周期      | 缓存绑定 frame、session 与文档代次；导航、BFCache、进程切换、崩溃、`setContent` 后失效。上下文消失使下一次调用重新发现，当前用户脚本不重放                                                                                                                                                   |
-| 临时对象            | 发现过程产生的对象以 objectGroup 在 finally 中释放，调用者取消后仍尝试清理                                                                                                                                                                                                                   |
-| 主世界注入          | 无 `Runtime.addBinding`、postMessage 通道、插入 script 或框架全局对象，没有固定 sourceURL。用户显式的 evaluate/addInitScript 保留各自语义；init script 使用每个标签页随机的 world 名称                                                                                                       |
-| DOM 辅助            | 查询与动作检查在随机命名的隔离世界执行，不申请跨源通用访问权限                                                                                                                                                                                                                               |
-| navigator.webdriver | 通过 Chromium 的 AutomationControlled 启动开关关闭，getter 保持原生实现，navigator 上不增加属性                                                                                                                                                                                              |
-| Headless UA         | `maskHeadless`（headless 默认开启，显式 `userAgent` 时不生效）在所有目标上用 `Emulation.setUserAgentOverride` 去掉 HeadlessChrome，并附上从 `chrome://version` 读取的原生 UA-CH，避免 Client Hints 消失。文档、HTTP 请求头与专用 Worker 一致；Shared/Service Worker 是独立目标，可能保留原值 |
-| 协议面              | `Network.enable` 按需发送；路由与认证只用 Fetch 域。默认穿透查询用 `DOM.getDocument` 识别 closed shadow root，这会让该 session 收到 DOM 结构事件                                                                                                                                             |
-| 输入                | human 模式下 US 布局字符发送成对 keyDown/keyUp（大写与上档符号自动按 Shift），修饰键与无文本键用 rawKeyDown；按下及按住移动时 pointer pressure 为 0.5；首个指针位置在视口 15–85% 随机；只在其他标签页可能处于前台时调用 `Page.bringToFront`                                                  |
-| 浏览器机制          | 保留 sandbox、站点隔离和 CSP。Pipe 不监听调试 TCP 端口，WebSocket 仍支持本地与远程连接。agent 预设只关闭首次运行、搜索引擎选择、崩溃恢复气泡和后台节流                                                                                                                                       |
+| 检查项              | 行为                                                                                                                                                                                                                                                                                     |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Runtime.enable      | 主页面、popup、同进程 iframe、嵌套 OOPIF 和重连都不自动发送，也不先 enable 再 disable；Console、Debugger 域同样不启用                                                                                                                                                                    |
+| 主世界定位          | `Page.createIsolatedWorld` 获取精确 frame；隔离世界 Document → `DOM.describeNode` → `DOM.resolveNode`（省略 executionContextId）得到同一 Document 的主世界对象                                                                                                                           |
+| objectId 校验       | 严格检查 V8 格式、上下文范围、隔离世界官方 ID、isolate 一致性和主世界 Document 的 backendNodeId；不兼容时抛 `UnsupportedError`，不退回启用 Runtime                                                                                                                                       |
+| 上下文生命周期      | 缓存绑定 frame、session 与文档代次；导航、BFCache、进程切换、崩溃、`setContent` 后失效。上下文消失使下一次调用重新发现，当前用户脚本不重放                                                                                                                                               |
+| 临时对象            | 发现过程产生的对象以 objectGroup 在 finally 中释放，调用者取消后仍尝试清理                                                                                                                                                                                                               |
+| 主世界注入          | 无 `Runtime.addBinding`、postMessage 通道、插入 script 或框架全局对象，没有固定 sourceURL。用户显式的 evaluate/addInitScript 保留各自语义；init script 使用每个标签页随机的 world 名称                                                                                                   |
+| DOM 辅助            | 查询与动作检查在随机命名的隔离世界执行，不申请跨源通用访问权限                                                                                                                                                                                                                           |
+| navigator.webdriver | 通过 Chromium 的 AutomationControlled 启动开关关闭，getter 保持原生实现，navigator 上不增加属性                                                                                                                                                                                          |
+| Headless UA         | `maskHeadless`（显式启用，显式 `userAgent` 时不生效）在页面 session 上用 `Emulation.setUserAgentOverride` 去掉 HeadlessChrome，并附上从 `chrome://version` 读取的原生 UA-CH，避免 Client Hints 消失。文档、HTTP 请求头与专用 Worker 一致；Shared/Service Worker 是独立目标，可能保留原值 |
+| 协议面              | `Network.enable` 按需发送；路由与认证只用 Fetch 域。默认穿透查询用 `DOM.getDocument` 识别 closed shadow root，这会让该 session 收到 DOM 结构事件                                                                                                                                         |
+| 输入                | human 模式下 US 布局字符发送成对 keyDown/keyUp（大写与上档符号自动按 Shift），修饰键与无文本键用 rawKeyDown；按下及按住移动时 pointer pressure 为 0.5；首个指针位置在视口 15–85% 随机；只在其他标签页可能处于前台时调用 `Page.bringToFront`                                              |
+| 浏览器机制          | 保留 sandbox、站点隔离和 CSP。Pipe 不监听调试 TCP 端口，WebSocket 仍支持本地与远程连接。agent 预设只关闭首次运行、搜索引擎选择、崩溃恢复气泡和后台节流                                                                                                                                   |
 
-Chromium 在未指定上下文时把 DOM 节点包装到所属 frame 的主世界，见 [ResolveNode 源码](https://github.com/chromium/chromium/blob/main/third_party/blink/renderer/core/inspector/resolve_node.cc)。[V8 的 objectId 格式](https://github.com/v8/v8/blob/main/src/inspector/remote-object-id.cc)是内部实现，CDP 不保证其稳定，因此支持范围限定在已实测的 Chrome 154/155。
+Chromium 在未指定上下文时把 DOM 节点包装到所属 frame 的主世界，见 [ResolveNode 源码](https://github.com/chromium/chromium/blob/main/third_party/blink/renderer/core/inspector/resolve_node.cc)。[V8 的 objectId 格式](https://github.com/v8/v8/blob/main/src/inspector/remote-object-id.cc)是内部实现，CDP 不保证其稳定。证据仅限[支持范围](support.md)中记录的具体稳定版、预览版及其受测套件。
 
-AX 快照使用 Accessibility 域，页面无法直接观察，但会让渲染进程构建可访问性树，带来轻微的时序与内存变化，未做专项测量。
+独立的 [Chromium 预览版工作流](../../.github/workflows/chromium-preview.yml) 每周、手动及修改相关核心/审计文件的 PR 运行 Beta、Dev、Canary，环境为 Linux/Node.js 24。它记录实际浏览器版本，运行 `test:audit`、`test:compat`（Pipe/WebSocket 的主世界发现、导航、OOPIF 和上下文失效）及差分回归门槛，保留失败与日志且不重试，独立于稳定版发布要求。[首次远程运行的三个通道均已通过](https://github.com/jaykwok/nodriver-ts/actions/runs/39541325419)。这仅证明具体版本的这些检查通过，不代表未测试的浏览器已获支持；失败时仍禁止回退 `Runtime.enable`。
+
+AX 的计算/传输/解析成本已在 100/1000/10000 按钮页面测量，见[分阶段性能结果](performance-phases.md)。[长稳调查](soak.md)还用原始 CDP 复现了文本编辑 + 完整 AX 读取的 Blink 内存保留：导航释放，Accessibility.disable 不释放。这些成本不能证明稳定的页面可见检测信号。既有页面探针在已测条件下没有发现专门的直接 AX 信号，不代表 AX 无法被观察。[本地差分审计](differential-audit.md)分离启动参数、端点、原始连接、库初始化、覆盖与操作，并明确 headful/物理输入/平台限制。
 
 ## 回归验证
 
@@ -49,7 +51,7 @@ npm run test:all
 
 ### 在线检测页
 
-经授权访问 CreepJS、BrowserScan 与 Pixelscan 的实际检测页，Windows Chrome 155.0.8059.80 / Pipe，每格使用新的临时 profile，不拦截请求、不覆盖 UA 或环境、不配置代理或 WebRTC 限制。结果早于 `maskHeadless` 默认开启，headless 列对应原生 HeadlessChrome UA。
+经授权访问 CreepJS、BrowserScan 与 Pixelscan 的实际检测页，Windows Chrome 155.0.8059.80 / Pipe，每格使用新的临时 profile，不拦截请求、不覆盖 UA 或环境、不配置代理或 WebRTC 限制。这些历史结果使用原生 UA，headless 列对应原生 HeadlessChrome UA。
 
 | 检测项                                      | 有界面，instant  | headless，instant | 有界面，human（seed=42） |
 | ------------------------------------------- | ---------------- | ----------------- | ------------------------ |
@@ -69,7 +71,7 @@ npm run test:all
 
 1. **Headless**：`maskHeadless` 只改 UA 与 UA-CH，屏幕尺寸（如 800×600）等其他 headless 信号不变，有界面模式也不保证隐藏全部特征。推荐有界面模式；无图形桌面时须显式选择 headless，不自动降级。
 2. **执行世界**：`evaluate()` 默认在 main world 运行，以便访问页面业务对象，页面可以 hook 自己的方法。通用 DOM 读取可用 `query()` 或 `evaluate(fn, arg, { world: 'isolated' })`；隔离世界也共享 DOM。
-3. **环境一致性**：UA、Client Hints、语言、时区、屏幕、字体、GPU、Worker 信息和代理出口需要分别测量。有界面模式保留浏览器原始值；headless 只把 HeadlessChrome 换成 Chrome，不套用其他系统的 UA。只改一个字段会造成不一致，`setEnvironment()` 不负责完整的 Worker/设备一致性。
+3. **环境一致性**：UA、Client Hints、语言、时区、屏幕、字体、GPU、Worker 信息和代理出口需要分别测量。有界面模式保留浏览器原始值；headless 也默认保留原生值；可选覆盖只修改页面/Dedicated Worker UA，可能与 Shared/Service Worker 矛盾。只改一个字段会造成不一致，`setEnvironment()` 不负责完整的 Worker/设备一致性。
 4. **输入**：点击和文字经 CDP Input 派发，页面仍能观察时序与轨迹；select 等 DOM 改值派发合成事件。不承诺所有操作都像物理设备输入。
 5. **外部因素**：连接前已存在的 DevTools 或其他 CDP 客户端、调用者手动启用的域、TLS/IP 信誉、代理与 WebRTC 出口都不在默认行为的覆盖范围内。Pipe 只减少本机调试端口暴露。
 

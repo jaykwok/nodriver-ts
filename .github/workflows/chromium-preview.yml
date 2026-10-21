@@ -1,0 +1,87 @@
+name: Chromium preview warning
+# Independent from the stable push/PR checks and release gates. A failure stays red and
+# retains its logs; no continue-on-error or retry hides a preview regression.
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/chromium-preview.yml'
+      - 'src/browser/**'
+      - 'src/page/execution-context.ts'
+      - 'src/transport/**'
+      - 'benchmarks/audit*'
+      - 'benchmarks/audit/**'
+  schedule:
+    - cron: '23 3 * * 1'
+  workflow_dispatch:
+permissions:
+  contents: read
+defaults:
+  run:
+    shell: bash
+concurrency:
+  group: chromium-preview-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  preview:
+    name: preview (${{ matrix.channel }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        channel: [beta, dev, canary]
+    env:
+      NODRIVER_HEADFUL: '0'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '^24.22.0'
+      - name: Set up preview Chrome
+        id: chrome
+        uses: browser-actions/setup-chrome@v2
+        with:
+          chrome-version: ${{ matrix.channel }}
+          install-dependencies: true
+      - name: Configure sandbox and crash reporting
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          sudo sysctl -w kernel.core_pattern=core
+          echo "CHROME_PATH=${{ steps.chrome.outputs.chrome-path }}" >> "$GITHUB_ENV"
+      - run: npm ci
+      - name: Record actual browser and runtime versions
+        run: |
+          mkdir -p test-results
+          echo "Channel: ${{ matrix.channel }}; installed: ${{ steps.chrome.outputs.chrome-version }}" | tee test-results/channel.txt
+          "$CHROME_PATH" --version | tee test-results/browser.txt
+          node test/ci-versions.ts | tee test-results/versions.txt
+      - name: Strict objectId checks and Runtime audit
+        run: npm run test:audit 2>&1 | tee test-results/audit.log
+      - name: Navigation, OOPIF and context invalidation (Pipe and WebSocket)
+        if: success() || failure()
+        run: npm run test:compat 2>&1 | tee test-results/compat.log
+      - name: Differential invariants and Worker consistency
+        if: success() || failure()
+        env:
+          AUDIT_REPEATS: '1'
+          AUDIT_TRANSPORTS: pipe
+          AUDIT_VARIANTS: default-native,default-masked,explicit-environment
+        run: node benchmarks/audit.ts > test-results/differential.json 2> test-results/differential.log
+      - name: Preview report
+        if: always()
+        run: |
+          { echo '### Chromium preview: ${{ matrix.channel }}'; echo 'Result: ${{ job.status }}'
+            echo '```'; cat test-results/channel.txt test-results/browser.txt test-results/versions.txt 2>/dev/null || true
+            for log in test-results/*.log; do
+              if [ -f "$log" ]; then node test/ci-failures.ts "$log"; fi
+            done
+            echo '```'
+            echo 'Preview warnings are independent of stable release checks. See logs for setup failures and complete diagnostics.'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: chromium-preview-${{ matrix.channel }}
+          path: test-results/
+          if-no-files-found: warn
+          retention-days: 30

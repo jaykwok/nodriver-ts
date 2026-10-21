@@ -12,8 +12,7 @@
     "mcp",
     "model-context-protocol",
     "ai-agent",
-    "typescript",
-    "bun"
+    "typescript"
   ],
   "homepage": "https://github.com/jaykwok/nodriver-ts#readme",
   "repository": {
@@ -26,8 +25,7 @@
   "type": "module",
   "license": "AGPL-3.0-or-later",
   "engines": {
-    "node": ">=22",
-    "bun": ">=1.4.3"
+    "node": ">=24.22.0"
   },
   "exports": {
     ".": {
@@ -49,6 +47,10 @@
     "./mcp/socket": {
       "types": "./dist/mcp/socket.d.ts",
       "import": "./dist/mcp/socket.js"
+    },
+    "./mcp/compat": {
+      "types": "./dist/mcp/compat.d.ts",
+      "import": "./dist/mcp/compat.js"
     }
   },
   "bin": {
@@ -71,14 +73,11 @@
     "test": "node --test --test-timeout=60000 \"test/unit/*.test.ts\"",
     "test:integration": "node --test --test-concurrency=1 --test-timeout=60000 \"test/integration/*.test.ts\"",
     "test:audit": "node --test --test-concurrency=1 --test-timeout=60000 test/unit/execution-context.test.ts test/integration/runtime.test.ts",
-    "test:mcp": "node --test --test-concurrency=1 --test-timeout=60000 test/unit/mcp-manager.test.ts test/unit/mcp-socket.test.ts \"test/integration/mcp*.test.ts\"",
+    "test:mcp": "node --test --test-concurrency=1 --test-timeout=60000 test/unit/mcp-manager.test.ts test/unit/mcp-socket.test.ts test/unit/mcp-protocol.test.ts \"test/integration/mcp*.test.ts\"",
     "test:compat": "node --test --test-concurrency=1 --test-timeout=120000 test/integration/runtime.test.ts test/integration/environment.test.ts test/integration/churn.test.ts",
     "test:signals": "node --test --test-concurrency=1 --test-timeout=60000 test/integration/native-signals.test.ts",
     "test:all": "npm run check && npm test && npm run test:integration && npm run test:dist",
     "test:dist": "npm run build && node test/node-testing.mjs && node --test test/node-http.mjs && node test/node-smoke.mjs && node test/node-raw-session.mjs",
-    "test:bun": "bun test ./test/unit",
-    "test:bun:integration": "bun test --timeout 60000 ./test/integration",
-    "test:bun:compat": "bun test --timeout 120000 ./test/integration/runtime.test.ts ./test/integration/environment.test.ts ./test/integration/churn.test.ts",
     "test:soak": "node benchmarks/soak.ts",
     "test:map": "node test/api-map.ts",
     "example": "node examples/basic.ts",
@@ -86,7 +85,11 @@
     "bench:compare": "node benchmarks/compare.ts",
     "format": "prettier --write src test examples benchmarks \"*.md\" \"docs/*.md\" \"docs/zh-CN/*.md\"",
     "format:check": "prettier --check src test examples benchmarks \"*.md\" \"docs/*.md\" \"docs/zh-CN/*.md\"",
-    "prepack": "npm run check && npm run build"
+    "prepack": "npm run check && npm run build",
+    "bench:audit": "node benchmarks/audit.ts",
+    "bench:audit:manual": "node benchmarks/audit-manual.ts",
+    "bench:handoff:manual": "node benchmarks/handoff-manual.ts",
+    "bench:ax-subtree": "node benchmarks/ax-subtree.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "2.3.1",

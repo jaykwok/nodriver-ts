@@ -12,33 +12,8 @@ export interface FetchServer {
   readonly port: number;
   close(): Promise<void>;
 }
-interface BunServe {
-  serve(options: {
-    hostname: string;
-    port: number;
-    maxRequestBodySize: number;
-    idleTimeout: number;
-    fetch: (request: Request) => Promise<Response> | Response;
-  }): { port: number; stop(force?: boolean): Promise<void> };
-}
-
-/** Serves a fetch handler with Bun.serve on Bun and node:http elsewhere. */
+/** Serves a fetch handler with node:http. */
 export async function serveFetch(options: FetchServerOptions): Promise<FetchServer> {
-  const bun = (globalThis as { Bun?: BunServe }).Bun;
-  if (bun) {
-    const server = bun.serve({
-      hostname: options.hostname,
-      port: options.port,
-      maxRequestBodySize: options.maxRequestBodySize,
-      idleTimeout: 0,
-      fetch: (request) => options.fetch(request, server.port),
-    });
-    return { port: server.port, close: () => server.stop(true) };
-  }
-  return serveNode(options);
-}
-
-async function serveNode(options: FetchServerOptions): Promise<FetchServer> {
   const sockets = new Set<import('node:net').Socket>();
   let port = 0;
   const server = createServer((req, res) => {

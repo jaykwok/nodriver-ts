@@ -2,7 +2,7 @@
 
 [简体中文](zh-CN/mcp-http.md)
 
-HTTP is the main entry point for a long-running local service. It shares the tool implementation, `BrowserSessionManager`, browser pool and leases, and the CDP core with stdio, socket and InMemory; tools and limits are described in [MCP](mcp.md). On Node.js 22+ the service is adapted to `node:http` (a fetch handler, with backpressure for streaming SSE). Only MCP **2026-07-28** is supported. The application-level `Browser-Lease-Id` keeps browser state across requests; MCP sessions are not used, and the service is not designed for remote, untrusted multi-tenant deployments.
+HTTP is the main entry point for a long-running local service. It shares the tool implementation, `BrowserSessionManager`, browser pool and leases, and the CDP core with stdio, socket and InMemory; tools and limits are described in [MCP](mcp.md). On Node.js 24.22.0+ the service is adapted to `node:http` (a fetch handler, with backpressure for streaming SSE). The default `/mcp` route requires MCP **2026-07-28** and uses application-level `Browser-Lease-Id`, without MCP sessions. Opt-in [agent compatibility](agent-compatibility.md) adds stateful 2025-era MCP sessions on `/mcp/compat`, scoped within the same authenticated browser leases. The service is intended for local provisioned clients.
 
 ## Starting the server
 
@@ -135,7 +135,7 @@ When a request carries a progressToken, tools send three stages in order: Queued
 
 `browser_handoff({ tabId })` asks the user to complete a manual task in an accessible browser UI and confirm. It does not collect passwords, provide a remote desktop, log in automatically or resume earlier clicks. It requires an explicit `--headful` / `launch.headless: false`, or `humanInteraction: true` set by a host that has confirmed the UI is accessible, and the client must declare `elicitation.form`; otherwise a clear error is returned. Having a window by default does not mean a remote caller can reach it, so human handoff is never enabled automatically.
 
-Human interaction uses the 2026-07-28 InputRequiredResult/MRTR and does not enable the SDK's legacy elicitation shim. requestState is a random identifier with a deadline; the server stores its tab, lease and stage. Tampered, cross-lease or unknown states are rejected, and a completed state never reruns earlier steps. On completion only the current page state is returned, and the caller should take a new snapshot. Secrets should be typed by the user directly in the browser.
+On `/mcp`, human interaction uses the 2026-07-28 InputRequiredResult/MRTR; the optional compatibility route enables the SDK's legacy elicitation shim. requestState is a random identifier with a deadline; the server stores its tab, lease and stage. Tampered, cross-lease or unknown states are rejected, and a completed state never reruns earlier steps. On completion only the current page state is returned, and the caller should take a new snapshot. Secrets should be typed by the user directly in the browser.
 
 ## Test coverage
 

@@ -2,6 +2,8 @@
 
 [简体中文](zh-CN/performance.md)
 
+The [2026-10-21 phased AX and queue results](performance-phases.md) include measured alternatives and the reasons full-tree reads and serialization are retained. The benchmark now records raw AX alternatives, observer/dispatch/after-dispatch costs, and snapshot-only versus mixed queue waits.
+
 `npm run bench:mcp` runs `benchmarks/mcp.ts`: raw JSON results go to stdout and progress to stderr. The benchmark uses local fixtures, a fresh temporary profile, explicit headless mode and the default sandbox, and never contacts external sites. Run it when no tests or other heavy workloads are running in parallel; timings from functional tests are no substitute for the benchmark.
 
 ## Workloads
@@ -27,7 +29,7 @@ Historical MCP baselines are in the [0.2.0 release documentation](https://github
 
 `npm run bench:compare` runs `benchmarks/compare.ts`: the same machine, the same Chrome, headless, WebSocket, a fresh temporary profile and the same local fixture, with both sides running the same workload. The Python side runs nodriver 0.50.6 in isolated mode through `uv` (Python 3.12, websockets 17.2); its script is `benchmarks/compare/nodriver_bench.py`. TypeScript runs first by default, and Python first with `BENCH_PYTHON_FIRST=1`. `BENCH_SAMPLES` adjusts the number of round-trip samples (200 by default).
 
-- **Cold launch**: launch the browser and open a blank page, 5 times each. A headless launch uses a probe page by default to remove HeadlessChrome from the UA, which nodriver does not do, so `maskHeadless: false` is measured separately as the like-for-like figure.
+- **Cold launch**: launch the browser and open a blank page, 5 times each. This historical run used the previous default UA masking probe, which nodriver does not perform, so `maskHeadless: false` was measured separately. Masking is now opt-in; these historical cold-launch numbers do not describe the current default.
 - **Round trips**: after 20 warm-up runs, 200 `Browser.getVersion` and 200 `evaluate("1+1")` calls.
 - **Query**: 100 lookups of `#b500` on a page with 1000 buttons (`tab.select` in nodriver, `tab.query` in this project).
 - **Navigation**: 20 same-origin navigations to new URLs. This project's `goto` waits for the load event; nodriver's `get` returns before load, so the script polls `document.readyState` every 5 ms until it is complete.

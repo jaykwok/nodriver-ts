@@ -2,7 +2,23 @@
 
 [English](../environment.md)
 
-三个接口按作用递进：`inspectEnvironment()` 只读取，`diagnoseEnvironment()` 汇总整个标签页的观测，`alignEnvironment()` 按明确配置覆盖并核验。默认不改写 navigator、UA 或设备属性，也不访问外网。MCP 的 `browser_environment` 复用同一套接口。
+三个接口按作用递进：`inspectEnvironment()` 采样但不应用覆盖，`diagnoseEnvironment()` 汇总整个标签页的观测，`alignEnvironment()` 按明确配置覆盖并核验。默认不改写 navigator、UA 或设备属性，也不访问外网。MCP 的 `browser_environment` 复用同一套接口。
+
+## 如何选择诊断流程
+
+这些 API 用于排查配置、复现 Locale/视口问题，或比较受控浏览器运行结果。建议从自己控制的测试页面开始，保持 Chrome 版本、Profile 初始配置与宿主环境可比，并将请求的配置和报告一同保存。
+
+| 需求                                                 | API                     |
+| ---------------------------------------------------- | ----------------------- |
+| 采样单个 Frame 的当前环境                            | `inspectEnvironment()`  |
+| 比较 Frame、读取实际渲染字体或执行显式配置的网络探针 | `diagnoseEnvironment()` |
+| 应用指定测试配置并检查结果                           | `alignEnvironment()`    |
+
+不应用覆盖不代表零开销或不可观察：Worker/WebGL 探针会创建临时资源，字体探针会附加临时 DOM/CSS session，显式启用的 HTTP/STUN 探针会产生流量。只开启排查所需的测量项。衡量某项操作的副作用时，对照组和实验组应运行相同探针，并将探针自身计入测量负载。
+
+`worker` 选项采样的是**新建的 Dedicated Worker**，不检查既有 Worker、Shared Worker、Service Worker、它们的初始脚本请求或首段脚本执行。跨 Worker 与请求头采集请使用[差分审计夹具](differential-audit.md)，覆盖范围以该文档为准。报告匹配、CDP 命令成功或检测网站标签，均不能证明未测量上下文的一致性。
+
+`alignEnvironment()` 会改变浏览器状态，且可能部分成功。它适合显式测试配置，不会自动修复设备指纹，也不会改变 OS 字体、GPU 硬件或原生窗口装饰。应将几何尺寸、媒体设置和渲染器信息与匹配的原生基线比较，而不是强制固定浏览器顶栏高度，或将软件渲染直接判为异常。
 
 ## 采样：inspectEnvironment
 
@@ -38,7 +54,7 @@ const diagnosis = await tab.diagnoseEnvironment({
 
 诊断汇总标签页内所有 frame 的文档与 Worker、字体、WebGL 和显式网络探针。报告区分 observed / unavailable / not-requested，以及 match / mismatch / unavailable / not-tested；未采集的项目不算通过。
 
-- **字体**：显式启用 DOM/CSS 域，读取 `CSS.getPlatformFontsForNode` 返回的实际渲染字体。结果是浏览器选用的字体，不保证每个字符都有字形，也不安装字体。
+- **字体**：在独立临时 session 上显式启用 DOM/CSS，结束时 detach，不会关闭调用方订阅；读取 `CSS.getPlatformFontsForNode` 返回的实际渲染字体。结果是浏览器选用的字体，不保证每个字符都有字形，也不安装字体。
 - **HTTP 探针**：由页面发起，省略凭证、禁止重定向，受 CSP/CORS 与网络影响；返回的 headers 只是调用方服务的反射观测。
 - **STUN**：只接受显式给出的最多四个 STUN 端点，不请求音视频权限或 TURN 凭证，限时后关闭数据通道和 peer。
 - **地址差异**：HTTP 与 STUN 的出口地址可以不同，不能据此认定伪装、泄漏或某种代理机制。网络调用失败时保留缺测原因。
@@ -69,7 +85,7 @@ await tab.alignEnvironment(
 - **核验**：每个 frame 的文档与新建 dedicated Worker 分别核验；Worker 不支持的字段（如 viewport）记为 unavailable，实际不一致记为 mismatch。locale 只在页面根 session 设置，不保证所有 renderer/Worker 的 Intl 同步。UA-CH 按配置字段比较，高熵值不可用时不伪造成功。Geolocation 不自动授权，只有权限已为 granted 时才读取位置核验，否则为 unavailable。
 - **部分失败**：保留 `applicationError`、session 记录和实际报告，不声称原子回滚。
 
-`setEnvironment()` 是不带核验的显式覆盖接口。UA、Client Hints、时区等覆盖不保证传播到所有 Worker、SharedWorker 或 Service Worker。有界面模式默认保留真实值；headless 默认只把 UA/UA-CH 中的 HeadlessChrome 改为 Chrome（`maskHeadless: false` 可关闭），见 [自动化痕迹审计](automation-audit.md)。
+`setEnvironment()` 是不带核验的显式覆盖接口。UA、Client Hints、时区等覆盖不保证传播到所有 Worker、SharedWorker 或 Service Worker。有界面模式默认保留真实值；headless 也默认保留原生值。显式 `maskHeadless: true` 改变页面 UA/UA-CH 与 Dedicated Worker，但会与 Shared/Service Worker 及其请求不一致，见[分阶段审计](differential-audit.md)，见 [自动化痕迹审计](automation-audit.md)。
 
 MCP 宿主可在 `BrowserSessionManagerOptions.environmentDiagnostics` 中配置 `httpProbe`/`stunServers`，并注入 `geoIPResolver`；工具只能选择是否使用这些配置，不能传入任意探测 URL。
 

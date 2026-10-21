@@ -236,12 +236,15 @@ export class Tab {
   async content(): Promise<string> {
     return this.mainFrame.content();
   }
+  /** Sample this document without applying overrides; optional Worker/WebGL probes do work. */
   inspectEnvironment(options: InspectEnvironmentOptions = {}): Promise<EnvironmentReport> {
     return this.mainFrame.inspectEnvironment(options);
   }
+  /** Collect tab-wide diagnostic evidence; see docs/environment.md for probe scope and cost. */
   diagnoseEnvironment(options: DiagnoseEnvironmentOptions = {}) {
     return diagnoseEnvironment(this, options);
   }
+  /** Apply explicit CDP overrides and verify measured fields; partial failure has no rollback. */
   alignEnvironment(options: AlignEnvironmentOptions, resolver?: GeoIPResolver) {
     return alignEnvironment(this, options, resolver);
   }

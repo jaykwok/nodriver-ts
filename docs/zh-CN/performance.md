@@ -2,6 +2,8 @@
 
 [English](../performance.md)
 
+[2026-10-21 AX 分阶段与队列结果](performance-phases.md)记录候选方案及保留完整读取和串行保护的依据。基准新增原始 AX 候选、观测器/分派/分派后耗时、纯快照与混合负载排队等待。
+
 `npm run bench:mcp` 运行 `benchmarks/mcp.ts`：原始 JSON 结果写 stdout，进度写 stderr。基准使用本地 fixture、全新临时 profile、显式 headless 和默认 sandbox，不访问外部站点。请在没有并行测试或其他高负载任务时运行；功能测试的耗时不能代替基准。
 
 ## 工作负载
@@ -27,7 +29,7 @@
 
 `npm run bench:compare` 运行 `benchmarks/compare.ts`：同一台机器、同一个 Chrome、headless、WebSocket、全新临时 profile 和同一个本地 fixture，两侧执行相同的工作负载。Python 侧通过 `uv` 以隔离模式运行 nodriver 0.50.6（Python 3.12，websockets 17.2），脚本位于 `benchmarks/compare/nodriver_bench.py`。默认先运行 TypeScript，`BENCH_PYTHON_FIRST=1` 时先运行 Python；`BENCH_SAMPLES` 调整往返样本数（默认 200）。
 
-- **冷启动**：启动浏览器并打开空白页，各 5 次。headless 启动默认用探测页去除 UA 中的 HeadlessChrome，nodriver 不做这一步，因此另测 `maskHeadless: false` 作为对等口径。
+- **冷启动**：启动浏览器并打开空白页，各 5 次。这次历史运行使用当时默认的 UA 探测/覆盖，nodriver 不做这一步，因此另测 `maskHeadless: false`。当前已改为显式启用覆盖，历史冷启动数字不代表当前默认。
 - **往返**：预热 20 次后测 200 次 `Browser.getVersion` 与 200 次 `evaluate("1+1")`。
 - **查询**：1000 个按钮的页面上 100 次 `#b500`（nodriver 为 `tab.select`，本项目为 `tab.query`）。
 - **导航**：20 次同源导航到新 URL。本项目 `goto` 等待 load 事件；nodriver 的 `get` 在 load 前返回，脚本以 5 ms 间隔轮询 `document.readyState` 至 complete。

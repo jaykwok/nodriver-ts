@@ -7,8 +7,10 @@ import type { BrowserSessionManagerOptions } from './manager.ts';
 import type { LaunchOptions } from '../browser/launcher.ts';
 import { MCP_PROTOCOL_VERSION } from './protocol.ts';
 import { PACKAGE } from '../version.ts';
+import { serveCompatibleBrowserMcpStdio } from './compat.ts';
 
 interface Parsed {
+  compatibility: boolean;
   browser: BrowserSessionManagerOptions;
   transport: 'stdio' | 'http' | 'socket';
   socketPath?: string;
@@ -42,12 +44,14 @@ const FLAGS = [
   '--read-only',
   '--expose-existing-tabs',
   '--allow-handoff',
+  '--mcp-compat',
 ];
 
 export function parse(args: string[]): Parsed {
   const launch: LaunchOptions = { transport: 'pipe', preset: 'agent' };
   const options: BrowserMcpOptions = { launch };
   const disabled: string[] = [];
+  let compatibility = false;
   let endpoint: string | undefined;
   let transport: Parsed['transport'] = 'stdio',
     port = 3100,
@@ -57,7 +61,8 @@ export function parse(args: string[]): Parsed {
   for (let i = 0; i < args.length; i++) {
     const option = args[i]!;
     if (FLAGS.includes(option)) {
-      if (option === '--headful' || option === '--headless') {
+      if (option === '--mcp-compat') compatibility = true;
+      else if (option === '--headful' || option === '--headless') {
         const headless = option === '--headless';
         if (launch.headless !== undefined && launch.headless !== headless)
           throw new TypeError('Choose --headful or --headless, not both');
@@ -98,7 +103,7 @@ export function parse(args: string[]): Parsed {
     else if (option === '--state-dir') options.stateDir = value;
     else if (option === '--endpoint') endpoint = value;
     else if (option === '--mcp-transport' && ['stdio', 'http', 'socket'].includes(value))
-      transport = value as typeof transport;
+      transport = value as Parsed['transport'];
     else if (option === '--socket-path') socketPath = value;
     else if (option === '--port' && /^\d+$/.test(value) && Number(value) <= 65535)
       port = Number(value);
@@ -114,12 +119,22 @@ export function parse(args: string[]): Parsed {
     delete options.launch;
     options.connect = { endpoint };
   }
-  return { browser: { ...options, ...limits }, transport, socketPath, port, tokenEnv };
+  if (compatibility && transport === 'socket')
+    throw new TypeError('--mcp-compat supports standard stdio and HTTP transports');
+  return {
+    browser: { ...options, ...limits },
+    compatibility,
+    transport,
+    socketPath,
+    port,
+    tokenEnv,
+  };
 }
 
 const HELP = `nodriver-mcp ${PACKAGE.version} — MCP ${MCP_PROTOCOL_VERSION} browser server
 
 MCP transport
+  --mcp-compat                        enable 2025-era stdio or the HTTP /mcp/compat endpoint
   --mcp-transport stdio|http|socket   stdio (default) for client-launched use; http for a
                                       long-running loopback service; socket for local IPC
   --port N                            HTTP port (default 3100)
@@ -149,8 +164,8 @@ Limits
   --queue-limit N --operation-timeout MS
 
 HTTP clients may omit Browser-Lease-Id to use a per-token "default" lease, or send any lease
-name (letters, digits, . _ -) to create one on first use. Only MCP ${MCP_PROTOCOL_VERSION} is
-accepted; legacy initialize is rejected. Logs go to stderr. Chrome starts lazily. No OS service
+name (letters, digits, . _ -) to create one on first use. /mcp always requires MCP
+${MCP_PROTOCOL_VERSION}. --mcp-compat adds MCP 2025-11-25/2025-06-18 on stdio or /mcp/compat. Logs go to stderr. Chrome starts lazily. No OS service
 or autostart is installed.`;
 
 async function main(args: string[]): Promise<void> {
@@ -186,13 +201,16 @@ async function main(args: string[]): Promise<void> {
       tokens: { [token!]: 'local-operator' },
       browser: options.browser,
       port: options.port,
+      compatibility: options.compatibility,
       onError,
     });
     console.error(
       `[nodriver-mcp] Local HTTP listening at ${server.url}/mcp; token is read from ${options.tokenEnv}`,
     );
     handle = server;
-  } else
+  } else if (options.compatibility)
+    handle = serveCompatibleBrowserMcpStdio(options.browser, undefined, onError);
+  else
     handle = serveStdio(() => createBrowserMcpServer(options.browser), {
       legacy: 'reject',
       maxSubscriptions: 4,
