@@ -2,7 +2,23 @@
 
 [English](../environment.md)
 
-三个接口按作用递进：`inspectEnvironment()` 只读取，`diagnoseEnvironment()` 汇总整个标签页的观测，`alignEnvironment()` 按明确配置覆盖并核验。默认不改写 navigator、UA 或设备属性，也不访问外网。MCP 的 `browser_environment` 复用同一套接口。
+三个接口按作用递进：`inspectEnvironment()` 采样但不应用覆盖，`diagnoseEnvironment()` 汇总整个标签页的观测，`alignEnvironment()` 按明确配置覆盖并核验。默认不改写 navigator、UA 或设备属性，也不访问外网。MCP 的 `browser_environment` 复用同一套接口。
+
+## 如何选择诊断流程
+
+这些 API 用于排查配置、复现 Locale/视口问题，或比较受控浏览器运行结果。建议从自己控制的测试页面开始，保持 Chrome 版本、Profile 初始配置与宿主环境可比，并将请求的配置和报告一同保存。
+
+| 需求                                                 | API                     |
+| ---------------------------------------------------- | ----------------------- |
+| 采样单个 Frame 的当前环境                            | `inspectEnvironment()`  |
+| 比较 Frame、读取实际渲染字体或执行显式配置的网络探针 | `diagnoseEnvironment()` |
+| 应用指定测试配置并检查结果                           | `alignEnvironment()`    |
+
+不应用覆盖不代表零开销或不可观察：Worker/WebGL 探针会创建临时资源，字体探针会附加临时 DOM/CSS session，显式启用的 HTTP/STUN 探针会产生流量。只开启排查所需的测量项。衡量某项操作的副作用时，对照组和实验组应运行相同探针，并将探针自身计入测量负载。
+
+`worker` 选项采样的是**新建的 Dedicated Worker**，不检查既有 Worker、Shared Worker、Service Worker、它们的初始脚本请求或首段脚本执行。跨 Worker 与请求头采集请使用[差分审计夹具](differential-audit.md)，覆盖范围以该文档为准。报告匹配、CDP 命令成功或检测网站标签，均不能证明未测量上下文的一致性。
+
+`alignEnvironment()` 会改变浏览器状态，且可能部分成功。它适合显式测试配置，不会自动修复设备指纹，也不会改变 OS 字体、GPU 硬件或原生窗口装饰。应将几何尺寸、媒体设置和渲染器信息与匹配的原生基线比较，而不是强制固定浏览器顶栏高度，或将软件渲染直接判为异常。
 
 ## 采样：inspectEnvironment
 

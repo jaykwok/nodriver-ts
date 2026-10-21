@@ -2,7 +2,23 @@
 
 [简体中文](zh-CN/environment.md)
 
-Three APIs build on each other: `inspectEnvironment()` only reads, `diagnoseEnvironment()` summarizes observations across a whole tab, and `alignEnvironment()` applies an explicit configuration and verifies it. By default nothing rewrites navigator, the UA or device properties, and nothing goes out to the network. The MCP tool `browser_environment` uses the same APIs.
+Three APIs build on each other: `inspectEnvironment()` samples without applying overrides, `diagnoseEnvironment()` summarizes observations across a whole tab, and `alignEnvironment()` applies an explicit configuration and verifies it. By default nothing rewrites navigator, the UA or device properties, and nothing goes out to the network. The MCP tool `browser_environment` uses the same APIs.
+
+## Choosing a diagnostic workflow
+
+Use these APIs to investigate a configuration, reproduce a locale/viewport issue, or compare controlled browser runs. Start on a test page you control, keep the Chrome version, profile setup and host environment comparable, and save the requested configuration alongside the report.
+
+| Need                                                                      | API                     |
+| ------------------------------------------------------------------------- | ----------------------- |
+| A sample of one frame's current environment                               | `inspectEnvironment()`  |
+| Frame comparisons, rendered fonts or explicitly configured network probes | `diagnoseEnvironment()` |
+| Apply a specific test configuration and inspect the result                | `alignEnvironment()`    |
+
+Sampling without overrides is not zero-cost or unobservable: Worker/WebGL probes create temporary resources, font probes attach temporary DOM/CSS sessions, and HTTP/STUN probes generate traffic when requested. Enable only the measurements needed for the investigation. To measure an operation's effects, run the same probes in the control and treatment groups; include the probes themselves in the measured workload.
+
+The `worker` option samples a **new Dedicated Worker**. It does not inspect existing workers, Shared Workers, Service Workers, their initial script requests, or first-script execution. Use the [differential audit fixture](differential-audit.md) for its documented Worker and request-header coverage. A matching report, a successful CDP command, or a site's label alone cannot establish consistency in unmeasured contexts.
+
+`alignEnvironment()` changes browser state and can partially succeed. It is useful for an explicit test configuration, not automatic repair of a device fingerprint: it does not change OS fonts, GPU hardware or native window decorations. Compare geometry, media settings and renderer values against a matching native baseline instead of imposing a fixed browser-toolbar height or assuming software rendering is invalid.
 
 ## Sampling: inspectEnvironment
 

@@ -3,8 +3,11 @@ import type { EnvironmentReport, NavigatorSnapshot } from './environment.ts';
 import type { WaitOptions } from '../utils.ts';
 import { StaleElementError } from '../errors.ts';
 import { timeoutValue } from '../utils.ts';
+/** Optional measurements for a diagnostic run; these do not apply environment overrides. */
 export interface DiagnoseEnvironmentOptions extends WaitOptions {
+  /** Sample a new temporary Dedicated Worker per frame, not existing/Shared/Service Workers. */
   worker?: boolean;
+  /** Create a temporary WebGL context and read its native vendor/renderer. */
   webgl?: boolean;
   /** Actual selected platform fonts. DOM/CSS are enabled on temporary independent sessions. */
   fontSelectors?: string[];
@@ -66,6 +69,15 @@ export interface EnvironmentVerification {
   expected: unknown;
   actual?: unknown;
 }
+/**
+ * Collect evidence when investigating a configuration or comparing controlled browser runs.
+ * Sampling does not change the requested environment, but is not free of observable work:
+ * optional Worker/WebGL/font probes allocate resources or attach temporary CDP sessions.
+ * HTTP/STUN probes run only when explicitly configured. Prefer inspectEnvironment() for a
+ * single-frame sample; use the differential audit fixture for Shared/Service Worker lifecycles
+ * and their request headers. Missing measurements and site labels are not proof of consistency.
+ * See docs/environment.md for probe scope, cleanup and interpretation.
+ */
 export async function diagnoseEnvironment(
   tab: Tab,
   options: DiagnoseEnvironmentOptions = {},
@@ -303,6 +315,13 @@ export async function diagnoseEnvironment(
   wait();
   return report;
 }
+/**
+ * Apply a caller-selected environment for a reproducible test and report before/after evidence.
+ * This is a mutation: partial application is possible, with no atomic rollback. Verification
+ * covers frame documents and newly created Dedicated Workers, not every execution context or
+ * request. CDP overrides do not align native OS fonts, GPU hardware or browser window chrome.
+ * GeoIP resolves only explicitly selected fields through the caller's resolver.
+ */
 export async function alignEnvironment(
   tab: Tab,
   options: AlignEnvironmentOptions,
