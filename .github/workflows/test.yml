@@ -39,6 +39,8 @@ jobs:
       # Real-browser tests depend on runner timing; retry once before failing the job. The first
       # attempt's log is kept and its failures are reported, so a passing retry does not hide them.
       - name: Integration tests
+        # A leaked fixture can keep Node alive after individual tests time out.
+        timeout-minutes: 20
         shell: bash
         run: |
           if npm run test:integration 2>&1 | tee test-results/integration-1.log; then exit 0; fi
