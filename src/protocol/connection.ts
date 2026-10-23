@@ -34,7 +34,25 @@ export class SessionEndedError extends DisconnectedError {
 export interface ConnectionObserver {
   /** Synchronous transport-send observation. at is performance.now(), not wall-clock time. */
   onSend?(event: { seq: number; method: string; sessionId?: string; at: number }): void;
+  /** Caller settlement, once per send attempt; cancellation/timeout does not imply a response. */
   onSettle?(event: { seq: number; durationMs: number; error?: string }): void;
+  /** Correlated wire response, including replies after caller settlement. No payloads are exposed. */
+  onResponse?(event: ResponseObservation): void;
+}
+export interface ResponseObservation {
+  /** The CDP request ID, identical to onSend/onSettle.seq, scoped to this connection. */
+  seq: number;
+  method: string;
+  /** The request's session ID (a detached-session error may arrive at browser level). */
+  sessionId?: string;
+  /** Receive time, using performance.now(). */
+  at: number;
+  /** Elapsed time from the send attempt to receipt, not caller settlement. */
+  durationMs: number;
+  /** True if the caller's request was already retired before this response arrived. */
+  late: boolean;
+  /** CDP error code only; error messages, data and response payloads are omitted. */
+  error?: string;
 }
 export interface ConnectionOptions {
   timeout?: number;
@@ -71,10 +89,16 @@ interface RequestHooks {
   targetId: string;
   accept: (result: unknown) => void;
 }
+interface Unanswered {
+  method: string;
+  sessionId?: string;
+  at: number;
+}
 const ATTACH_CLEANUP_TIMEOUT = 5000;
 export class Connection {
   private nextId = 0;
   private pending = new Map<number, Pending>();
+  private unanswered = new Map<number, Unanswered>();
   private sessions = new Map<string, Session>();
   private sessionParents = new Map<string, string>();
   private abandoned = new Map<number, ReturnType<typeof setTimeout>>();
@@ -105,8 +129,17 @@ export class Connection {
   get closed(): boolean {
     return !!this.failure;
   }
+  /** Requests still awaiting caller settlement, including queued sends. */
   get pendingCount(): number {
     return this.pending.size;
+  }
+  /**
+   * Send attempts without a correlated response. Cancellation, timeout, session end and send
+   * errors do not erase this debt; only a response or connection closure does. Zero on a closed
+   * connection is not evidence of successful responses or completion of browser-side work.
+   */
+  get unansweredCount(): number {
+    return this.unanswered.size;
   }
   /** Global plus per-session event listeners; used for leak checks. */
   get listenerCount(): number {
@@ -280,6 +313,7 @@ export class Connection {
           const message = JSON.stringify({ id, method, params: params[0], sessionId });
           started = performance.now();
           sentOnWire = true;
+          this.unanswered.set(id, { method, sessionId, at: started });
           try {
             observer?.onSend?.({ seq: id, method, sessionId, at: started });
           } catch {}
@@ -330,7 +364,28 @@ export class Connection {
         params?: unknown;
       };
       if (m.id !== undefined) {
+        const wire = this.unanswered.get(m.id);
+        // Unknown IDs and duplicate responses cannot acknowledge another request.
+        if (!wire) return;
         const p = this.pending.get(m.id);
+        // Chrome may answer a detached session's command at browser level with an error.
+        const detached = wire.sessionId !== undefined && m.sessionId === undefined && !!m.error;
+        if (wire.sessionId !== m.sessionId && !detached) {
+          this.finish(new DisconnectedError('CDP response session mismatch'));
+          void this.transport.close();
+          return;
+        }
+        const at = performance.now();
+        const response: ResponseObservation = {
+          seq: m.id,
+          method: wire.method,
+          sessionId: wire.sessionId,
+          at,
+          durationMs: at - wire.at,
+          late: !p,
+          error: m.error ? String(m.error.code) : undefined,
+        };
+        this.unanswered.delete(m.id);
         if (!p) {
           const timer = this.abandoned.get(m.id);
           if (timer) {
@@ -343,14 +398,7 @@ export class Connection {
             } else if (!m.error) void this.close();
             this.pruneAttachingIds();
           }
-          return;
-        }
-        // Chrome answers a command for an already-detached session at browser level (no
-        // sessionId, "Session with given id not found"); fail that command, not the connection.
-        const detached = p.sessionId !== undefined && m.sessionId === undefined && !!m.error;
-        if (p.sessionId !== m.sessionId && !detached) {
-          this.finish(new DisconnectedError('CDP response session mismatch'));
-          void this.transport.close();
+          this.observeResponse(response);
           return;
         }
         this.pending.delete(m.id);
@@ -369,6 +417,7 @@ export class Connection {
           }
         }
         this.pruneAttachingIds();
+        this.observeResponse(response);
       } else if (typeof m.method === 'string') {
         if (m.method === 'Target.attachedToTarget' && !m.sessionId) {
           const event = m.params as { sessionId: string; targetInfo: { targetId: string } };
@@ -413,6 +462,12 @@ export class Connection {
       void this.transport.close();
     }
   }
+  private observeResponse(event: ResponseObservation): void {
+    // Update protocol state and schedule abandoned-attach cleanup before notifying user code.
+    try {
+      this.options.observe?.onResponse?.(event);
+    } catch {}
+  }
   detach(id: string, reason = new DisconnectedError('Session detached')): void {
     const session = this.sessions.get(id);
     if (session instanceof TargetSession && !(reason instanceof SessionEndedError))
@@ -445,6 +500,7 @@ export class Connection {
       );
     }
     this.pending.clear();
+    this.unanswered.clear();
     for (const timer of this.abandoned.values()) clearTimeout(timer);
     this.abandoned.clear();
     this.attachingIds.clear();

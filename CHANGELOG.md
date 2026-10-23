@@ -2,6 +2,10 @@
 
 All notable changes are recorded here. The project follows [Semantic Versioning](https://semver.org/); before 1.0, minor versions may contain breaking changes.
 
+## 0.4.1 — 2026-10-23
+
+- Add payload-free `observe.onResponse` with correlated CDP request IDs and late-response status, plus `Connection.unansweredCount` for send attempts still awaiting replies after cancellation, timeout or session end. Existing `onSettle`, trace and `pendingCount` semantics are unchanged. See [raw sessions](docs/raw-sessions.md) for cleanup and disconnection boundaries.
+
 ## 0.4.0 — 2026-10-21
 
 ### Breaking changes

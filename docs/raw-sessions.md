@@ -100,7 +100,7 @@ untracked attachments from surviving on the connection, and reports the cleanup 
 only the cancelled caller. This does not kill a connected WebSocket browser; Pipe Chrome exits
 when its transport closes.
 
-## Observe sending without recording payloads
+## Observe sends, caller settlement and responses without recording payloads
 
 ```ts
 const browser = await Browser.connect({
@@ -111,7 +111,10 @@ const browser = await Browser.connect({
       // Bind the application's current phase to this command here.
     },
     onSettle({ seq, durationMs, error }) {
-      // Correlate completion with its send sequence.
+      // The caller completed or failed; a cancelled command may still be running in Chrome.
+    },
+    onResponse({ seq, method, sessionId, at, durationMs, late, error }) {
+      // A correlated response arrived, possibly after cancellation/timeout/session end.
     },
   },
 });
@@ -123,9 +126,46 @@ in milliseconds. It records a send attempt, not confirmation Chrome received or 
 Reentrant observer sends are queued to preserve transport invocation order. Observer exceptions
 are isolated. Keep callbacks short; aborting from a callback cannot unsend the observed attempt.
 
-`onSettle` follows completion order and reports elapsed time from the send attempt, with the
-protocol error code or error name on failure. Neither observer receives parameters or results.
+`onSettle` retains its existing meaning: once per sent request when the caller's promise settles,
+in completion order, with elapsed time from the send attempt and the protocol error code or
+error name on failure. A late response does not produce a second settlement.
+
+`onResponse` runs synchronously when a correlated response is processed. `seq` is the same CDP
+request ID used by `onSend` and `onSettle`, scoped to one connection. `sessionId` is the request's
+session ID, including browser-level errors for detached sessions. `at` is the receive time from
+`performance.now()`; `durationMs` measures send-to-response time. `late` means the request was
+already retired by cancellation, timeout, session end or send failure before receipt; it does
+not depend on whether the `onSettle` microtask has run. `error`, if present, is the CDP error code
+as a string. Duplicate/unknown responses are ignored; a session mismatch disconnects instead
+of acknowledging the command. No observer receives parameters, results or protocol error text.
+For an ordinary response, `onResponse` runs before the asynchronous `onSettle` notification.
+Internal response processing and scheduling of cancelled-attach cleanup happen before `onResponse`.
+If a transport responds synchronously during a send, the cleanup send can still be queued;
+`pendingCount` includes it even before `unansweredCount` does.
 Existing `trace` callbacks still run on completion with their existing shape and stderr behavior.
+
+### Unanswered commands and bounded waiting
+
+`connection.pendingCount` counts caller requests awaiting settlement (including queued sends).
+`connection.unansweredCount` counts transport send attempts without a correlated response.
+For example, after a sent command times out, these can be `0` and `1` respectively; the late
+response makes `unansweredCount` zero without settling the caller again. Cancelled attaches
+can enqueue a cleanup detach when the late reply arrives; that new command is also counted.
+
+Cancellation, timeout and session end do **not** remove unanswered commands. Send errors also
+retain the count because an arbitrary transport may fail after partial delivery. Pre-aborted
+requests, serialization failures and queued requests cancelled before their send attempt add
+no debt. Entries store only ID/method/session/timestamp metadata and remain until a response or
+connection closure, regardless of how much history an application evicts. A peer that never
+replies can grow this metadata; callers should stop issuing work and enforce their own cleanup
+deadline, disconnecting if they cannot confirm responses.
+
+Connection closure clears the count without synthesizing responses. Always check `closed` or
+the disconnection event: zero after disconnect is not successful draining. Zero while open is
+only an instantaneous count, not a barrier against concurrent sends, and a CDP reply does not
+prove every browser-side effect has completed. Serialize operation/cleanup ownership in the
+application and wait for both counts to reach zero within its budget before releasing that
+ownership. The library does not introduce a new drain method or change cancellation behavior.
 
 ## Test support
 

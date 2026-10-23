@@ -85,9 +85,9 @@ attach 超时或 signal 中止立即 reject，普通取消不影响其他 attach
 在不可追踪的连接上残留。应用应按 `connection_lost` 处理，不能把它视为普通取消。
 断开 WebSocket 不终止外部 Chrome；Pipe Chrome 会随管道关闭退出。
 
-## 发送时观察
+## 发送、调用结算与响应观察
 
-launch/connect 都接受 `observe: { onSend, onSettle }`。
+launch/connect 都接受 `observe: { onSend, onSettle, onResponse }`，回调均可选。
 
 - `onSend({ seq, method, sessionId?, at })` 在调用 transport.send 前同步执行。
   seq 是连接内单调递增的请求 ID，允许空隙；at 是 `performance.now()` 的毫秒值。
@@ -95,7 +95,32 @@ launch/connect 都接受 `observe: { onSend, onSettle }`。
   回调异常被隔离，应保持简短；回调中取消不能撤回已观察的发送尝试。
 - `onSettle({ seq, durationMs, error? })` 按完成顺序触发，以 seq 关联发送；
   durationMs 从发送尝试开始计算，error 为协议错误码或错误名。
-- 两者都不接收参数或结果。生产 trace 的回调形状和 stderr 行为保持不变，仍按完成顺序触发。
+  语义保持不变：调用方 Promise 成功或失败时通知一次；取消、超时不代表 Chrome 已响应，晚响应不会再次触发结算。
+- `onResponse({ seq, method, sessionId?, at, durationMs, late, error? })` 在处理匹配响应时同步触发。
+  seq 与 onSend/onSettle 相同，是当前连接的 CDP 请求 ID；sessionId 取自请求，包括在浏览器级返回的 session 已分离错误。
+  at 是收到响应时的 `performance.now()`，durationMs 是从发送到响应的耗时。
+  late 表示收到响应前请求已因取消、超时、session 结束或发送失败退出等待；不取决于 onSettle 微任务是否已运行。
+  error 只包含字符串形式的 CDP 错误码。重复或未知 ID 不触发回调，session 不匹配则断开连接，不作为成功匹配的响应。
+- 普通响应的 onResponse 在异步 onSettle 通知之前执行。内部响应处理以及取消 attach 的独立 detach 清理调度先于 onResponse。
+  如果 transport 在发送期间同步返回响应，清理发送可能仍在队列中，此时 pendingCount 已包含它，unansweredCount 尚未包含。
+  所有观察回调均不接收参数、结果或协议错误文本，回调异常被隔离。生产 trace 的回调形状和 stderr 行为保持不变。
+
+### 未响应计数与有期限的等待
+
+`connection.pendingCount` 统计调用方尚未结算的请求（包含待发送队列）。
+`connection.unansweredCount` 统计已尝试发送、尚未收到匹配响应的请求。
+例如已发送的命令超时后，两者分别可以为 `0` 和 `1`；晚响应到达后，后者归零，不会再次结算原调用。
+取消 attach 的晚响应可能触发独立 detach，该清理命令也计入未响应数量。
+
+取消、超时和 session 结束均不清除未响应计数；发送报错也保留，因为任意 transport 可能在部分发送后报错。
+预先取消、序列化失败或发送前已从队列取消的请求不产生计数。内部只保留 ID、方法、session 和时间元数据，
+直到响应到达或连接关闭，与应用的历史记录淘汰无关。持续发送而对端一直不响应会积累元数据，
+调用方应停止新工作并设置清理期限，无法确认响应时按自己的策略断开连接。
+
+连接关闭会清空计数，但不会合成 onResponse。必须同时检查 closed 或断开事件；断开后的零不代表响应全部收到。
+连接开放时的零也只是瞬时状态，不能阻止并发发送；CDP 响应不保证所有浏览器侧副作用均已完成。
+应用应串行管理操作与清理，在自身预算内等待两个计数均归零后再移交操作权。
+本次提供计数，不新增 drain 方法，也不改变取消行为。
 
 ## 测试
 

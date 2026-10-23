@@ -44,6 +44,7 @@ export type {
   TraceEntry,
   EndReason,
   ConnectionObserver,
+  ResponseObservation,
 } from './protocol/connection.ts';
 export type { Transport } from './transport/transport.ts';
 export { WebSocketTransport } from './transport/websocket.ts';
