@@ -2,6 +2,12 @@
 
 All notable changes are recorded here. The project follows [Semantic Versioning](https://semver.org/); before 1.0, minor versions may contain breaking changes.
 
+## 0.4.2 — 2026-10-24
+
+- Keep the response observation and unanswered-request APIs introduced in 0.4.1.
+- Read the selected browser executable's version without launching Chrome during CI metadata collection.
+- Close integration fixture servers even when browser startup fails, with a subprocess regression that verifies failed startup does not keep the test runner alive. Bound the CI integration step to 20 minutes.
+
 ## 0.4.1 — 2026-10-23
 
 - Add payload-free `observe.onResponse` with correlated CDP request IDs and late-response status, plus `Connection.unansweredCount` for send attempts still awaiting replies after cancellation, timeout or session end. Existing `onSettle`, trace and `pendingCount` semantics are unchanged. See [raw sessions](docs/raw-sessions.md) for cleanup and disconnection boundaries.
