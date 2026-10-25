@@ -3,8 +3,42 @@ import { access, mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { Browser, SessionEndedError, type ConnectionObserver } from '../../src/index.ts';
+import {
+  Browser,
+  SessionEndedError,
+  TimeoutError,
+  type ConnectionObserver,
+} from '../../src/index.ts';
 import { poll, removeTree } from '../../src/utils.ts';
+
+test('native drain waits for a late evaluation ACK and explicit detach without replay', async () => {
+  await using browser = await Browser.launch({ headless: true, attach: 'none' });
+  const { targetId } = await browser.cdp.send('Target.createTarget', { url: 'about:blank' });
+  const session = await browser.attachSession(targetId);
+  await assert.rejects(
+    session.sendWith(
+      'Runtime.evaluate',
+      { timeout: 20 },
+      {
+        expression:
+          'new Promise(resolve => setTimeout(() => { globalThis.drainRuns = (globalThis.drainRuns || 0) + 1; resolve(42); }, 150))',
+        awaitPromise: true,
+      },
+    ),
+    TimeoutError,
+  );
+  assert.ok(browser.connection.unansweredCount > 0);
+  await browser.drain({ timeout: 5000 });
+  assert.equal(
+    (await session.send('Runtime.evaluate', { expression: 'globalThis.drainRuns' })).result.value,
+    1,
+  );
+  const detaching = session.detach();
+  await browser.drain({ timeout: 5000 });
+  await detaching;
+  assert.equal(browser.connection.pendingCount, 0);
+  assert.equal(browser.connection.unansweredCount, 0);
+});
 
 test('raw launch, crash, target close and handoff preserve the minimal wire contract', async (t) => {
   const sends: Parameters<NonNullable<ConnectionObserver['onSend']>>[0][] = [];

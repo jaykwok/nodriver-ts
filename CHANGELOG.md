@@ -2,6 +2,13 @@
 
 All notable changes are recorded here. The project follows [Semantic Versioning](https://semver.org/); before 1.0, minor versions may contain breaking changes.
 
+## 0.5.0 — 2026-10-25
+
+- Add event-driven `Connection.drain()` and `Browser.drain()` for pending requests, late replies and library attachment cleanup. Resolve only while connected and drained; reject distinctly on disconnect, timeout or abort. Drain never replays input.
+- Add `getStartupDiagnostics(error)` with startup stage, total/stage elapsed time and available PID, exit status and bounded stderr, captured before failure cleanup. Preserve error types and caller cancellation identity. Plain detached stderr remains explicitly marked as discarded; supervised detached mode captures it.
+- Add opt-in payload-free `observe.onPerformance` for connection queue, serialization, response wait, JSON parse, synchronous dispatch timings and UTF-8 message sizes, without another JSON parse.
+- Add opt-in `supervised: true` with detached WebSocket launch: Windows Job Object or macOS/Linux process-group helper supervises Chrome until explicit release, retaining at most 16 KiB stderr before handoff. `ReleaseUncertainError` reports lost commit acknowledgements without killing potentially released browsers.
+
 ## 0.4.2 — 2026-10-24
 
 - Keep the response observation and unanswered-request APIs introduced in 0.4.1.

@@ -1,7 +1,6 @@
 // Built-package raw-session acceptance, including the minimum supported Node.js 24.22.0.
 import assert from 'node:assert/strict';
 import { rm } from 'node:fs/promises';
-import { setTimeout as delay } from 'node:timers/promises';
 import { Browser, SessionEndedError } from 'nodriver-ts';
 import { ScriptedChrome } from 'nodriver-ts/testing';
 
@@ -21,12 +20,7 @@ try {
     );
     controller.abort(new Error('cancelled'));
     await late;
-    for (
-      let i = 0;
-      i < 100 && !chrome.commands.some((c) => c.method === 'Target.detachFromTarget');
-      i++
-    )
-      await delay(20);
+    await browser.drain({ timeout: 2000 });
     assert.ok(chrome.commands.some((c) => c.method === 'Target.detachFromTarget'));
     assert.equal(session.closed, false);
     const pending = assert.rejects(session.waitFor('Page.loadEventFired'), SessionEndedError);
@@ -45,6 +39,7 @@ const commands = [];
 const owner = await Browser.launch({
   headless: true,
   detached: true,
+  supervised: true,
   attach: 'none',
   observe: {
     onSend(e) {

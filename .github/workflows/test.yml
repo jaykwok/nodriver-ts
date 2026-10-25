@@ -3,6 +3,19 @@ on: [push, pull_request, workflow_dispatch]
 permissions:
   contents: read
 jobs:
+  guardian-macos:
+    name: Supervised lifecycle (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '^24.22.0'
+      - run: npm ci
+      - run: node --test --test-concurrency=1 --test-timeout=60000 test/unit/guardian.test.ts test/unit/guardian-lifecycle.test.ts test/integration/supervised.test.ts
+      - run: npm run build && node test/node-raw-session.mjs
+
   # Run the source suite on current Node.js 24 and check the minimum release below.
   test:
     strategy:

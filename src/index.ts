@@ -4,6 +4,13 @@ export { BrowserContext } from './browser/context.ts';
 export type { ContextOptions, StorageState } from './browser/context.ts';
 export { findExecutable, acquireProfileLock, AGENT_ARGS } from './browser/launcher.ts';
 export type { LaunchOptions } from './browser/launcher.ts';
+export { ReleaseUncertainError } from './browser/guardian.ts';
+export { getStartupDiagnostics } from './browser/startup.ts';
+export type {
+  StartupStage,
+  StartupDiagnostics,
+  StartupProcessDiagnostics,
+} from './browser/startup.ts';
 export { Download } from './browser/download.ts';
 export { Tab } from './page/tab.ts';
 export type { Environment } from './page/tab.ts';
@@ -45,6 +52,7 @@ export type {
   EndReason,
   ConnectionObserver,
   ResponseObservation,
+  PerformanceObservation,
 } from './protocol/connection.ts';
 export type { Transport } from './transport/transport.ts';
 export { WebSocketTransport } from './transport/websocket.ts';

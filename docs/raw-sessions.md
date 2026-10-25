@@ -164,8 +164,59 @@ Connection closure clears the count without synthesizing responses. Always check
 the disconnection event: zero after disconnect is not successful draining. Zero while open is
 only an instantaneous count, not a barrier against concurrent sends, and a CDP reply does not
 prove every browser-side effect has completed. Serialize operation/cleanup ownership in the
-application and wait for both counts to reach zero within its budget before releasing that
-ownership. The library does not introduce a new drain method or change cancellation behavior.
+application before releasing that ownership.
+
+### Native drain
+
+`await browser.drain({ timeout: 11000, signal })` delegates to `connection.drain()`.
+It waits without polling for pending/queued requests, unanswered wire attempts, abandoned
+attaches, and library attachment cleanup (including the continuation that retries a failed
+detach). Synchronous observers and their queued sends run before the idle check.
+
+| Outcome                                            | Result                                                              |
+| -------------------------------------------------- | ------------------------------------------------------------------- |
+| Open connection with all tracked work drained      | Resolves `void`                                                     |
+| Already disconnected or disconnected while waiting | Rejects `DisconnectedError`, with the connection failure as `cause` |
+| Deadline expires                                   | Rejects `TimeoutError`                                              |
+| Signal aborts                                      | Rejects the signal's error reason                                   |
+
+The timeout defaults to the connection's timeout. Each waiter has its own deadline and signal;
+timing out or cancelling a waiter does not cancel commands, retry input or disconnect. Library
+attachment cleanup retains its independent deadlines and can still disconnect on failure.
+Stop command producers first: drain is not a lock against later sends, and does not await
+arbitrary application promises, event waiters, or all browser-side effects. A protocol error
+response pays the wire debt; drain does not turn the command's failure into success. A crashed
+target can leave unanswerable commands, so a drain deadline remains necessary.
+
+```ts
+// Stop/cancel the operation, then wait for its wire replies before detaching its session.
+await browser.drain({ timeout: 11000 });
+await session.detach({ timeout: 5000 });
+await browser.drain({ timeout: 11000 });
+```
+
+### Optional performance observations
+
+Set `observe.onPerformance(entry)` to receive payload-free measurements. This opt-in adds no
+JSON parse and stores no message body. `bytes` is the UTF-8 JSON message size, excluding WebSocket
+framing or pipe delimiters. All timestamps use `performance.now()`.
+
+| Direction | Fields and measurement boundaries                                                                                                                                                                     |
+| --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `send`    | `seq`, `method`, `sessionId`, `at`, `bytes`; `queueMs` from entering the request queue to serialization start; `serializationMs` for JSON serialization                                               |
+| `receive` | `kind` (`response`, `event`, `invalid`), `at`, `bytes`, `parseMs`, `dispatchMs`; correlated responses also include `seq`, `method`, `sessionId`, and `responseWaitMs` when that send was instrumented |
+
+`responseWaitMs` runs from transport invocation (after `onSend`) to receive callback entry.
+It includes transport/network and Chrome time; it cannot isolate Chrome execution. `dispatchMs`
+covers synchronous protocol processing and event/response callbacks, excluding the performance
+callback itself, Promise continuations such as `onSettle`, and asynchronous listener work.
+The queue is the connection's reentrant send queue, not an application/input queue. Instrumentation
+and observer work have overhead; these phases are not an end-to-end input latency breakdown.
+
+Late responses retain their original `seq`. Unknown/duplicate responses have no correlation
+fields. Callback exceptions are isolated. A synchronous transport may emit receive metrics before
+send metrics; correlate by `seq`, not callback order. Rejected sends before serialization produce
+no message metric. No payload or protocol error text is included.
 
 ## Test support
 
@@ -173,11 +224,3 @@ ownership. The library does not introduce a new drain method or change cancellat
 independent attachments, `detachSession(id)`, `crashTarget(id)`, and `destroyTarget(id)`.
 `attachReplyDelayMs` delays the reply after the attachment and its event exist, enabling
 cancelled-late-reply tests. Detach commands are recorded in `commands`.
-
-Unit tests cover these lifetimes, cancellation, cleanup failure, startup budgets and send order.
-Real-browser tests cover raw evaluation, crash/recovery, target close, release/reconnect and
-closing the last window while Chrome stays alive. The latter uses
-`--no-startup-window --keep-alive-for-test`: it is a controlled background-process test,
-not a test of a particular installed extension's background policy. Windows runs it headful;
-Linux without a display uses headless Chrome. Node.js 24 runs the source suite and
-built-package acceptance; CI also checks the minimum supported release, Node.js 24.22.0.

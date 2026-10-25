@@ -18,6 +18,8 @@ import { PipeTransport } from '../transport/pipe.ts';
 import type { Transport } from '../transport/transport.ts';
 import type { ConnectionOptions } from '../protocol/connection.ts';
 import type { AttachPolicy } from './browser.ts';
+import { StartupTracker, type StartupProcessDiagnostics } from './startup.ts';
+import { Guardian } from './guardian.ts';
 import { DisconnectedError, NodriverError, ProfileInUseError } from '../errors.ts';
 import {
   abortReason,
@@ -45,6 +47,12 @@ export interface LaunchOptions extends WaitOptions, ConnectionOptions {
    * A host crash before release can leave Chrome running. Defaults to false.
    */
   detached?: boolean;
+  /**
+   * Supervise Chrome until explicit release, including host hard exit, and capture bounded
+   * stderr in an independent helper. Requires detached: true and WebSocket. Windows 10+
+   * uses a Job Object; macOS/Linux use a process group (helper must remain alive).
+   */
+  supervised?: boolean;
   env?: NodeJS.ProcessEnv;
   handleSignals?: boolean;
   proxyServer?: string;
@@ -159,6 +167,7 @@ export class BrowserProcess {
   private handedOff = false;
   private exited = false;
   private exitCode: number | null = null;
+  private exitSignal: NodeJS.Signals | null = null;
   private stderr = '';
   private signalListeners: Array<[NodeJS.Signals, () => void]> = [];
   readonly child: ChildProcess;
@@ -166,42 +175,64 @@ export class BrowserProcess {
   readonly temporary: boolean;
   readonly detached: boolean;
   private lock?: FileHandle;
+  private readonly guardian?: Guardian;
   private constructor(
     child: ChildProcess,
     profile: string,
     temporary: boolean,
     detached: boolean,
     lock?: FileHandle,
+    guardian?: Guardian,
   ) {
     this.child = child;
     this.profile = profile;
     this.temporary = temporary;
     this.detached = detached;
     this.lock = lock;
+    this.guardian = guardian;
+    if (guardian) return;
     child.stderr?.on('data', (b: Buffer) => {
       this.stderr = (this.stderr + b.toString()).slice(-16_384);
     });
-    child.on('exit', (code) => {
+    child.on('exit', (code, signal) => {
       this.exited = true;
       this.exitCode = code;
+      this.exitSignal = signal;
     });
     child.on('error', (e) => {
-      this.stderr += e.message;
+      this.stderr = (this.stderr + e.message).slice(-16_384);
       this.exited = true;
     });
   }
   get pid(): number | undefined {
-    return this.child.pid;
+    return this.guardian ? this.guardian.diagnostics.pid : this.child.pid;
   }
   /** Exit status and recent stderr, for launch failure messages. */
-  get diagnostics(): { exited: boolean; exitCode: number | null; stderr: string } {
-    return { exited: this.exited, exitCode: this.exitCode, stderr: this.stderr };
+  get diagnostics(): StartupProcessDiagnostics {
+    if (this.guardian) return this.guardian.diagnostics;
+    return {
+      pid: this.pid,
+      exited: this.exited,
+      exitCode: this.exitCode,
+      signal: this.exitSignal,
+      stderr: this.stderr,
+      stderrStatus: this.detached ? 'discarded' : this.child.stderr ? 'captured' : 'unavailable',
+    };
+  }
+  /** @internal Refresh helper-owned stderr before taking a startup failure snapshot. */
+  async captureDiagnostics(): Promise<void> {
+    await this.guardian?.snapshot();
   }
   static async start(
     options: LaunchOptions = {},
+    startup = new StartupTracker(options.signal),
   ): Promise<{ process: BrowserProcess; transport: Transport; endpoint?: string }> {
     timeoutValue(options.timeout ?? CONNECT_TIMEOUT);
     if (options.signal?.aborted) throw abortReason(options.signal);
+    if (options.supervised && (!options.detached || options.transport === 'pipe'))
+      throw new TypeError('supervised requires detached: true and WebSocket transport');
+    if (options.supervised && !['win32', 'darwin', 'linux'].includes(process.platform))
+      throw new TypeError('supervised supports Windows, macOS and Linux');
     if (options.detached && options.transport === 'pipe')
       throw new TypeError(
         'detached requires WebSocket transport; Chrome exits when CDP pipes close',
@@ -232,6 +263,7 @@ export class BrowserProcess {
       throw new TypeError(
         'WebRTC policy preparation requires an owned temporary profile; persistent profiles must be configured by their owner',
       );
+    startup.enter('profile-preparation');
     const profile = temporary
       ? await mkdtemp(join(tmpdir(), 'nodriver-'))
       : resolve(options.userDataDir!);
@@ -297,21 +329,48 @@ export class BrowserProcess {
           : ['--remote-debugging-address=127.0.0.1', '--remote-debugging-port=0']),
       );
       args.push(...extraArgs, 'about:blank');
-      const child = spawn(executable, args, {
-        stdio: pipe
-          ? ['ignore', 'ignore', 'pipe', 'pipe', 'pipe']
-          : ['ignore', 'ignore', options.detached ? 'ignore' : 'pipe'],
-        env: options.env ? { ...process.env, ...options.env } : process.env,
-        windowsHide: true,
-        detached: options.detached === true || process.platform !== 'win32',
-      });
+      startup.enter('process-launch');
+      const guardian = options.supervised
+        ? await Guardian.create(
+            executable,
+            args,
+            options.env ? { ...process.env, ...options.env } : process.env,
+            options,
+          )
+        : undefined;
+      const child =
+        guardian?.child ??
+        spawn(executable, args, {
+          stdio: pipe
+            ? ['ignore', 'ignore', 'pipe', 'pipe', 'pipe']
+            : ['ignore', 'ignore', options.detached ? 'ignore' : 'pipe'],
+          env: options.env ? { ...process.env, ...options.env } : process.env,
+          windowsHide: true,
+          detached: options.detached === true || process.platform !== 'win32',
+        });
       processHandle = new BrowserProcess(
         child,
         profile,
         temporary,
         options.detached === true,
         lock,
+        guardian,
       );
+      startup.process = () => processHandle!.diagnostics;
+      if (guardian) await guardian.waitReady(options);
+      else
+        await new Promise<void>((resolve, reject) => {
+          const spawned = () => {
+            child.off('error', failed);
+            resolve();
+          };
+          const failed = (error: Error) => {
+            child.off('spawn', spawned);
+            reject(error);
+          };
+          child.once('spawn', spawned);
+          child.once('error', failed);
+        });
       if (options.handleSignals)
         for (const signal of ['SIGINT', 'SIGTERM'] as const) {
           const listener = () => {
@@ -325,11 +384,12 @@ export class BrowserProcess {
         return { process: processHandle, transport };
       }
       const owner = processHandle;
+      startup.enter('port-file');
       const endpoint = await poll(
         async () => {
-          if (owner.exited)
+          if (owner.diagnostics.exited)
             throw new NodriverError(
-              `Chrome exited (${owner.exitCode}) before CDP was ready:\n${owner.stderr}`,
+              `Chrome exited (${owner.diagnostics.exitCode}) before CDP was ready`,
             );
           try {
             const [port, path] = (await readFile(join(profile, 'DevToolsActivePort'), 'utf8'))
@@ -346,9 +406,12 @@ export class BrowserProcess {
         { timeout: options.timeout ?? CONNECT_TIMEOUT, signal: options.signal },
         'Chrome CDP endpoint',
       );
+      startup.enter('websocket-connect');
       const transport = await WebSocketTransport.connect(endpoint, options);
       return { process: owner, transport, endpoint };
     } catch (e) {
+      await processHandle?.captureDiagnostics();
+      startup.fail(e);
       if (processHandle) await processHandle.close();
       else {
         if (lock) {
@@ -362,11 +425,16 @@ export class BrowserProcess {
   }
   async waitForExit(ms: number): Promise<boolean> {
     const end = Date.now() + ms;
-    while (!this.exited && Date.now() < end) await delay(25);
-    return this.exited;
+    while (!this.diagnostics.exited && Date.now() < end) await delay(25);
+    return this.diagnostics.exited;
   }
   close(): Promise<void> {
-    if (this.releasing) return this.releasing;
+    if (this.releasing)
+      return this.releasing
+        .catch(() => {})
+        .then(() => {
+          if (!this.handedOff) return (this.closing ??= this.closeOwned());
+        });
     return (this.closing ??= this.closeOwned());
   }
   get released(): boolean {
@@ -379,15 +447,21 @@ export class BrowserProcess {
     if (!this.detached)
       return Promise.reject(new NodriverError('release() requires launch({ detached: true })'));
     // Commit before any await: signal cleanup and close() must never kill a handed-off child.
-    this.handedOff = true;
+    if (!this.guardian) this.handedOff = true;
     for (const [signal, listener] of this.signalListeners) process.off(signal, listener);
     this.signalListeners = [];
-    this.child.unref();
+    if (!this.guardian) this.child.unref();
     return (this.releasing = (async () => {
       if (this.lock) {
         await this.lock.close();
         this.lock = undefined;
         await rm(join(this.profile, '.nodriver.lock'), { force: true });
+      }
+      if (this.guardian) {
+        // From here a lost reply is ambiguous. The helper decides whether EOF kills or leaves
+        // Chrome; the former owner must never issue a kill after a possibly committed release.
+        this.handedOff = true;
+        await this.guardian.release();
       }
     })());
   }
@@ -439,7 +513,8 @@ export class BrowserProcess {
   }
   private async closeOwned(): Promise<void> {
     for (const [signal, listener] of this.signalListeners) process.off(signal, listener);
-    if (this.pid) {
+    if (this.guardian) await this.guardian.close();
+    else if (this.pid) {
       if (process.platform === 'win32' && !this.exited) {
         const killer = spawn('taskkill', ['/pid', String(this.pid), '/t', '/f'], {
           windowsHide: true,

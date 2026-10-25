@@ -40,7 +40,11 @@ try {
 
 `launch()` 和 `connect()` 均接受 `trace: (entry) => ...`，可记录 CDP 方法、会话、耗时和错误，不含参数或结果。`nodriver-ts/testing` 提供能完成启动握手的 `ScriptedChrome`，可使用真实 Browser/Tab/Session 编写脚本化回复、事件和故障测试，详见[测试接口](docs/zh-CN/testing.md)。
 
-需要宿主退出后保留 Chrome 时，使用 `Browser.launch({ detached: true, transport: 'websocket' })`，保存 `await browser.release()` 返回的 endpoint，下次用 `Browser.connect({ endpoint })` 重连。交接后 `close()` 和异步析构只断开连接，profile 保留，宿主锁移除；pipe 交接明确报错。独立启动会丢弃 Chrome stderr，宿主在交接前崩溃可能留下 Chrome。详见[浏览器交接与事件](docs/zh-CN/browser-handoff.md)。
+`browser.drain()` 等待晚响应和 attachment 清理，明确区分断连与超时；可选 `observe.onPerformance` 提供无载荷的分阶段指标，见 [raw session](docs/zh-CN/raw-sessions.md)。[启动诊断](docs/zh-CN/startup-diagnostics.md) 提供失败阶段、耗时及可用的进程信息。
+
+可选 `supervised: true`（配合 detached WebSocket）提供 Windows/macOS/Linux 进程监管、有界 stderr 和显式交接，见[监管启动](docs/zh-CN/lifecycle-ownership-design.md)。
+
+需要宿主退出后保留 Chrome 时，使用 `Browser.launch({ detached: true, transport: 'websocket' })`，保存 `await browser.release()` 返回的 endpoint，下次用 `Browser.connect({ endpoint })` 重连。交接后 `close()` 和异步析构只断开连接，profile 保留，宿主锁移除；pipe 交接明确报错。未启用 `supervised` 时，独立启动会丢弃 Chrome stderr，宿主在交接前崩溃可能留下 Chrome。详见[浏览器交接与事件](docs/zh-CN/browser-handoff.md)。
 
 启动选项还包括 `lang`、`windowSize`、`userAgent`、`preset: 'agent'`（关闭首次运行/搜索引擎选择界面与后台节流）。持久 `userDataDir` 使用带 PID/主机名的锁文件，仅在确认本机持有进程已退出时回收陈旧锁；Chrome 未正常退出留下的 `DevToolsActivePort` 在其端口无响应时自动清理。
 

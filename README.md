@@ -65,6 +65,8 @@ try {
 - **Existing browsers.** `Browser.connect({ endpoint, attach: 'created' })` attaches only to tabs that this client opens or that they open (the default, `'all'`, attaches to every tab). `close()` only disconnects.
 - **Raw sessions.** `attach: 'none'` discovers targets without creating Tabs. `attachSession()` gives independent sessions with explicit lifecycle, cancellation cleanup and send-time observation. See [raw sessions](docs/raw-sessions.md).
 - **CDP tracing.** Pass `trace: (entry) => ...` to `launch` or `connect` to collect method, session, duration, and error code. `trace: true` or `NODRIVER_TRACE=1` logs to stderr; parameters and results are never logged.
+- **Lifecycle diagnostics.** `browser.drain()` waits for late replies and attachment cleanup with distinct disconnect/timeout failures. Optional `observe.onPerformance` reports phase timings without payloads; see [raw sessions](docs/raw-sessions.md). [Startup diagnostics](docs/startup-diagnostics.md) expose failure stage, elapsed time and available process information.
+- **Supervised handoff.** Add `supervised: true` to detached WebSocket launch for process supervision, bounded stderr and explicit release on Windows/macOS/Linux. See [supervised launch](docs/lifecycle-ownership-design.md).
 - **Scripted tests.** `nodriver-ts/testing` provides a fake CDP peer that builds real Browser/Tab/Session objects, scripts replies and events, and records commands with parameters. See [testing](docs/testing.md).
 
 See [docs/api.md](docs/api.md) and the [examples](examples/).
@@ -73,7 +75,7 @@ To keep Chrome open after the Node host exits, launch with `detached: true` and 
 then persist the endpoint returned by `await browser.release()`. Later, use
 `Browser.connect({ endpoint })`. Release removes the controller's profile lock, retains the
 profile, and makes subsequent `close()` / async disposal disconnect only. Pipe handoff is
-rejected. Detached launch discards Chrome stderr; a host crash before release can leave Chrome
+rejected. Without `supervised`, detached launch discards Chrome stderr; a host crash before release can leave Chrome
 running. See [handoff and CDP event usage](docs/browser-handoff.md) for lifecycle limits.
 
 ## MCP server

@@ -35,7 +35,7 @@ import { Browser } from 'nodriver-ts';
 }
 ```
 
-`detached` 默认为 `false`，既有启动/关闭行为不变。设为 `true` 后，所有平台都以分离模式 spawn Chrome，stdin/stdout/stderr 都不绑定宿主管道；Chrome 的 stderr 不再进入启动诊断。CDP 仍使用 WebSocket，调试端口须在浏览器存活期间保持可用。
+`detached` 默认为 `false`，既有启动/关闭行为不变。设为 `true` 且未启用 `supervised` 时，所有平台都以分离模式 spawn Chrome，stdin/stdout/stderr 都不绑定宿主管道；Chrome 的 stderr 不再进入启动诊断。监管模式则通过独立 helper 采集有界 stderr。CDP 仍使用 WebSocket，调试端口须在浏览器存活期间保持可用。
 
 `release()` 幂等，返回浏览器的 WebSocket endpoint。它不发送 `Browser.close`、不终止进程、不关闭标签页或删除 profile，而是解除信号清理、取消子进程对 Node 事件循环的引用并断开 CDP。之后 `browser.owned === false`，`browser.closed === true`（指本连接），`close()`、`Symbol.asyncDispose` 和原 `browser.process.close()` 都不会终止 Chrome。旧 Tab/Session 不可继续使用，重连后获取新对象。已开始的 `close()` 会使后续 `release()` 拒绝；已开始的 `release()` 则使并发 `close()` 等待交接后仅断开。
 
@@ -51,7 +51,7 @@ Pipe 模式不能交接：Chrome 的 CDP 管道断开会导致其退出。`relea
 - `Browser.connect().close()` 不终止 Chrome。需要最终退出时，由用户关闭浏览器，或由调用方显式发送 `browser.cdp.send('Browser.close')`；断开时可能收到连接关闭错误。
 - endpoint 只在这一次 Chrome 生命周期内有效。浏览器退出后需重新启动并保存新 endpoint。
 
-本实现不提供 Job Object、看门狗或原生辅助进程。普通启动失败或取消仍尝试终止 Chrome 并清理资源，但宿主从 spawn 到交接之间被强制终止或崩溃，可能留下独立 Chrome，包括尚未就绪的实例。需要“就绪前随宿主退出，就绪后独立存活”的严格保证时，须由上层提供平台进程监管。
+普通 detached 模式没有进程监管，宿主在 release 前死亡可能留下 Chrome。可额外启用 `supervised: true`，使用 Windows Job Object 或 macOS/Linux 进程组 helper，并采集有界启动 stderr。初始化成功不会自动交接，须显式 release。平台限制与交接错误处理见[监管所有权](lifecycle-ownership-design.md)。
 
 分离启动也不保证抵抗外部进程树终止。例如 Windows 上，上层仍可能通过 `taskkill /T /F` 连带终止已交接 Chrome。因此交接不能修复 MCP 宿主的进程树强杀策略。
 

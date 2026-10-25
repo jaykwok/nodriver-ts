@@ -119,8 +119,51 @@ launch/connect 都接受 `observe: { onSend, onSettle, onResponse }`，回调均
 
 连接关闭会清空计数，但不会合成 onResponse。必须同时检查 closed 或断开事件；断开后的零不代表响应全部收到。
 连接开放时的零也只是瞬时状态，不能阻止并发发送；CDP 响应不保证所有浏览器侧副作用均已完成。
-应用应串行管理操作与清理，在自身预算内等待两个计数均归零后再移交操作权。
-本次提供计数，不新增 drain 方法，也不改变取消行为。
+应用应串行管理操作与清理，再移交操作权。
+
+### 原生 drain
+
+`await browser.drain({ timeout: 11000, signal })` 委托给 `connection.drain()`，通过状态变化通知等待，
+不进行轮询。覆盖待发送/待结算请求、未响应发送、取消 attach 的晚回复与独立清理，
+以及失败 detach 的异步重试衔接。同步观察回调及其排队发送先于空闲检查。
+
+| 结果                         | 行为                                         |
+| ---------------------------- | -------------------------------------------- |
+| 连接仍开放，所有跟踪工作排空 | 正常返回 `void`                              |
+| 调用前或等待期间断连         | 抛 `DisconnectedError`，`cause` 为原断连原因 |
+| 超过期限                     | 抛 `TimeoutError`                            |
+| signal 取消                  | 抛 signal 的错误 reason                      |
+
+默认期限使用 connection 的 timeout；每个等待者的期限和 signal 独立。
+drain 超时或取消不取消命令、不重发输入、不自动断连；attachment 清理失败可能按其独立期限断连。
+先停止命令生产者：drain 不阻止未来发送，不等待任意应用 Promise、事件等待器或所有浏览器副作用。
+协议错误响应也会偿还未响应计数，但不会把原命令的失败变成成功。
+target 崩溃可能留下永不回复的命令，仍须设置期限。
+
+```ts
+await browser.drain({ timeout: 11000 });
+await session.detach({ timeout: 5000 });
+await browser.drain({ timeout: 11000 });
+```
+
+### 可选分阶段性能观察
+
+配置 `observe.onPerformance(entry)`，收到不含载荷的指标；复用现有 JSON 解析，不保存消息正文。
+`bytes` 是 JSON 的 UTF-8 字节数，不含 WebSocket 帧或 pipe 分隔符；时间基于 `performance.now()`。
+
+| direction | 指标                                                                                                                                                                 |
+| --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `send`    | `seq`、`method`、`sessionId`、`at`、`bytes`；`queueMs` 为请求进入连接队列到序列化开始；`serializationMs` 为 JSON 序列化耗时                                          |
+| `receive` | `kind`（`response` / `event` / `invalid`）、`at`、`bytes`、`parseMs`、`dispatchMs`；匹配响应还含 `seq`、`method`、`sessionId`，发送时已开启指标则含 `responseWaitMs` |
+
+`responseWaitMs` 从 transport 调用前（onSend 后）到接收回调入口，包含传输、网络和 Chrome 等待，
+不能单独解释为 Chrome 执行时间。`dispatchMs` 覆盖同步协议处理、事件和 onResponse 回调，
+不含性能观察回调自身、onSettle 等 Promise 微任务或异步监听器后续工作。
+queueMs 只反映连接的重入发送队列，不含应用或输入队列。指标和回调本身有开销，不能将这些数值直接等同于端到端输入耗时。
+
+晚回复保留原 seq；重复/未知响应没有关联字段。观察回调异常被隔离。
+同步 transport 可能先发 receive 指标，再发 send 指标，应按 seq 关联。
+序列化前拒绝的发送没有消息指标；指标不包含载荷或协议错误文本。
 
 ## 测试
 
@@ -128,9 +171,3 @@ launch/connect 都接受 `observe: { onSend, onSettle, onResponse }`，回调均
 fixture 支持独立 attachment、`detachSession(id)`、`crashTarget(id)`、`destroyTarget(id)`；
 `attachReplyDelayMs` 在 attachment 已建立并发出事件后延迟响应，用于取消后迟到响应测试。
 `commands` 记录 detachFromTarget 等命令及参数。
-
-单元测试覆盖生命周期、取消、清理失败、总 deadline 和发送顺序。
-真实 Chrome 覆盖 raw evaluate、crash/recovery、关闭 target、release/reconnect 和后台进程最后窗口关闭。
-最后一项用 `--no-startup-window --keep-alive-for-test` 控制后台存活，Windows 使用真实窗口，
-无显示环境的 Linux 使用 headless；它不验证特定扩展的后台策略。
-Node.js 24 跑源码与构建产物验收，CI 另检查最低支持版本 Node.js 24.22.0。

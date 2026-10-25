@@ -38,7 +38,33 @@ export interface ConnectionObserver {
   onSettle?(event: { seq: number; durationMs: number; error?: string }): void;
   /** Correlated wire response, including replies after caller settlement. No payloads are exposed. */
   onResponse?(event: ResponseObservation): void;
+  /** Opt-in phase timings and UTF-8 message sizes; no payload retention or extra JSON parse. */
+  onPerformance?(event: PerformanceObservation): void;
 }
+export type PerformanceObservation =
+  | {
+      direction: 'send';
+      seq: number;
+      method: string;
+      sessionId?: string;
+      at: number;
+      bytes: number;
+      queueMs: number;
+      serializationMs: number;
+    }
+  | {
+      direction: 'receive';
+      kind: 'response' | 'event' | 'invalid';
+      at: number;
+      bytes: number;
+      parseMs: number;
+      dispatchMs: number;
+      /** Present only for a correlated response (including late responses). */
+      seq?: number;
+      method?: string;
+      sessionId?: string;
+      responseWaitMs?: number;
+    };
 export interface ResponseObservation {
   /** The CDP request ID, identical to onSend/onSettle.seq, scoped to this connection. */
   seq: number;
@@ -93,6 +119,7 @@ interface Unanswered {
   method: string;
   sessionId?: string;
   at: number;
+  transportAt?: number;
 }
 const ATTACH_CLEANUP_TIMEOUT = 5000;
 export class Connection {
@@ -105,6 +132,10 @@ export class Connection {
   private attachingIds = new Map<string, EndReason | undefined>();
   private sendQueue: Array<() => void> = [];
   private sending = false;
+  private cleanupCount = 0;
+  private settlingCount = 0;
+  private readonly drainWaiters = new Set<() => void>();
+  private drainScheduled = false;
   /** Per-session listeners in registration order, so dispatch cost tracks one session only. */
   private routes = new Map<string, Set<Route>>();
   private readonly trace?: (entry: TraceEntry) => void;
@@ -140,6 +171,59 @@ export class Connection {
    */
   get unansweredCount(): number {
     return this.unanswered.size;
+  }
+  /**
+   * Wait for caller requests, wire replies and library attachment cleanup. Rejects on
+   * disconnect/timeout/abort; never retries commands or closes the connection itself.
+   * Stop producers first: this is a quiescence check, not a lock against future sends.
+   */
+  drain(options: WaitOptions = {}): Promise<void> {
+    const timeout = timeoutValue(options.timeout ?? this.timeout);
+    if (this.failure) return Promise.reject(this.drainFailure());
+    if (options.signal?.aborted) return Promise.reject(abortReason(options.signal));
+    return new Promise((resolve, reject) => {
+      const finish = (error?: Error) => {
+        clearTimeout(timer);
+        options.signal?.removeEventListener('abort', abort);
+        this.drainWaiters.delete(check);
+        if (error) reject(error);
+        else resolve();
+      };
+      const check = () => {
+        if (this.failure) finish(this.drainFailure());
+        else if (
+          !this.pending.size &&
+          !this.unanswered.size &&
+          !this.abandoned.size &&
+          !this.cleanupCount &&
+          !this.settlingCount &&
+          !this.sending &&
+          !this.sendQueue.length
+        )
+          finish();
+      };
+      const abort = () => finish(abortReason(options.signal!));
+      const timer = setTimeout(
+        () => finish(new TimeoutError(`CDP drain timed out after ${timeout}ms`)),
+        timeout,
+      );
+      this.drainWaiters.add(check);
+      options.signal?.addEventListener('abort', abort, { once: true });
+      this.notifyDrain();
+    });
+  }
+  private drainFailure(): DisconnectedError {
+    return new DisconnectedError('CDP disconnected before drain completed', {
+      cause: this.failure,
+    });
+  }
+  private notifyDrain(): void {
+    if (!this.drainWaiters.size || this.drainScheduled) return;
+    this.drainScheduled = true;
+    queueMicrotask(() => {
+      this.drainScheduled = false;
+      for (const check of this.drainWaiters) check();
+    });
   }
   /** Global plus per-session event listeners; used for leak checks. */
   get listenerCount(): number {
@@ -216,6 +300,7 @@ export class Connection {
   /** @internal Cleanup has its own deadline and never uses the cancelled operation signal. */
   async cleanupAttachment(id: string): Promise<void> {
     if (this.closed) return;
+    this.cleanupCount++;
     try {
       await this.root.sendWith(
         'Target.detachFromTarget',
@@ -233,6 +318,22 @@ export class Connection {
         this.reportError(error);
         await this.close();
       }
+    } finally {
+      this.cleanupCount--;
+      this.notifyDrain();
+    }
+  }
+  /** @internal Track the continuation that may start independent detach cleanup. */
+  async detachAttachment(id: string, options: WaitOptions): Promise<void> {
+    this.cleanupCount++;
+    try {
+      await this.root.sendWith('Target.detachFromTarget', options, { sessionId: id });
+    } catch (error) {
+      void this.cleanupAttachment(id);
+      throw error;
+    } finally {
+      this.cleanupCount--;
+      this.notifyDrain();
     }
   }
   request<M extends Command>(
@@ -256,6 +357,8 @@ export class Connection {
     const id = ++this.nextId;
     const trace = this.trace;
     const observer = this.options.observe;
+    const metrics = observer?.onPerformance;
+    const queuedAt = metrics ? performance.now() : 0;
     let started = performance.now();
     let sentOnWire = false;
     const record =
@@ -286,6 +389,7 @@ export class Connection {
           p.cleanup();
           if (hooks && sentOnWire) this.abandonAttach(id);
           reject(error);
+          this.notifyDrain();
         }
       };
       const abort = () => cancel(abortReason(options.signal!));
@@ -310,15 +414,34 @@ export class Connection {
       this.sendQueue.push(() => {
         if (!this.pending.has(id) || this.closed) return;
         try {
+          const serializingAt = metrics ? performance.now() : 0;
           const message = JSON.stringify({ id, method, params: params[0], sessionId });
           started = performance.now();
           sentOnWire = true;
-          this.unanswered.set(id, { method, sessionId, at: started });
+          const wire: Unanswered = { method, sessionId, at: started };
+          this.unanswered.set(id, wire);
           try {
             observer?.onSend?.({ seq: id, method, sessionId, at: started });
           } catch {}
           // The observer describes this send attempt. Its cancellation cannot unsend it.
-          const sent = this.transport.send(message);
+          if (metrics) wire.transportAt = performance.now();
+          let sent: void | Promise<void>;
+          try {
+            sent = this.transport.send(message);
+          } finally {
+            try {
+              metrics?.({
+                direction: 'send',
+                seq: id,
+                method,
+                sessionId,
+                at: started,
+                bytes: Buffer.byteLength(message),
+                queueMs: serializingAt - queuedAt,
+                serializationMs: started - serializingAt,
+              });
+            } catch {}
+          }
           if (sent)
             void sent.catch((e) =>
               cancel(e instanceof Error ? e : new DisconnectedError(String(e))),
@@ -333,10 +456,19 @@ export class Connection {
           while (this.sendQueue.length) this.sendQueue.shift()!();
         } finally {
           this.sending = false;
+          this.notifyDrain();
         }
       }
     });
-    if (record) void pending.then(() => record(), record);
+    if (record) {
+      this.settlingCount++;
+      const settled = (error?: Error) => {
+        record(error);
+        this.settlingCount--;
+        this.notifyDrain();
+      };
+      void pending.then(() => settled(), settled);
+    }
     return pending;
   }
   private abandonAttach(id: number): void {
@@ -354,6 +486,10 @@ export class Connection {
   }
   private receive(message: string): void {
     if (this.failure) return;
+    const metrics = this.options.observe?.onPerformance;
+    const receivedAt = metrics ? performance.now() : 0;
+    let parsedAt = receivedAt;
+    let metric: Extract<PerformanceObservation, { direction: 'receive' }> | undefined;
     try {
       const m = JSON.parse(message) as {
         id?: number;
@@ -363,10 +499,30 @@ export class Connection {
         method?: string;
         params?: unknown;
       };
+      if (metrics) {
+        parsedAt = performance.now();
+        metric = {
+          direction: 'receive',
+          kind:
+            m.id !== undefined ? 'response' : typeof m.method === 'string' ? 'event' : 'invalid',
+          at: receivedAt,
+          bytes: 0,
+          parseMs: parsedAt - receivedAt,
+          dispatchMs: 0,
+        };
+      }
       if (m.id !== undefined) {
         const wire = this.unanswered.get(m.id);
         // Unknown IDs and duplicate responses cannot acknowledge another request.
         if (!wire) return;
+        if (metric)
+          Object.assign(metric, {
+            seq: m.id,
+            method: wire.method,
+            sessionId: wire.sessionId,
+            responseWaitMs:
+              wire.transportAt === undefined ? undefined : receivedAt - wire.transportAt,
+          });
         const p = this.pending.get(m.id);
         // Chrome may answer a detached session's command at browser level with an error.
         const detached = wire.sessionId !== undefined && m.sessionId === undefined && !!m.error;
@@ -419,6 +575,7 @@ export class Connection {
         this.pruneAttachingIds();
         this.observeResponse(response);
       } else if (typeof m.method === 'string') {
+        if (metric) Object.assign(metric, { method: m.method, sessionId: m.sessionId });
         if (m.method === 'Target.attachedToTarget' && !m.sessionId) {
           const event = m.params as { sessionId: string; targetInfo: { targetId: string } };
           if (
@@ -458,8 +615,37 @@ export class Connection {
         this.dispatch({ method: m.method, params: m.params ?? {}, sessionId: m.sessionId });
       } else throw new Error('Invalid CDP message');
     } catch (e) {
+      if (metrics && !metric) {
+        parsedAt = performance.now();
+        metric = {
+          direction: 'receive',
+          kind: 'invalid',
+          at: receivedAt,
+          bytes: 0,
+          parseMs: parsedAt - receivedAt,
+          dispatchMs: 0,
+        };
+      }
       this.finish(new DisconnectedError(`Malformed CDP message: ${String(e)}`));
       void this.transport.close();
+    } finally {
+      if (metrics) {
+        const finishedAt = performance.now();
+        metric ??= {
+          direction: 'receive',
+          kind: 'invalid',
+          at: receivedAt,
+          bytes: 0,
+          parseMs: finishedAt - receivedAt,
+          dispatchMs: 0,
+        };
+        metric.bytes = Buffer.byteLength(message);
+        metric.dispatchMs = finishedAt - parsedAt;
+        try {
+          metrics(metric);
+        } catch {}
+      }
+      this.notifyDrain();
     }
   }
   private observeResponse(event: ResponseObservation): void {
@@ -486,6 +672,7 @@ export class Connection {
     session?.invalidate(reason);
     this.sessions.delete(id);
     this.routes.delete(id);
+    this.notifyDrain();
   }
   private finish(reason: Error): void {
     if (this.failure) return;
@@ -512,6 +699,7 @@ export class Connection {
     this.disconnected.clear();
     this.events.clear();
     this.routes.clear();
+    this.notifyDrain();
   }
   async close(): Promise<void> {
     this.finish(new DisconnectedError('Connection closed by client'));
@@ -647,14 +835,6 @@ export class TargetSession extends Session {
     if (options.signal?.aborted) return Promise.reject(abortReason(options.signal));
     timeoutValue(options.timeout ?? this.connection.timeout);
     this.end('detach-requested');
-    return (this.detaching = this.connection.root
-      .sendWith('Target.detachFromTarget', options, { sessionId: this.id! })
-      .then(
-        () => {},
-        (error) => {
-          void this.connection.cleanupAttachment(this.id!);
-          throw error;
-        },
-      ));
+    return (this.detaching = this.connection.detachAttachment(this.id!, options));
   }
 }

@@ -6,6 +6,7 @@ import {
   type TargetSession,
 } from '../protocol/connection.ts';
 import { BrowserProcess, type LaunchOptions } from './launcher.ts';
+import { StartupTracker } from './startup.ts';
 import { BrowserContext, type ContextOptions } from './context.ts';
 import { Tab, type Environment } from '../page/tab.ts';
 import { Download } from './download.ts';
@@ -81,12 +82,13 @@ export class Browser {
     });
   }
   static async launch(options: LaunchOptions = {}): Promise<Browser> {
-    return initializeWithin(options, async (step) => {
+    return initializeWithin(options, async (step, startup) => {
       if (options.attach === 'none' && options.maskHeadless === true)
         throw new TypeError(
           "attach: 'none' does not support maskHeadless; configure raw sessions explicitly",
         );
-      const launched = await BrowserProcess.start({ ...options, ...step() });
+      const launched = await BrowserProcess.start({ ...options, ...step() }, startup);
+      startup.process = () => launched.process.diagnostics;
       const connection = new Connection(launched.transport, {
         timeout: options.timeout,
         onError: options.onError,
@@ -94,6 +96,7 @@ export class Browser {
         observe: options.observe,
       });
       try {
+        startup.enter('protocol-handshake');
         const version = await connection.root.sendWith('Browser.getVersion', step());
         const browser = new Browser(
           connection,
@@ -108,6 +111,7 @@ export class Browser {
           ),
           webRtcIPHandlingPolicy: options.webRtcIPHandlingPolicy ?? 'native',
         };
+        startup.enter('target-initialization');
         const initializing = step();
         await bounded(browser.initialize(step), initializing, 'Browser initialization');
         // With Pipe, CDP can answer before Chrome has created its startup window.
@@ -129,28 +133,26 @@ export class Browser {
           options.maskHeadless === true &&
           !options.userAgent
         ) {
+          startup.enter('environment-configuration');
           const configuring = step();
           await bounded(browser.maskHeadless(), configuring, 'Headless configuration');
         }
         step();
         return browser;
       } catch (e) {
+        await launched.process.captureDiagnostics?.();
+        startup.fail(e);
         await connection.close();
-        const { exited, exitCode, stderr } = launched.process.diagnostics;
         await launched.process.close();
-        if (exited)
-          throw new NodriverError(
-            `Chrome ${exited ? `exited (${exitCode})` : 'failed'} during startup: ${e instanceof Error ? e.message : String(e)}${stderr.trim() ? `\n${stderr.trim()}` : ''}`,
-            { cause: e },
-          );
         throw e;
       }
     });
   }
   static async connect(options: ConnectOptions): Promise<Browser> {
-    return initializeWithin(options, async (step) => {
+    return initializeWithin(options, async (step, startup) => {
       let endpoint = options.endpoint;
       if (/^https?:/.test(endpoint)) {
+        startup.enter('endpoint-discovery');
         const { signal } = step();
         const response = await fetch(`${endpoint.replace(/\/$/, '')}/json/version`, { signal });
         if (!response.ok)
@@ -158,16 +160,20 @@ export class Browser {
         endpoint = ((await response.json()) as { webSocketDebuggerUrl: string })
           .webSocketDebuggerUrl;
       }
+      startup.enter('websocket-connect');
       const transport = await WebSocketTransport.connect(endpoint, step());
       const connection = new Connection(transport, options);
       try {
+        startup.enter('protocol-handshake');
         const version = await connection.root.sendWith('Browser.getVersion', step());
         const browser = new Browser(connection, version, undefined, endpoint, options.attach);
+        startup.enter('target-initialization');
         const initializing = step();
         await bounded(browser.initialize(step), initializing, 'Browser initialization');
         step();
         return browser;
       } catch (e) {
+        startup.fail(e);
         await connection.close();
         throw e;
       }
@@ -441,6 +447,10 @@ export class Browser {
       options.signal?.addEventListener('abort', abort, { once: true });
     });
   }
+  /** Wait for wire replies and library attachment cleanup; see Connection.drain(). */
+  drain(options: WaitOptions = {}): Promise<void> {
+    return this.connection.drain(options);
+  }
   /** Disconnect CDP without relinquishing process ownership. Pipe Chrome exits on disconnect. */
   async disconnect(): Promise<void> {
     await this.connection.close();
@@ -504,8 +514,9 @@ export class Browser {
 /** A single deadline covers discovery and initialization, not each command separately. */
 async function initializeWithin<T>(
   options: WaitOptions,
-  run: (step: () => WaitOptions) => Promise<T>,
+  run: (step: () => WaitOptions, startup: StartupTracker) => Promise<T>,
 ): Promise<T> {
+  const startup = new StartupTracker(options.signal);
   const timeout = timeoutValue(options.timeout ?? CONNECT_TIMEOUT);
   const controller = new AbortController();
   const signal = options.signal
@@ -516,7 +527,10 @@ async function initializeWithin<T>(
     timeout,
   );
   try {
-    return await run(budget({ timeout, signal }, 'Browser initialization'));
+    return await run(budget({ timeout, signal }, 'Browser initialization'), startup);
+  } catch (error) {
+    startup.fail(error);
+    throw error;
   } finally {
     clearTimeout(timer);
   }

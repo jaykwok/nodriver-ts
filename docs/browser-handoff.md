@@ -35,7 +35,7 @@ import { Browser } from 'nodriver-ts';
 }
 ```
 
-`detached` is `false` by default, so existing launch/close behaviour is unchanged. With `true`, Chrome is spawned detached on every platform, and its stdin/stdout/stderr are not tied to host pipes; Chrome's stderr no longer feeds launch diagnostics. CDP still uses WebSocket, and the debugging port must stay available for as long as the browser lives.
+`detached` is `false` by default, so existing launch/close behaviour is unchanged. With `true` and without `supervised`, Chrome is spawned detached on every platform, and its stdin/stdout/stderr are not tied to host pipes; Chrome's stderr no longer feeds launch diagnostics. Supervised mode instead captures bounded stderr through an independent helper. CDP still uses WebSocket, and the debugging port must stay available for as long as the browser lives.
 
 `release()` is idempotent and returns the browser's WebSocket endpoint. It does not send `Browser.close`, kill the process, close tabs or delete the profile. Instead it removes signal cleanup, unrefs the child process from Node's event loop and disconnects CDP. Afterwards `browser.owned === false` and `browser.closed === true` (for this connection), and neither `close()`, `Symbol.asyncDispose` nor the original `browser.process.close()` will terminate Chrome. Old Tab/Session objects can no longer be used; reconnect to get new ones. A `close()` already in progress makes a later `release()` reject; a `release()` already in progress makes a concurrent `close()` wait for the handoff and then only disconnect.
 
@@ -51,7 +51,7 @@ Pipe mode cannot be handed off: Chrome exits when its CDP pipe closes. `release(
 - `Browser.connect().close()` does not terminate Chrome. When Chrome should finally exit, the user closes the browser, or the caller sends `browser.cdp.send('Browser.close')` explicitly; a connection-closed error may arrive as it disconnects.
 - An endpoint is valid only for that one Chrome lifetime. After the browser exits, launch again and save the new endpoint.
 
-This implementation provides no Job Object, watchdog or native helper process. A normal launch that fails or is cancelled still tries to terminate Chrome and clean up, but if the host is force-killed or crashes between spawn and handoff, a detached Chrome can be left behind, including one that was not ready yet. If you need a strict guarantee of "exit with the host before ready, survive independently after ready", a higher layer must supervise the process at the platform level.
+Plain detached mode provides no process supervision: host death before release may leave Chrome behind. Add `supervised: true` to opt into a Windows Job Object or macOS/Linux process-group helper and bounded startup stderr. Readiness alone does not hand off ownership; explicit release does. See [supervised ownership](lifecycle-ownership-design.md) for platform limits and release error handling.
 
 A detached launch also does not resist termination of an external process tree. On Windows, for example, a higher layer can still kill a handed-off Chrome with `taskkill /T /F`. Handoff therefore cannot fix an MCP host's policy of force-killing process trees.
 
