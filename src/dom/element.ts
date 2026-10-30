@@ -96,7 +96,10 @@ export class Element {
   }
   private async input<T>(name: string, options: InputOptions, task: () => Promise<T>): Promise<T> {
     let result!: T;
-    await this.frame.tab.inputBehavior.action(name, options, async () => {
+    await this.frame.tab.inputBehavior.action(name, options, async (action) => {
+      this.assertValid();
+      for (let frame: Frame | undefined = this.frame; frame; frame = frame.parent)
+        action.watch(frame.session, frame.id);
       result = await task();
     });
     return result;

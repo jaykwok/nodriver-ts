@@ -6,6 +6,7 @@ All notable changes are recorded here. The project follows [Semantic Versioning]
 
 - Apply one input deadline and cancellation signal to queueing, preparation and each effective CDP command. Expose prompt interruption snapshots and `InputActionError.cleanup`, with an independent cleanup budget and blocked input after unconfirmed cleanup. Inputs are never replayed.
 - Element action preparation failures also use `InputActionError`; inspect `cause` for the original timeout, cancellation or actionability error.
+- High-level input watches the target frame and its ancestors; unrelated iframe navigation or removal does not interrupt the action.
 - Add explicit `Keyboard.compose()` with UTF-16 selections, update/commit/cancel, focus and document checks, and at most one commit attempt. Ordinary `type()` keeps its existing behavior.
 - Add `Browser.inputScope()` and `createInputScope()` for raw target sessions, sharing the connection's Tab input queue, step budgets and guards, reverse-order resource release and structured partial results.
 - Add bounded `Browser.presentationLease()` for background raw target presentation with frame, byte, duration and ACK limits, explicit stop cleanup and disconnect-aware reports. It never activates targets, enables Runtime or replays input.

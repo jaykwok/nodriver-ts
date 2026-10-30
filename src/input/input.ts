@@ -429,7 +429,6 @@ export class Keyboard {
   ): Promise<InputReport> {
     if (this.scope) throw new Error('Use the scope composition controller inside an input scope');
     return this.behavior.action('composition', options, async (action) => {
-      action.watch(this.session);
       await action.send(this.session, 'Page.enable');
       await action.waitFor(task(new Composition(this.session, action)));
     });

@@ -34,6 +34,7 @@ export class InputAction {
   private stepOptions?: InputOptions;
   private stepEnd = Infinity;
   private disposers: Array<() => void> = [];
+  private watchedFrames = new Map<Session, Set<string | undefined>>();
   private tasks = new Set<Promise<unknown>>();
   track(task: Promise<unknown>): void {
     this.tasks.add(task);
@@ -251,18 +252,27 @@ export class InputAction {
   disposeWith(task: () => void): void {
     this.disposers.push(task);
   }
-  watch(session: Session): void {
+  // Raw sessions have no frame model and conservatively watch the entire session.
+  watch(session: Session, frameId?: string): void {
+    let frames = this.watchedFrames.get(session);
+    if (frames?.has(frameId)) return;
+    if (!frames) {
+      this.watchedFrames.set(session, (frames = new Set()));
+      this.disposeWith(session.disconnected.on((error) => this.interrupt(error)));
+    }
+    frames.add(frameId);
     this.observe(session);
-    this.disposeWith(session.disconnected.on((error) => this.interrupt(error)));
     this.disposeWith(
-      session.on('Page.frameNavigated', () =>
-        this.interrupt(new StaleElementError('Document changed during input')),
-      ),
+      session.on('Page.frameNavigated', ({ frame }) => {
+        if (frameId === undefined || frame.id === frameId)
+          this.interrupt(new StaleElementError('Document changed during input'));
+      }),
     );
     this.disposeWith(
-      session.on('Page.frameDetached', () =>
-        this.interrupt(new StaleElementError('Frame detached during input')),
-      ),
+      session.on('Page.frameDetached', (event) => {
+        if (frameId === undefined || event.frameId === frameId)
+          this.interrupt(new StaleElementError('Frame detached during input'));
+      }),
     );
   }
   finish(): Promise<InputCleanupReport> {

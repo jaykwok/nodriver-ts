@@ -99,7 +99,7 @@ export class Tab {
         };
       },
       async (action) => {
-        action.watch(this.session);
+        action.watch(this.session, this.mainFrame.id);
         if (this.browser.frontTab !== this) {
           await action.send(this.session, 'Page.bringToFront');
           this.browser.frontTab = this;
