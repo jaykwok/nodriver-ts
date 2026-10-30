@@ -227,6 +227,8 @@ test('unacknowledged composition cancellation fails cleanup without retries or l
     .catch((e) => e);
   assert.ok(error instanceof InputActionError);
   assert.equal((await error.cleanup).status, 'failed');
+  // Let the scripted peer's object-release replies arrive before counting the missing cancel ACK.
+  await browser.cdp.send('Browser.getVersion');
   const blocked = await keyboard.insertText('不得写入').catch((e) => e);
   assert.ok(blocked instanceof InputActionError);
   assert.ok(blocked.cause instanceof InputBlockedError);
