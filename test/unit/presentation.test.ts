@@ -34,8 +34,9 @@ test('presentation lease starts, acknowledges frames, and stops exactly once', a
     const lease = browser.presentationLease(session);
     const active = await lease.start();
     assert.equal(active.state, 'active');
+    const received = session.waitFor('Page.screencastFrame');
     chrome.emit('Page.screencastFrame', frame(1, 'aGVsbG8='), session.id);
-    await new Promise((resolve) => setImmediate(resolve));
+    await received;
     const closed = await lease.close();
     await lease.close();
     assert.equal(closed.state, 'stopped');
@@ -183,8 +184,9 @@ test('presentation leases are exclusive per session', async () => {
       assert.match(String(error), /already has an active lease/);
       return true;
     });
+    const received = session.waitFor('Page.screencastFrame');
     chrome.emit('Page.screencastFrame', frame(7, 'YQ=='), session.id);
-    await new Promise((resolve) => setImmediate(resolve));
+    await received;
     const firstReport = await first.close();
     assert.equal(firstReport.acknowledgedFrames, 1);
 
@@ -253,8 +255,9 @@ test('presentation lease freezes its report when ACK cleanup times out', async (
     chrome.handle('Page.screencastFrameAck', () => NO_REPLY);
     const lease = browser.presentationLease(session, { ackTimeout: 200, stopTimeout: 10 });
     await lease.start();
+    const received = session.waitFor('Page.screencastFrame');
     chrome.emit('Page.screencastFrame', frame(9, 'YQ=='), session.id);
-    await new Promise((resolve) => setImmediate(resolve));
+    await received;
 
     const report = await lease.close();
     assert.equal(report.state, 'stopped');
