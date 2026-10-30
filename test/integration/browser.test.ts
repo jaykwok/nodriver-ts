@@ -6,7 +6,13 @@ import { expect } from '../fixtures/expect.ts';
 import { mkdtemp, readFile, rm, writeFile, access } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Browser, EvaluationError, StaleElementError, TimeoutError } from '../../src/index.ts';
+import {
+  Browser,
+  EvaluationError,
+  StaleElementError,
+  TimeoutError,
+  InputActionError,
+} from '../../src/index.ts';
 import type { Tab } from '../../src/index.ts';
 import { fixtureServer } from '../fixtures/server.ts';
 
@@ -110,9 +116,14 @@ describe('browser and page', () => {
       await tab.evaluate(
         'document.body.insertAdjacentHTML("beforeend",\'<div id="cover"></div>\')',
       );
-      await expect(
-        (await tab.waitForSelector('#button')).click({ timeout: 150 }),
-      ).rejects.toBeInstanceOf(TimeoutError);
+      const error = await (
+        await tab.waitForSelector('#button')
+      )
+        .click({ timeout: 150 })
+        .catch((error) => error);
+      expect(error).toBeInstanceOf(InputActionError);
+      expect(error.cause).toBeInstanceOf(TimeoutError);
+      await error.cleanup;
       expect(await tab.evaluate('clicks')).toBe(0);
     }));
   test('redirect, same-document, history and pre-registered navigation waits', async () =>

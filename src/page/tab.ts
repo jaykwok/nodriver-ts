@@ -98,8 +98,15 @@ export class Tab {
             throw new StaleElementError('Document changed during input');
         };
       },
-      () => this.activate(),
+      async (action) => {
+        action.watch(this.session);
+        if (this.browser.frontTab !== this) {
+          await action.send(this.session, 'Page.bringToFront');
+          this.browser.frontTab = this;
+        }
+      },
     );
+    this.inputBehavior.coordinator = this.browser.input;
     this.mouse = new Mouse(session, this.inputBehavior);
     // The browser's own UA, not an override: key bindings follow the platform Chrome runs on.
     const mac = browser.version.userAgent.includes('Macintosh');

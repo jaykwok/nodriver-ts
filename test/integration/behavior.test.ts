@@ -112,7 +112,7 @@ for (const transport of ['pipe', 'websocket'] as const) {
       abort.abort();
       const error = await click;
       expect(error).toBeInstanceOf(InputActionError);
-      expect(error.report.trace.some((e: any) => e.type === 'up')).toBe(true);
+      expect((await error.cleanup).report.trace.some((e: any) => e.type === 'up')).toBe(true);
       expect(tab.mouse.position.buttons).toBe(0);
       const input = await tab.waitForSelector('#plain');
       tab.setInputPolicy({ ...policy, keyDelay: [300, 300] });
@@ -129,6 +129,7 @@ for (const transport of ['pipe', 'websocket'] as const) {
       const partial = await typing;
       expect(partial).toBeInstanceOf(InputActionError);
       expect(partial.report.completedSegments).toBe(1);
+      await partial.cleanup;
       expect(await input.evaluate((el) => (el as HTMLInputElement).value)).toBe('甲');
       tab.setInputPolicy({ ...policy, pressDelay: [300, 300] });
       const keyAbort = new AbortController();
@@ -137,7 +138,9 @@ for (const transport of ['pipe', 'websocket'] as const) {
         timeout: 1000,
       });
       keyAbort.abort();
-      expect(await pressing).toBeInstanceOf(InputActionError);
+      const keyError = await pressing;
+      expect(keyError).toBeInstanceOf(InputActionError);
+      await keyError.cleanup;
       expect(tab.keyboard.pressedKeys).toEqual([]);
       tab.setInputPolicy({ ...policy, moveDuration: [150, 150] });
       await tab.evaluate('window.__shiftOnMove=true');

@@ -111,7 +111,8 @@ test('seeded paths and scroll conserve coordinates and deltas; timeout prevents 
   const messages: any[] = [];
   const session = {
     closed: false,
-    send: async (method: string, params: any) => {
+    connection: { closed: false, drain: async () => {} },
+    sendWith: async (method: string, _options: unknown, params: any) => {
       messages.push({ method, ...params });
       return {};
     },
@@ -144,7 +145,10 @@ test('button and modifier release are attempted even when a press protocol respo
   const events: any[] = [];
   const session = {
     closed: false,
-    send: async (method: string, params: any) => {
+    connection: { closed: false, drain: async () => {} },
+    disconnected: { on: () => () => {} },
+    on: () => () => {},
+    sendWith: async (method: string, _options: unknown, params: any) => {
       events.push({ method, ...params });
       if (['mousePressed', 'keyDown', 'rawKeyDown'].includes(params.type))
         throw new Error('Response failed after dispatch');

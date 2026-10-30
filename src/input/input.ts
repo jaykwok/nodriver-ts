@@ -2,38 +2,65 @@ import type { Session } from '../protocol/connection.ts';
 import type { Protocol } from 'devtools-protocol';
 import {
   InputBehavior,
+  inputCoordinator,
   type InputAction,
   type InputOptions,
   type InputReport,
 } from './behavior.ts';
 import { StaleElementError } from '../errors.ts';
+import type { InputRelease } from './action.ts';
+import { Composition } from './composition.ts';
 function standalone(session: Session) {
-  return new InputBehavior(
-    (task) => task(),
+  const coordinator = inputCoordinator(session.connection);
+  const behavior = new InputBehavior(
+    (task) => coordinator.run(task),
     () => {
       if (session.closed) throw new StaleElementError('Input target closed');
     },
+    undefined,
+    async (action) => {
+      action.watch(session);
+    },
   );
+  behavior.coordinator = coordinator;
+  return behavior;
 }
 export class Mouse {
+  private held?: { button: Protocol.Input.MouseButton; release: InputRelease };
   private x = 0;
   private y = 0;
   private buttons = 0;
   private placed = false;
   readonly session: Session;
   readonly behavior: InputBehavior;
-  constructor(session: Session, behavior: InputBehavior = standalone(session)) {
+  private readonly scope?: InputAction;
+  constructor(
+    session: Session,
+    behavior: InputBehavior = standalone(session),
+    scope?: InputAction,
+  ) {
     this.session = session;
     this.behavior = behavior;
+    this.scope = scope;
+    behavior.coordinator ??= inputCoordinator(session.connection);
+  }
+  private action(
+    name: string,
+    options: InputOptions,
+    task: (a: InputAction) => Promise<void>,
+  ): Promise<InputReport> {
+    return this.scope
+      ? this.scope.perform(options, task)
+      : this.behavior.action(name, options, task);
   }
   get position() {
     return { x: this.x, y: this.y, buttons: this.buttons };
   }
   /** Human mode starts from a random viewport point rather than the (0,0) corner. */
-  private async place(): Promise<void> {
+  private async place(action: InputAction): Promise<void> {
     if (this.placed || this.behavior.policy.mode !== 'human') return;
     this.placed = true;
-    const metrics = await this.session.send('Page.getLayoutMetrics').catch(() => undefined);
+    const metrics = await action.send(this.session, 'Page.getLayoutMetrics');
     const v = metrics?.cssVisualViewport;
     if (!v?.clientWidth || !v.clientHeight) return;
     this.x = v.clientWidth * (0.15 + 0.7 * this.behavior.random());
@@ -43,11 +70,12 @@ export class Mouse {
     await action.check();
     if (!Number.isFinite(x) || !Number.isFinite(y))
       throw new RangeError('Invalid pointer coordinates');
-    await this.session.send('Input.dispatchMouseEvent', {
+    await action.send(this.session, 'Input.dispatchMouseEvent', {
       type: 'mouseMoved',
       x,
       y,
       buttons: this.buttons,
+      modifiers: this.behavior.modifiers,
       // A pressure-less mouse reports 0.5 while any button is held (Pointer Events spec).
       ...(this.buttons ? { force: 0.5 } : {}),
     });
@@ -58,7 +86,7 @@ export class Mouse {
   }
   private async path(x: number, y: number, action: InputAction) {
     if (this.behavior.policy.mode === 'instant') return this.dispatch(x, y, action);
-    await this.place();
+    await this.place(action);
     const from = this.position,
       dx = x - from.x,
       dy = y - from.y;
@@ -78,7 +106,71 @@ export class Mouse {
     await action.wait(this.behavior.range('pause'));
   }
   move(x: number, y: number, options: InputOptions = {}): Promise<InputReport> {
-    return this.behavior.action('move', options, (a) => this.path(x, y, a));
+    return this.action('move', options, (a) => this.path(x, y, a));
+  }
+  down(
+    button: Protocol.Input.MouseButton = 'left',
+    options: InputOptions = {},
+  ): Promise<InputReport> {
+    return this.action('mouseDown', options, async (action) => {
+      await action.check();
+      if (this.buttons) throw new Error('Mouse button is already held');
+      const bits = { none: 0, left: 1, right: 2, middle: 4, back: 8, forward: 16 };
+      if (!bits[button]) throw new TypeError('A mouse button is required');
+      const release = action.release(async () => {
+        this.buttons = 0;
+        this.held = undefined;
+        await action.sendCleanup(this.session, 'Input.dispatchMouseEvent', {
+          type: 'mouseReleased',
+          x: this.x,
+          y: this.y,
+          button,
+          buttons: 0,
+          clickCount: 1,
+          modifiers: this.behavior.modifiers,
+        });
+        action.record('up', this.position);
+      });
+      this.buttons = bits[button];
+      this.held = { button, release };
+      await action.send(this.session, 'Input.dispatchMouseEvent', {
+        type: 'mousePressed',
+        x: this.x,
+        y: this.y,
+        button,
+        buttons: this.buttons,
+        clickCount: 1,
+        force: 0.5,
+        modifiers: this.behavior.modifiers,
+      });
+      action.record('down', this.position);
+      if (!this.scope) action.retain(release);
+    });
+  }
+  up(options: InputOptions = {}): Promise<InputReport> {
+    return this.action('mouseUp', options, async (action) => {
+      await action.check();
+      if (!this.held) return;
+      if (this.scope) await this.held.release.run();
+      else {
+        const button = this.held.button;
+        const release = action.release(async () => {
+          this.buttons = 0;
+          this.held = undefined;
+          await action.sendCleanup(this.session, 'Input.dispatchMouseEvent', {
+            type: 'mouseReleased',
+            x: this.x,
+            y: this.y,
+            button,
+            buttons: 0,
+            clickCount: 1,
+            modifiers: this.behavior.modifiers,
+          });
+          action.record('up', this.position);
+        });
+        await release.run();
+      }
+    });
   }
   async click(
     x: number,
@@ -89,9 +181,10 @@ export class Mouse {
       beforePress?: () => Promise<void>;
     } = {},
   ): Promise<InputReport> {
-    return this.behavior.action('click', options, async (action) => {
+    return this.action('click', options, async (action) => {
+      if (this.buttons) throw new Error('Cannot click while a mouse button is held');
       await this.path(x, y, action);
-      await options.beforePress?.();
+      if (options.beforePress) await action.waitFor(options.beforePress());
       await action.check();
       const params = {
         x,
@@ -99,47 +192,50 @@ export class Mouse {
         button: options.button ?? 'left',
         clickCount: options.clickCount ?? 1,
       };
-      this.buttons = params.button === 'right' ? 2 : params.button === 'middle' ? 4 : 1;
+      const release = action.release(async () => {
+        this.buttons = 0;
+        await action.sendCleanup(this.session, 'Input.dispatchMouseEvent', {
+          ...params,
+          type: 'mouseReleased',
+          buttons: 0,
+          modifiers: this.behavior.modifiers,
+        });
+        action.record('up', { x, y });
+      });
+      const bits = { none: 0, left: 1, right: 2, middle: 4, back: 8, forward: 16 };
+      this.buttons = bits[params.button];
       try {
-        await this.session.send('Input.dispatchMouseEvent', {
+        await action.send(this.session, 'Input.dispatchMouseEvent', {
           ...params,
           type: 'mousePressed',
           buttons: this.buttons,
           force: 0.5,
+          modifiers: this.behavior.modifiers,
         });
         action.record('down', { x, y });
         if (this.behavior.policy.mode === 'human')
           await action.wait(this.behavior.range('pressDelay'));
       } finally {
-        this.buttons = 0;
-        try {
-          await this.session.send('Input.dispatchMouseEvent', {
-            ...params,
-            type: 'mouseReleased',
-            buttons: 0,
-          });
-          action.record('up', { x, y });
-        } catch (error) {
-          action.report.cleanupErrors.push(String(error));
-          throw error;
-        }
+        await release.run();
       }
     });
   }
   wheel(deltaX: number, deltaY: number, options: InputOptions = {}): Promise<InputReport> {
-    return this.behavior.action('scroll', options, async (action) => {
+    return this.action('scroll', options, async (action) => {
       if (!Number.isFinite(deltaX) || !Number.isFinite(deltaY))
         throw new RangeError('Invalid scroll delta');
-      await this.place();
+      await this.place(action);
       const steps = this.behavior.policy.mode === 'human' ? this.behavior.range('scrollSteps') : 1;
       for (let i = 0; i < steps; i++) {
         await action.check();
-        await this.session.send('Input.dispatchMouseEvent', {
+        await action.send(this.session, 'Input.dispatchMouseEvent', {
           type: 'mouseWheel',
           x: this.x,
           y: this.y,
           deltaX: deltaX / steps,
           deltaY: deltaY / steps,
+          buttons: this.buttons,
+          modifiers: this.behavior.modifiers,
         });
         action.record('wheel', { x: this.x, y: this.y });
         if (this.behavior.policy.mode === 'human')
@@ -155,11 +251,25 @@ export class Mouse {
   ): Promise<InputReport> {
     if (!Number.isInteger(steps) || steps < 1)
       throw new RangeError('steps must be a positive integer');
-    return this.behavior.action('drag', options, async (action) => {
+    return this.action('drag', options, async (action) => {
+      if (this.buttons) throw new Error('Cannot drag while a mouse button is held');
       await this.path(from.x, from.y, action);
+      const release = action.release(async () => {
+        this.buttons = 0;
+        await action.sendCleanup(this.session, 'Input.dispatchMouseEvent', {
+          type: 'mouseReleased',
+          x: this.x,
+          y: this.y,
+          button: 'left',
+          buttons: 0,
+          clickCount: 1,
+          modifiers: this.behavior.modifiers,
+        });
+        action.record('up', this.position);
+      });
       this.buttons = 1;
       try {
-        await this.session.send('Input.dispatchMouseEvent', {
+        await action.send(this.session, 'Input.dispatchMouseEvent', {
           type: 'mousePressed',
           x: from.x,
           y: from.y,
@@ -167,6 +277,7 @@ export class Mouse {
           buttons: 1,
           clickCount: 1,
           force: 0.5,
+          modifiers: this.behavior.modifiers,
         });
         action.record('down', from);
         for (let i = 1; i <= steps; i++) {
@@ -179,21 +290,7 @@ export class Mouse {
             await action.wait(this.behavior.range('pause') + 10);
         }
       } finally {
-        this.buttons = 0;
-        try {
-          await this.session.send('Input.dispatchMouseEvent', {
-            type: 'mouseReleased',
-            x: this.x,
-            y: this.y,
-            button: 'left',
-            buttons: 0,
-            clickCount: 1,
-          });
-          action.record('up', this.position);
-        } catch (error) {
-          action.report.cleanupErrors.push(String(error));
-          throw error;
-        }
+        await release.run();
       }
     });
   }
@@ -326,16 +423,45 @@ export function parseChord(chord: string): string[] {
   return chord.split('+');
 }
 export class Keyboard {
+  compose(
+    task: (composition: Composition) => Promise<void>,
+    options: InputOptions = {},
+  ): Promise<InputReport> {
+    if (this.scope) throw new Error('Use the scope composition controller inside an input scope');
+    return this.behavior.action('composition', options, async (action) => {
+      action.watch(this.session);
+      await action.send(this.session, 'Page.enable');
+      await action.waitFor(task(new Composition(this.session, action)));
+    });
+  }
   /** Held key name -> dispatched DOM key value, so keyUp mirrors keyDown. */
   private pressed = new Map<string, string>();
   readonly session: Session;
   readonly behavior: InputBehavior;
   readonly mac: boolean;
+  private readonly scope?: InputAction;
+  private readonly releases = new Map<string, InputRelease>();
   /** `mac` attaches macOS editing commands to key events; Tab sets it from the browser's platform. */
-  constructor(session: Session, behavior: InputBehavior = standalone(session), mac = false) {
+  constructor(
+    session: Session,
+    behavior: InputBehavior = standalone(session),
+    mac = false,
+    scope?: InputAction,
+  ) {
     this.session = session;
     this.behavior = behavior;
     this.mac = mac;
+    this.scope = scope;
+    behavior.coordinator ??= inputCoordinator(session.connection);
+  }
+  private action(
+    name: string,
+    options: InputOptions,
+    task: (a: InputAction) => Promise<void>,
+  ): Promise<InputReport> {
+    return this.scope
+      ? this.scope.perform(options, task)
+      : this.behavior.action(name, options, task);
   }
   get pressedKeys(): string[] {
     return [...this.pressed.keys()];
@@ -349,24 +475,26 @@ export class Keyboard {
     const held = ['Shift', 'Control', 'Alt', 'Meta'].filter((key) => this.pressed.has(key));
     return [...held, code].join('+');
   }
-  private async insertRaw(text: string): Promise<void> {
-    await this.session.send('Input.insertText', { text });
+  private async insertRaw(text: string, action: InputAction): Promise<void> {
+    await action.check();
+    await action.send(this.session, 'Input.insertText', { text });
   }
   insertText(text: string, options: InputOptions = {}): Promise<InputReport> {
-    return this.behavior.action('insertText', options, async (action) => {
-      await this.insertRaw(text);
-      action.report.completedSegments = 1;
+    return this.action('insertText', options, async (action) => {
+      await this.insertRaw(text, action);
+      action.report.completedSegments++;
       action.record('insertText');
     });
   }
-  down(key: string): Promise<void> {
-    return this.behavior.run(async () => {
-      this.behavior.guard();
-      await this.behavior.prepare();
-      await this.downRaw(key);
+  async down(key: string, options: InputOptions = {}): Promise<void> {
+    await this.action('keyDown', options, async (action) => {
+      const release = await this.downRaw(key, action);
+      action.record('keyDown');
+      if (!this.scope) action.retain(release);
     });
   }
-  private async downRaw(key: string): Promise<void> {
+  private async downRaw(key: string, action: InputAction): Promise<InputRelease> {
+    await action.check();
     const definition = keyDefinition(key);
     const character = characters.has(key);
     // A held Shift yields the shifted character, as on a physical US keyboard.
@@ -374,11 +502,20 @@ export class Keyboard {
     const value = shifted ? definition.shiftKey! : character ? key : definition.key;
     const text = definition.text === undefined ? undefined : character ? value : definition.text;
     const autoRepeat = this.pressed.has(key);
+    const release =
+      (this.scope && this.releases.get(key)) ||
+      action.release(async () => {
+        this.releases.delete(key);
+        await this.upRaw(key, action, true);
+        action.record('keyUp');
+      });
+    this.releases.set(key, release);
     this.pressed.set(key, value);
+    this.behavior.modifiers = this.modifiers;
     const plain = !(this.modifiers & ~8);
     const commands = this.mac ? macCommands[this.shortcut(definition.code)] : undefined;
     try {
-      await this.session.send('Input.dispatchKeyEvent', {
+      await action.send(this.session, 'Input.dispatchKeyEvent', {
         ...(commands && { commands }),
         type: text !== undefined && plain ? 'keyDown' : 'rawKeyDown',
         key: value,
@@ -389,19 +526,36 @@ export class Keyboard {
         text: plain ? text : undefined,
         unmodifiedText: plain ? text : undefined,
       });
+      return release;
     } catch (e) {
-      await this.upRaw(key).catch(() => {});
+      await release.run();
       throw e;
     }
   }
-  up(key: string): Promise<void> {
-    return this.behavior.run(() => this.upRaw(key));
+  async up(key: string, options: InputOptions = {}): Promise<void> {
+    await this.action('keyUp', options, async (action) => {
+      const release = this.releases.get(key);
+      if (this.scope && release) await release.run();
+      else {
+        await action.check();
+        keyDefinition(key);
+        await action
+          .release(async () => {
+            this.releases.delete(key);
+            await this.upRaw(key, action, true);
+            action.record('keyUp');
+          })
+          .run();
+      }
+    });
   }
-  private async upRaw(key: string): Promise<void> {
+  private async upRaw(key: string, action: InputAction, cleanup = false): Promise<void> {
     const definition = keyDefinition(key);
     const value = this.pressed.get(key) ?? (characters.has(key) ? key : definition.key);
     this.pressed.delete(key);
-    await this.session.send('Input.dispatchKeyEvent', {
+    this.behavior.modifiers = this.modifiers;
+    const send = cleanup ? action.sendCleanup.bind(action) : action.send.bind(action);
+    await send(this.session, 'Input.dispatchKeyEvent', {
       type: 'keyUp',
       key: value,
       code: definition.code,
@@ -410,56 +564,45 @@ export class Keyboard {
     });
   }
   press(chord: string, options: InputOptions = {}): Promise<InputReport> {
-    return this.behavior.action('key', options, async (action) => {
+    return this.action('key', options, async (action) => {
       const items = parseChord(chord);
       for (const key of items) keyDefinition(key);
-      const down: string[] = [];
+      const down: InputRelease[] = [];
       try {
         for (const key of items) {
           await action.check();
           if (this.pressed.has(key)) throw new Error(`Key ${key} is already held`);
-          await this.downRaw(key);
-          down.push(key);
+          down.push(await this.downRaw(key, action));
           action.record('keyDown');
           if (this.behavior.policy.mode === 'human')
             await action.wait(this.behavior.range('pressDelay'));
         }
       } finally {
-        for (const key of down.reverse()) {
-          try {
-            await this.upRaw(key);
-            action.record('keyUp');
-          } catch (error) {
-            action.report.cleanupErrors.push(String(error));
-          }
-        }
-        if (action.report.cleanupErrors.length) throw new Error('Key release failed');
+        for (const release of down.reverse()) await release.run();
       }
     });
   }
   /** Presses one US-layout character with physical key events, adding Shift when needed. */
   private async typeKey(char: string, action: InputAction): Promise<void> {
+    if (this.pressed.has(char)) throw new Error('Cannot type a key that is already held');
     const needShift = characters.get(char)!.shift && !this.pressed.has('Shift');
+    let shift: InputRelease | undefined;
     if (needShift) {
-      await this.downRaw('Shift');
+      shift = await this.downRaw('Shift', action);
       action.record('keyDown');
     }
     try {
       if (needShift) await action.wait(this.behavior.range('pressDelay') / 2);
-      await this.downRaw(char);
+      const release = await this.downRaw(char, action);
       action.record('keyDown');
       try {
         if (this.behavior.policy.mode === 'human')
           await action.wait(this.behavior.range('pressDelay'));
       } finally {
-        await this.upRaw(char);
-        action.record('keyUp');
+        await release.run();
       }
     } finally {
-      if (needShift) {
-        await this.upRaw('Shift');
-        action.record('keyUp');
-      }
+      await shift?.run();
     }
   }
   private get typesKeys(): boolean {
@@ -480,13 +623,13 @@ export class Keyboard {
             (s) => s.segment,
           )
         : text;
-    return this.behavior.action('type', options, async (action) => {
+    return this.action('type', options, async (action) => {
       const keys = this.typesKeys && !(this.modifiers & ~8);
       for (const segment of segments) {
         await action.check();
         if (keys && characters.has(segment)) await this.typeKey(segment, action);
         else {
-          await this.insertRaw(segment);
+          await this.insertRaw(segment, action);
           action.record('insertText');
         }
         action.report.completedSegments++;

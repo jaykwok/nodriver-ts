@@ -2,6 +2,15 @@
 
 All notable changes are recorded here. The project follows [Semantic Versioning](https://semver.org/); before 1.0, minor versions may contain breaking changes.
 
+## 0.6.0 — 2026-10-30
+
+- Apply one input deadline and cancellation signal to queueing, preparation and each effective CDP command. Expose prompt interruption snapshots and `InputActionError.cleanup`, with an independent cleanup budget and blocked input after unconfirmed cleanup. Inputs are never replayed.
+- Element action preparation failures also use `InputActionError`; inspect `cause` for the original timeout, cancellation or actionability error.
+- Add explicit `Keyboard.compose()` with UTF-16 selections, update/commit/cancel, focus and document checks, and at most one commit attempt. Ordinary `type()` keeps its existing behavior.
+- Add `Browser.inputScope()` and `createInputScope()` for raw target sessions, sharing the connection's Tab input queue, step budgets and guards, reverse-order resource release and structured partial results.
+- Add bounded `Browser.presentationLease()` for background raw target presentation with frame, byte, duration and ACK limits, explicit stop cleanup and disconnect-aware reports. It never activates targets, enables Runtime or replays input.
+- Presentation leases are exclusive per session, process frames received during startup, separate lease state from cleanup state, and freeze the final report with outstanding ACK counts when cleanup reaches its deadline.
+
 ## 0.5.0 — 2026-10-25
 
 - Add event-driven `Connection.drain()` and `Browser.drain()` for pending requests, late replies and library attachment cleanup. Resolve only while connected and drained; reject distinctly on disconnect, timeout or abort. Drain never replays input.

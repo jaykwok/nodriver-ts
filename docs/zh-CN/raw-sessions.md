@@ -45,6 +45,50 @@ target discovery/listing 及自动 attach。signal 贯穿上述阶段。
 launch 失败会断开连接并清理自有进程，connect 失败只断开连接。
 进程清理使用独立且有界的终止等待，可能超过初始化 deadline；宿主硬崩溃仍无法执行清理。
 
+## 托管 raw 输入
+
+`browser.inputScope(session)` 和 `createInputScope(session)` 与 Tab 输入及独立 mouse/keyboard 对象共享连接队列。每次 `run()` 管理持有的按键、按钮和显式 composition，共用一次 deadline/signal/guard，逆序清理并返回 `InputReport`。Raw scope 为跟踪导航启用 Page 事件，但不激活 target。直接调用 `session.sendWith()` 仍独立于该队列。接口及中断约定见[输入 scope、composition 与清理](input.md)。
+
+## 有界后台呈现租约
+
+`browser.presentationLease(session, options)` 通过 `Page.startScreencast` 和
+`Page.stopScreencast` 在限定时间内保持 raw target 可观察。租约与 target 焦点、Runtime、
+输入重发和连接上的其他工作相互独立。
+
+```ts
+const lease = browser.presentationLease(session, {
+  maxDuration: 3000,
+  maxFrames: 8,
+  maxBytes: 2_000_000,
+  maxInFlightAcks: 4,
+});
+try {
+  await lease.start();
+  // 在后台 target 上执行操作。
+} finally {
+  const report = await lease.close();
+  console.log(report.state, report.frames, report.acknowledgedFrames);
+}
+```
+
+默认值均有界：总时长 5 秒、最多送出 16 帧 ACK、4 MiB 解码后帧字节、最多 4 个并发 ACK、
+启动期限 2 秒、每个 ACK 期限 1 秒，以及 2 秒的停止和 ACK 清理预算。达到总时长、帧数、
+字节数或 ACK 并发上限时会停止租约并记录原因。`close()` 幂等，会等待停止命令和该租约
+自己的 ACK 工作；连接上的其他命令继续按各自生命周期运行。session 断开后，最终报告为
+`disconnected`，清理随连接生命周期结束。
+
+同一个 session 同时只能有一个活动中的呈现租约。仍处于 `idle` 的租约会在当前租约关闭后
+重新启动。租约处于 `starting` 时收到的帧，也会按与 `active` 阶段相同的帧数、字节数和
+ACK 限制处理。这个协调只覆盖托管呈现租约；租约活动期间不要在同一个 session 上直接调用
+`Page.startScreencast` 或 `Page.stopScreencast`。
+
+报告将租约生命周期（`state`）与清理状态（`cleanup`）分开。`state` 表示租约正在活动、
+已停止、已超时、失败或已断开；`cleanup` 为 `pending`、`completed`、`timed-out`、`failed`
+或 `disconnected`。`timed-out` 表示租约已经结束，但仍有 ACK 工作未完成。`inFlightAcks` 是
+报告关闭时仍在途的 ACK 数量；`close()` 返回后报告保持稳定。报告还记录送出 ACK 的帧、
+已确认帧、丢弃帧、编码字节、ACK 错误和清理错误。screencast ACK 与输入动作分别统计。
+后台节流行为取决于 Chrome 和操作系统。
+
 ## 生命周期
 
 `TargetSession extends Session`，新增 `targetId`、`endReason`、`ended: Promise<EndReason>` 和

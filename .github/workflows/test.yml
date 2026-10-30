@@ -14,6 +14,10 @@ jobs:
           node-version: '^24.22.0'
       - run: npm ci
       - run: node --test --test-concurrency=1 --test-timeout=60000 test/unit/guardian.test.ts test/unit/guardian-lifecycle.test.ts test/integration/supervised.test.ts
+      - name: Input lifecycle and composition
+        run: node --test --test-concurrency=1 --test-timeout=60000 test/unit/behavior.test.ts test/unit/input-lifecycle.test.ts test/unit/composition.test.ts test/integration/behavior.test.ts test/integration/composition.test.ts
+      - name: Presentation leases
+        run: node --test --test-concurrency=1 --test-timeout=60000 test/unit/presentation.test.ts test/integration/presentation.test.ts
       - run: npm run build && node test/node-raw-session.mjs
 
   # Run the source suite on current Node.js 24 and check the minimum release below.

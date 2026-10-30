@@ -61,6 +61,7 @@ const classes: Record<string, { prototype: object }> = {
   BrowserContext: api.BrowserContext,
   Download: api.Download,
   Tab: api.Tab,
+  PresentationLease: api.PresentationLease,
   Frame: api.Frame,
   JSHandle: api.JSHandle,
   Element: api.Element,

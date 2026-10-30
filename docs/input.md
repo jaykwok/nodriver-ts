@@ -42,7 +42,7 @@ Times are in milliseconds, and each range is a minimum/maximum: step counts 1–
 - **macOS editing shortcuts**: when the browser runs on macOS, key events carry AppKit editing commands (CDP `commands`), so `Meta+A` selects all, `Meta+Z` undoes, `Alt+ArrowLeft` moves by word, `Control+A` moves to the start of the paragraph, and so on, as on a Mac keyboard. The platform is determined from the browser's own UA and is not affected by UA overrides.
 - **`select()`**: changes the option through the DOM and dispatches synthetic input/change events; isTrusted is not rewritten. When pointer or key interaction is needed, the caller performs it explicitly.
 
-OS input-method candidate windows, the composition lifecycle and non-US keyboard layouts are not simulated.
+Ordinary `type()` does not generate a composition lifecycle. Explicit CDP composition is available through `keyboard.compose()` and input scopes. Neither API simulates OS input-method candidate windows or non-US keyboard layouts.
 
 ## Pointer and clicks
 
@@ -52,9 +52,72 @@ In human mode the first pointer position is random within 15–85% of the viewpo
 
 ## Serialization and cancellation
 
-Within one browser, high-level input and the public mouse/keyboard methods share one reentrant serial channel (at most 128 waiting or running calls), so input from different tabs or leases never fights over focus. The low-level `down`/`up` can be combined into custom actions; scheduling between two independent calls is the caller's responsibility. The high-level `press`/`click`/`drag` release the keys or buttons they pressed in `finally`. Do not hold a modifier key down during long waits.
+Tab input, standalone `new Mouse(session)` / `new Keyboard(session)` and raw input scopes share one reentrant queue per `Connection`, with at most 128 waiting or running calls. Separate connections do not share a queue. Direct `Session.send()` / `sendWith()` calls bypass this input queue. Successful standalone `down()` calls keep their key or button held until `up()`; use a scope when several calls must retain ownership together. A scope automatically releases its held inputs in reverse acquisition order.
 
-Mouse and keyboard actions return an `InputReport`: the event count, the number of committed segments, the seed and action-start `randomState`, a planned trace of up to 2000 entries and cleanup errors. Input text is not recorded. Cancellation, a deadline, navigation, document invalidation or loss of focus stops step-by-step input, and `InputActionError.report` describes what was completed (MCP returns `partialInput`). Clicks, input or scrolling already delivered to the browser are neither rolled back nor replayed. `finally` tries to release the buttons and keys held by the current action; if the connection is already gone, remote release cannot be guaranteed, and `cleanupErrors` records this. Cancellation does not let the next write operation start while the current one is still finishing.
+`InputOptions.timeout` is one input-stage budget, starting when the action is called, including queue time and preparation. It defaults to 10000 ms. Each input command receives the remaining time and combined cancellation signal through `sendWith()`. Element `click`, `hover`, `fill` and `type` include their preparation in the same budget. A nested scope operation may shorten that budget or add a signal/guard; it cannot extend the scope deadline or replace its guard.
+
+Cancellation and deadlines reject promptly with `InputActionError`, preserving the cause. `error.report` captures the action when it stops; `error.cleanup` resolves to `{ status, report }` after cleanup, with status `completed`, `failed` or `disconnected`. Reports include `phase` (`queued`, `running`, `cleaning`, `done`), `cleanup`, acknowledged event/segment counts, seed, action-start `randomState`, a trace of up to 2000 entries, and cleanup errors. Input text is not stored. Commands whose callers stop waiting remain visible through the cleanup result and connection lifecycle.
+
+`cleanupTimeout` defaults to 5000 ms and is independent of the input timeout and aborted signal. It bounds releases and late-response draining. The next managed input waits until cleanup completes. A failed release, cleanup timeout or disconnected connection blocks subsequent managed input on that connection with `InputBlockedError` as the cause; restore the target's state and establish a new connection before continuing. Input actions keep their original command results and do not resend commands. When draining is needed, it covers the whole connection, including unrelated pending raw commands.
+
+```ts
+import { InputActionError } from 'nodriver-ts';
+
+try {
+  await tab.keyboard.type('中文', { timeout: 1500, signal, cleanupTimeout: 5000 });
+} catch (error) {
+  if (!(error instanceof InputActionError)) throw error;
+  console.log(error.cause, error.report); // input has stopped; cleanup can still be pending
+  const cleanup = await error.cleanup;
+  console.log(cleanup.status, cleanup.report); // final snapshot
+}
+```
+
+The cleanup result describes managed releases and protocol replies. The application owns the final document state, and delivered input cannot be reversed. User callbacks should observe the supplied cancellation signal. Controllers retained after a scope ends reject further input.
+
+## Explicit composition
+
+Focus an editor before calling `keyboard.compose()`. Its callback receives one composition controller: `update(text, selection?, options?)` starts or updates composition, `commit(text?, options?)` attempts one commit, and `cancel(options?)` cancels it. Selection offsets count UTF-16 code units within the update text, defaulting to its end. Text must contain 1–100000 UTF-16 units; use `cancel()` for an empty composition.
+
+```ts
+await input.focus();
+await tab.keyboard.compose(
+  async (composition) => {
+    await composition.update('中文');
+    await composition.update('中文😀', { selectionStart: 2, selectionEnd: 4 });
+    await composition.commit(); // commits the latest update text, at most once
+  },
+  { timeout: 2000, signal, cleanupTimeout: 5000 },
+);
+```
+
+Updates use `Input.imeSetComposition`; commit uses `Input.insertText`. Returning without commit or cancellation attempts cancellation during cleanup. Repeated `cancel()` is harmless; a second commit is rejected, including after an uncertain first commit. Normal `type()` retains its grapheme/key/insertText behavior.
+
+Before each update and commit, the controller checks the original focused element, including open shadow roots and accessible iframe ancestors, and stops when the document changes. It sends commit and cancel commands only after the original editor is confirmed; cross-origin ancestors that cannot be inspected are left untouched. Focus checks and CDP input are separate operations, so callers can verify the resulting document. Runtime is not enabled and browser methods are not patched.
+
+## Raw input scopes
+
+`browser.inputScope(session)` or exported `createInputScope(session, { policy?, mac? })` creates a reusable scope factory for a target session. Each `run()` supplies fresh mouse, keyboard and composition controllers, one deadline, the original guard, and one final report. Sibling controller calls serialize, and held keys/buttons/composition are cleaned up in reverse order before the connection queue changes owner. Explicit `up()` or `cancel()` releases a resource early. A click/drag cannot replace an already held button.
+
+```ts
+const session = await browser.attachSession(tab.id);
+const scope = browser.inputScope(session);
+await scope.run(
+  async (input) => {
+    await input.keyboard.down('Shift');
+    await input.mouse.move(100, 100);
+    await input.mouse.down();
+    await input.mouse.move(220, 100);
+    await input.wait(20);
+    // mouse button, then Shift, are released automatically
+  },
+  { timeout: 1000, signal, cleanupTimeout: 5000 },
+);
+```
+
+Raw scopes enable Page events for navigation tracking without changing target focus. Domain enablement stays on the caller's session after the run, and scope-owned listeners are removed. `browser.inputScope()` derives macOS editing commands from the browser UA; `createInputScope()` defaults `mac` to false and accepts an explicit override. Use `input.composition` inside a scope rather than nesting `keyboard.compose()`.
+
+The outer `run()` owns `cleanupTimeout`; child operations inherit it. A failed child operation ends the run, even if the callback catches that operation's rejection. Mouse events within a scope carry the modifiers held by its keyboard.
 
 ## MCP
 

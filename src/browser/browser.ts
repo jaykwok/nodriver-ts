@@ -23,7 +23,9 @@ import {
   type WaitOptions,
 } from '../utils.ts';
 import { DisconnectedError, NodriverError, TimeoutError } from '../errors.ts';
-import { InputCoordinator } from '../input/behavior.ts';
+import { inputCoordinator, type InputCoordinator } from '../input/behavior.ts';
+import { InputScope, type InputScopeOptions } from '../input/scope.ts';
+import { PresentationLease, type PresentationLeaseOptions } from '../page/presentation.ts';
 /**
  * Which page targets a Browser attaches to. "all" adopts every page; "created" adopts only tabs
  * opened through this client and popups they open. "none" discovers targets only and forbids Tabs.
@@ -35,7 +37,21 @@ export interface ConnectOptions extends ConnectionOptions, WaitOptions {
   attach?: AttachPolicy;
 }
 export class Browser {
-  readonly input = new InputCoordinator();
+  readonly input: InputCoordinator;
+  inputScope(session: Session, options: InputScopeOptions = {}): InputScope {
+    if (session.connection !== this.connection)
+      throw new TypeError('Input session belongs to another connection');
+    return new InputScope(session, {
+      mac: this.version.userAgent.includes('Macintosh'),
+      ...options,
+    });
+  }
+  /** Create a bounded background screencast lease for a raw target session. */
+  presentationLease(session: Session, options: PresentationLeaseOptions = {}): PresentationLease {
+    if (session.connection !== this.connection)
+      throw new TypeError('Presentation session belongs to another connection');
+    return new PresentationLease(session, options);
+  }
   networkPolicy: {
     proxyConfigured: boolean | 'unknown';
     webRtcIPHandlingPolicy: LaunchOptions['webRtcIPHandlingPolicy'] | 'native' | 'unknown';
@@ -68,6 +84,7 @@ export class Browser {
     attachPolicy: AttachPolicy = 'all',
   ) {
     this.connection = connection;
+    this.input = inputCoordinator(connection);
     this.process = process;
     this.endpoint = endpoint;
     this.attachPolicy = attachPolicy;

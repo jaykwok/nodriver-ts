@@ -18,7 +18,10 @@ function fakeSession() {
   const messages: any[] = [];
   const session = {
     closed: false,
-    send: async (method: string, params: any) => {
+    connection: { closed: false, drain: async () => {} },
+    disconnected: { on: () => () => {} },
+    on: () => () => {},
+    sendWith: async (method: string, _options: unknown, params: any) => {
       messages.push({ method, ...params });
       return {};
     },

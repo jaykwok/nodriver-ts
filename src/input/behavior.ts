@@ -1,7 +1,10 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomInt } from 'node:crypto';
-import { delay, timeoutValue, type WaitOptions } from '../utils.ts';
+import { abortReason, type WaitOptions } from '../utils.ts';
 import { TimeoutError } from '../errors.ts';
+import type { Connection } from '../protocol/connection.ts';
+import { InputAction } from './action.ts';
+export { InputAction } from './action.ts';
 
 export interface InputPolicy {
   mode?: 'instant' | 'human';
@@ -32,35 +35,97 @@ export interface InputReport {
   events: number;
   trace: Array<{ type: string; x?: number; y?: number; delay?: number }>;
   cleanupErrors: string[];
+  phase: 'queued' | 'running' | 'cleaning' | 'done';
+  cleanup: 'pending' | 'completed' | 'failed' | 'disconnected';
+}
+export interface InputCleanupReport {
+  status: Exclude<InputReport['cleanup'], 'pending'>;
+  report: InputReport;
 }
 export class InputActionError extends Error {
   override name = 'InputActionError';
   readonly report: InputReport;
-  constructor(report: InputReport, cause: unknown) {
+  readonly cleanup: Promise<InputCleanupReport>;
+  constructor(report: InputReport, cause: unknown, cleanup?: Promise<InputCleanupReport>) {
     super(
       `Input ${report.action} interrupted after ${report.events} events / ${report.completedSegments} text segments: ${String(cause)}`,
       { cause },
     );
     this.report = report;
+    this.cleanup = cleanup ?? Promise.resolve({ status: 'completed', report });
   }
 }
-/** A browser-wide, reentrant input lock. Calls from distinct async tasks serialize. */
+export class InputBlockedError extends Error {
+  override name = 'InputBlockedError';
+}
+/** A connection-wide, reentrant input lock. Calls from distinct async tasks serialize. */
 export class InputCoordinator {
   private queue: Promise<unknown> = Promise.resolve();
-  private scope = new AsyncLocalStorage<boolean>();
+  private scope = new AsyncLocalStorage<{ live: boolean; barriers: Set<Promise<unknown>> }>();
   private pending = 0;
+  private failure?: InputBlockedError;
+  private cleaning = 0;
+  assertReady(): void {
+    if (this.failure) throw this.failure;
+    if (this.cleaning) throw new InputBlockedError('Input cleanup is still in progress');
+  }
+  block(cause: unknown): void {
+    this.failure ??= new InputBlockedError(
+      'Input cleanup was not confirmed; use a new connection',
+      { cause },
+    );
+  }
+  hold(cleanup: Promise<unknown>): void {
+    // A nested action may reject before cleanup ends; the outer owner must still wait.
+    this.scope.getStore()?.barriers.add(cleanup);
+  }
+  cleaningStarted(): void {
+    this.cleaning++;
+  }
+  cleaningFinished(): void {
+    this.cleaning--;
+  }
   run<T>(task: () => Promise<T>): Promise<T> {
-    if (this.scope.getStore()) return task();
+    if (this.scope.getStore()?.live) {
+      try {
+        this.assertReady();
+        return task();
+      } catch (error) {
+        return Promise.reject(error);
+      }
+    }
     if (this.pending >= 128) return Promise.reject(new Error('Browser input queue limit reached'));
     this.pending++;
     const next = this.queue
-      .then(() => this.scope.run(true, task))
+      .then(() => {
+        const scope = { live: true, barriers: new Set<Promise<unknown>>() };
+        return this.scope.run(scope, async () => {
+          try {
+            this.assertReady();
+            return await task();
+          } finally {
+            while (scope.barriers.size) {
+              const barriers = [...scope.barriers];
+              scope.barriers.clear();
+              await Promise.allSettled(barriers);
+            }
+            scope.live = false;
+          }
+        });
+      })
       .finally(() => {
         this.pending--;
       });
     this.queue = next.catch(() => {});
     return next;
   }
+}
+const coordinators = new WeakMap<Connection, InputCoordinator>();
+/** @internal One queue for Tab input and every raw scope on this connection. */
+export function inputCoordinator(connection: Connection): InputCoordinator {
+  let value = coordinators.get(connection);
+  if (!value) coordinators.set(connection, (value = new InputCoordinator()));
+  return value;
 }
 const defaults = {
   mode: 'instant' as 'instant' | 'human',
@@ -76,18 +141,25 @@ const defaults = {
 } satisfies Omit<Required<InputPolicy>, 'seed'>;
 export class InputBehavior {
   policy: Required<InputPolicy>;
+  /** @internal Modifier state shared by this behavior's mouse and keyboard. */
+  modifiers = 0;
   private state: number;
   lastReport?: InputReport;
-  private active = 0;
+  private active = new Set<InputAction>();
+  private context = new AsyncLocalStorage<InputAction>();
+  get current(): InputAction | undefined {
+    return this.context.getStore();
+  }
   readonly run: <T>(task: () => Promise<T>) => Promise<T>;
   readonly guard: () => void;
   readonly snapshotGuard: () => () => void;
-  readonly prepare: () => Promise<void>;
+  readonly prepare: (action: InputAction) => Promise<void>;
+  coordinator?: InputCoordinator;
   constructor(
     run: <T>(task: () => Promise<T>) => Promise<T>,
     guard: () => void,
     snapshotGuard: () => () => void = () => () => {},
-    prepare: () => Promise<void> = async () => {},
+    prepare: (action: InputAction) => Promise<void> = async () => {},
     seedSource: () => number = () => randomInt(0, 0x1_0000_0000),
   ) {
     // One independent stream per behavior (normally per Tab), including instant mode.
@@ -102,7 +174,8 @@ export class InputBehavior {
     this.prepare = prepare;
   }
   configure(policy: InputPolicy): void {
-    if (this.active) throw new Error('Cannot change input policy during an action');
+    if ([...this.active].some((action) => action.report.phase !== 'done'))
+      throw new Error('Cannot change input policy during an action');
     const next = {
       ...structuredClone(defaults),
       ...structuredClone(policy),
@@ -156,76 +229,78 @@ export class InputBehavior {
     const value = low + (high - low) * this.random();
     return field.endsWith('Steps') ? Math.round(value) : value;
   }
-  async action(
+  action(
     action: string,
     options: InputOptions,
     task: (context: InputAction) => Promise<void>,
   ): Promise<InputReport> {
+    if (this.current) return this.current.perform(options, task);
     const context = new InputAction(this, action, options);
-    return this.run(async () => {
-      this.active++;
-      context.report.seed = this.policy.seed;
-      context.report.randomState = this.state;
-      try {
-        await context.check();
-        await this.prepare();
-        await context.check();
-        await task(context);
-        await context.check();
-        return context.report;
-      } catch (error) {
-        context.report.status = 'interrupted';
-        throw new InputActionError(context.report, error);
-      } finally {
-        this.active--;
-        this.lastReport = structuredClone(context.report);
-      }
+    return new Promise((resolve, reject) => {
+      let started = false,
+        settled = false;
+      const fail = (error: unknown) => {
+        context.interrupt(error);
+        if (!settled) {
+          settled = true;
+          reject(new InputActionError(structuredClone(context.report), error, context.cleanup));
+        }
+        if (!started) void context.finish();
+      };
+      const timer = setTimeout(
+        () => fail(new TimeoutError('Input deadline exceeded')),
+        Math.max(0, context.end - performance.now()),
+      );
+      const abort = () => fail(abortReason(options.signal!));
+      options.signal?.addEventListener('abort', abort, { once: true });
+      if (options.signal?.aborted) abort();
+      void this.run(async () => {
+        if (settled) return;
+        started = true;
+        this.coordinator?.hold(context.cleanup);
+        this.active.add(context);
+        context.start();
+        context.report.seed = this.policy.seed;
+        context.report.randomState = this.state;
+        try {
+          this.coordinator?.assertReady();
+          await context.check();
+          await context.waitFor(this.context.run(context, () => this.prepare(context)));
+          await context.check();
+          const running = this.context.run(context, () => task(context));
+          context.track(running);
+          await context.waitFor(running);
+          await context.flush();
+          await context.check();
+        } catch (error) {
+          fail(context.reason ?? error);
+        } finally {
+          clearTimeout(timer);
+          await context.finish();
+          options.signal?.removeEventListener('abort', abort);
+          this.active.delete(context);
+          this.lastReport = structuredClone(context.report);
+          if (!settled) {
+            if (context.report.status === 'interrupted')
+              fail(context.reason ?? new InputBlockedError('Input cleanup failed'));
+            else {
+              settled = true;
+              resolve(structuredClone(context.report));
+            }
+          }
+        }
+      })
+        .catch(fail)
+        .finally(() => {
+          clearTimeout(timer);
+          options.signal?.removeEventListener('abort', abort);
+        });
     });
   }
 }
 export interface InputOptions extends WaitOptions {
+  /** Independent total budget for releases and late responses. Defaults to 5000 ms. */
+  cleanupTimeout?: number;
   /** Internal/action guard, checked between each irreversible input. */
   guard?: () => void | Promise<void>;
-}
-export class InputAction {
-  readonly report: InputReport;
-  readonly end: number;
-  private documentGuard: () => void;
-  readonly behavior: InputBehavior;
-  readonly options: InputOptions;
-  constructor(behavior: InputBehavior, action: string, options: InputOptions) {
-    this.behavior = behavior;
-    this.options = options;
-    this.end = performance.now() + timeoutValue(options.timeout ?? 10000);
-    this.documentGuard = behavior.snapshotGuard();
-    this.report = {
-      action,
-      status: 'completed',
-      seed: behavior.policy.seed,
-      randomState: behavior.randomState,
-      completedSegments: 0,
-      events: 0,
-      trace: [],
-      cleanupErrors: [],
-    };
-  }
-  async check(): Promise<void> {
-    this.options.signal?.throwIfAborted();
-    if (performance.now() >= this.end) throw new TimeoutError('Input deadline exceeded');
-    this.behavior.guard();
-    this.documentGuard();
-    await this.options.guard?.();
-  }
-  record(type: string, fields: { x?: number; y?: number; delay?: number } = {}): void {
-    this.report.events++;
-    if (this.report.trace.length < 2000) this.report.trace.push({ type, ...fields });
-  }
-  async wait(ms: number): Promise<void> {
-    await this.check();
-    if (ms) {
-      if (this.report.trace.length < 2000) this.report.trace.push({ type: 'pause', delay: ms });
-      await delay(Math.min(ms, Math.max(0, this.end - performance.now())), this.options.signal);
-    }
-    await this.check();
-  }
 }

@@ -51,6 +51,54 @@ covers these phases too. Failed launches close their connection and clean their 
 failed connects disconnect only. Process cleanup has separate bounded termination waits and may
 outlast the initialization deadline; a host hard crash still cannot run cleanup.
 
+## Managed raw input
+
+`browser.inputScope(session)` and `createInputScope(session)` share the connection queue with Tab input and standalone mouse/keyboard objects. Each `run()` manages held keys/buttons and explicit composition, one deadline/signal/guard, reverse-order cleanup, and an `InputReport`. Raw scopes enable Page events for navigation tracking without activating the target. Direct `session.sendWith()` remains independent of this queue. See [input scopes, composition and cleanup](input.md) for the API and interruption contract.
+
+## Bounded background presentation
+
+`browser.presentationLease(session, options)` keeps a raw target observable for a short,
+bounded period through `Page.startScreencast` and `Page.stopScreencast`. The lease is independent
+of target focus, Runtime, input retry and unrelated connection work.
+
+```ts
+const lease = browser.presentationLease(session, {
+  maxDuration: 3000,
+  maxFrames: 8,
+  maxBytes: 2_000_000,
+  maxInFlightAcks: 4,
+});
+try {
+  await lease.start();
+  // Perform background target work here.
+} finally {
+  const report = await lease.close();
+  console.log(report.state, report.frames, report.acknowledgedFrames);
+}
+```
+
+The defaults are bounded: 5 seconds, 16 frames offered for acknowledgement, 4 MiB of decoded frame bytes,
+four concurrent ACKs, a 2 second start deadline, a 1 second per-ACK deadline and a 2 second
+stop/ACK cleanup budget. Reaching a duration, frame, byte or ACK limit stops the lease and records
+the reason. `close()` is idempotent and waits for the stop command plus the lease's own ACK work;
+other commands on the connection keep their own lifecycle. If the session disconnects, the final
+report is `disconnected` and cleanup ends with the connection.
+
+Only one presentation lease can be active for a session at a time. A lease that is still idle can
+be started after the current lease closes. Frames received while a lease is `starting` are handled
+under the same frame, byte and ACK limits as frames received while it is `active`.
+This coordination covers managed presentation leases; do not mix direct `Page.startScreencast` or
+`Page.stopScreencast` calls on the same session while a lease is active.
+
+The report separates the lease lifecycle (`state`) from cleanup (`cleanup`). `state` describes
+whether the lease is active, stopped, timed out, failed or disconnected. `cleanup` is `pending`,
+`completed`, `timed-out`, `failed` or `disconnected`; `timed-out` means the lease ended while ACK
+work remained. `inFlightAcks` is the number of ACKs still outstanding when the report was closed,
+and the report is a stable snapshot after `close()` resolves. The report also includes frames
+offered for acknowledgement, acknowledged frames, dropped frames, encoded bytes, ACK errors and
+cleanup errors. Screencast ACKs are reported separately from input actions. Background throttling
+remains dependent on Chrome and the operating system.
+
 ## Session lifetime
 
 `TargetSession` extends `Session`, adding `targetId`, `endReason`, `ended: Promise<EndReason>`,
