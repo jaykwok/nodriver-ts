@@ -130,13 +130,18 @@ export class Network {
       this.authAttempts.add(key);
       if (this.authAttempts.size > 1024)
         this.authAttempts.delete(this.authAttempts.values().next().value!);
-      await session.send('Fetch.continueWithAuth', {
-        requestId: event.requestId,
-        authChallengeResponse:
-          this.credentials && !tried
-            ? { response: 'ProvideCredentials', ...this.credentials }
-            : { response: 'CancelAuth' },
-      });
+      try {
+        await session.send('Fetch.continueWithAuth', {
+          requestId: event.requestId,
+          authChallengeResponse:
+            this.credentials && !tried
+              ? { response: 'ProvideCredentials', ...this.credentials }
+              : { response: 'CancelAuth' },
+        });
+      } catch (e) {
+        // A challenge pending while its tab closes cannot be answered; that is not an error.
+        if (!session.closed) throw e;
+      }
     });
     session.on('Network.loadingFinished', (e) => {
       this.authAttempts.delete(`${session.id}:${e.requestId}`);

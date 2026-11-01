@@ -155,7 +155,11 @@ export function createCompatibleBrowserMcpHttpEndpoint(
             onclose?.();
             void close(record!).catch(options.onerror);
           };
-          transport.onerror = options.onerror;
+          const onerror = transport.onerror;
+          transport.onerror = (error) => {
+            onerror?.(error);
+            options.onerror(error);
+          };
         } catch (error) {
           await close(record);
           throw error;

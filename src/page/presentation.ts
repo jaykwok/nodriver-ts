@@ -17,7 +17,20 @@ export type PresentationLeaseReason =
   | 'disconnected'
   | 'aborted';
 
+/** Page.startScreencast parameters. Chrome's defaults apply to omitted fields. */
+export interface PresentationScreencastOptions {
+  format?: 'jpeg' | 'png';
+  /** JPEG quality from 0 to 100. */
+  quality?: number;
+  maxWidth?: number;
+  maxHeight?: number;
+  /** Send every n-th frame. */
+  everyNthFrame?: number;
+}
+
 export interface PresentationLeaseOptions {
+  /** Page.startScreencast parameters, such as a small JPEG to save bandwidth. */
+  screencast?: PresentationScreencastOptions;
   /** Total time from start() until the lease stops. Defaults to 5000 ms. */
   maxDuration?: number;
   /** Maximum number of frames offered for acknowledgement. Defaults to 16. */
@@ -82,13 +95,9 @@ function release(session: Session, lease: PresentationLease): void {
   }
 }
 
-function nonNegative(value: number): number {
-  return timeoutValue(value);
-}
-
 function limit(name: string, value: number): number {
-  nonNegative(value);
-  if (!Number.isInteger(value)) throw new RangeError(`${name} must be an integer`);
+  if (!Number.isSafeInteger(value) || value < 0)
+    throw new RangeError(`${name} must be a non-negative integer`);
   return value;
 }
 
@@ -98,14 +107,35 @@ function positiveLimit(name: string, value: number): number {
   return value;
 }
 
+function screencastOptions(
+  options: PresentationScreencastOptions | undefined,
+): PresentationScreencastOptions | undefined {
+  if (!options) return undefined;
+  const { format, quality, maxWidth, maxHeight, everyNthFrame, ...rest } = options;
+  const unknown = Object.keys(rest);
+  if (unknown.length) throw new TypeError(`Unknown screencast option ${unknown[0]}`);
+  if (format !== undefined && format !== 'jpeg' && format !== 'png')
+    throw new RangeError('screencast.format must be jpeg or png');
+  if (quality !== undefined && limit('screencast.quality', quality) > 100)
+    throw new RangeError('screencast.quality must be at most 100');
+  if (maxWidth !== undefined) positiveLimit('screencast.maxWidth', maxWidth);
+  if (maxHeight !== undefined) positiveLimit('screencast.maxHeight', maxHeight);
+  if (everyNthFrame !== undefined) positiveLimit('screencast.everyNthFrame', everyNthFrame);
+  return Object.fromEntries(
+    Object.entries({ format, quality, maxWidth, maxHeight, everyNthFrame }).filter(
+      ([, value]) => value !== undefined,
+    ),
+  );
+}
+
 /**
  * A bounded Page screencast used to keep a background target observable for a short operation.
  * The lease never activates a target, enables Runtime, retries input, or drains the connection.
  */
 export class PresentationLease {
   readonly session: Session;
-  readonly options: Required<Omit<PresentationLeaseOptions, 'signal'>> &
-    Pick<PresentationLeaseOptions, 'signal'>;
+  readonly options: Required<Omit<PresentationLeaseOptions, 'signal' | 'screencast'>> &
+    Pick<PresentationLeaseOptions, 'signal' | 'screencast'>;
   readonly report: PresentationReport = {
     state: 'stopped',
     cleanup: 'pending',
@@ -142,16 +172,17 @@ export class PresentationLease {
     if (!session.id) throw new TypeError('PresentationLease requires a target session');
     this.session = session;
     this.options = {
-      maxDuration: nonNegative(options.maxDuration ?? DEFAULTS.maxDuration),
+      screencast: screencastOptions(options.screencast),
+      maxDuration: timeoutValue(options.maxDuration ?? DEFAULTS.maxDuration, 'maxDuration'),
       maxFrames: limit('maxFrames', options.maxFrames ?? DEFAULTS.maxFrames),
       maxBytes: limit('maxBytes', options.maxBytes ?? DEFAULTS.maxBytes),
       maxInFlightAcks: positiveLimit(
         'maxInFlightAcks',
         options.maxInFlightAcks ?? DEFAULTS.maxInFlightAcks,
       ),
-      startTimeout: nonNegative(options.startTimeout ?? DEFAULTS.startTimeout),
-      ackTimeout: nonNegative(options.ackTimeout ?? DEFAULTS.ackTimeout),
-      stopTimeout: nonNegative(options.stopTimeout ?? DEFAULTS.stopTimeout),
+      startTimeout: timeoutValue(options.startTimeout ?? DEFAULTS.startTimeout, 'startTimeout'),
+      ackTimeout: timeoutValue(options.ackTimeout ?? DEFAULTS.ackTimeout, 'ackTimeout'),
+      stopTimeout: timeoutValue(options.stopTimeout ?? DEFAULTS.stopTimeout, 'stopTimeout'),
       signal: options.signal,
     };
   }
@@ -196,7 +227,10 @@ export class PresentationLease {
       throw error;
     }
     if (this.session.closed) {
-      const error = new DisconnectedError('Presentation session is closed');
+      const error = new DisconnectedError('Presentation session is closed', {
+        cause: this.session.closeReason,
+      });
+      this.report.error = String(this.session.closeReason ?? error);
       this.requestedReason = 'disconnected';
       await this.finish('disconnected');
       throw error;
@@ -242,7 +276,11 @@ export class PresentationLease {
         timeout: startTimeout,
         signal: AbortSignal.any(signals),
       };
-      this.startTask = this.session.sendWith('Page.startScreencast', startOptions);
+      this.startTask = this.session.sendWith(
+        'Page.startScreencast',
+        startOptions,
+        this.options.screencast,
+      );
       await this.startTask;
       if (this.requestedReason) {
         await this.finish(this.requestedReason);

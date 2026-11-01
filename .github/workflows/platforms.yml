@@ -26,6 +26,7 @@ jobs:
             chrome: '154.0.8037.92'
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     env:
       NODRIVER_HEADFUL: '0'
       NODRIVER_WEBRTC_ARGS: ${{ matrix.webrtc-args }}
@@ -34,6 +35,7 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: '^24.22.0'
+          cache: npm
       # See test.yml: systemd-coredump delays renderer-crash reports.
       - name: Disable piped core dumps
         if: runner.os == 'Linux'

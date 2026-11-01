@@ -49,6 +49,7 @@ export class BrowserSessionManager {
   private stopping = false;
   private closing?: Promise<void>;
   private timer: ReturnType<typeof setInterval>;
+  private sweeping?: Promise<void>;
   readonly retired = new EventHub<string>();
   readonly limits;
   readonly options: BrowserSessionManagerOptions;
@@ -70,7 +71,11 @@ export class BrowserSessionManager {
     );
     this.timer = setInterval(
       () => {
-        void this.sweep().catch(() => {});
+        // Skip a tick while the previous sweep still waits on the pool.
+        if (this.sweeping) return;
+        this.sweeping = this.sweep()
+          .catch(() => {})
+          .finally(() => (this.sweeping = undefined));
       },
       positive(options.sweepIntervalMs ?? 1000, 'sweepIntervalMs'),
     );
@@ -122,6 +127,10 @@ export class BrowserSessionManager {
         return this.view(this.checked(principal, existing));
       } catch {
         this.names.delete(key);
+        // Free the expired lease's capacity now rather than on the next sweep.
+        const stale = this.leases.get(existing);
+        if (stale && stale.principal === principal && !stale.active && !this.stopping)
+          void this.retire(stale).catch(() => {});
       }
     if (!create) throw new LeaseError('unknown', 'Unknown, unauthorized or expired browser lease');
     const lease = this.create(principal, idOrName);

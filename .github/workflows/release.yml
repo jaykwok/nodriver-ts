@@ -12,6 +12,7 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     env:
       NODRIVER_HEADFUL: '0'
     steps:
@@ -36,7 +37,7 @@ jobs:
             if [ "$state" = fail ]; then break; fi
             sleep 60
           done
-          echo "::error::All CI must complete successfully, including browser regression and the platform matrix, on $GITHUB_SHA"
+          echo "::error::All CI must complete successfully on $GITHUB_SHA, including browser regression and the platform matrix. platforms.yml only runs on manual dispatch: run it for this commit before tagging."
           exit 1
       - run: npm ci
       - name: Disable piped core dumps for crash acceptance

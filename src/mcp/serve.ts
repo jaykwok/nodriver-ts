@@ -5,7 +5,6 @@ import { pipeline } from 'node:stream/promises';
 export interface FetchServerOptions {
   hostname: string;
   port: number;
-  maxRequestBodySize: number;
   fetch: (request: Request, port: number) => Promise<Response> | Response;
 }
 export interface FetchServer {

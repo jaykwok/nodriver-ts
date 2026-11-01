@@ -58,7 +58,11 @@ Tab 输入、独立构造的 `new Mouse(session)` / `new Keyboard(session)` 和 
 
 取消和到期会及时抛出 `InputActionError` 并保留 cause。`error.report` 记录动作停止时的状态；`error.cleanup` 在清理结束后返回 `{ status, report }`，status 为 `completed`、`failed` 或 `disconnected`。报告包含 `phase`（`queued`、`running`、`cleaning`、`done`）、`cleanup`、已确认的事件数和片段数、seed、取得队列时的 `randomState`、最多 2000 项 trace 和清理错误，不保存输入文本。调用方停止等待后仍在处理的命令，会通过 cleanup 结果和连接生命周期体现。
 
-`cleanupTimeout` 默认为 5000 ms，独立于输入 timeout 和已取消的 signal，限制释放及迟到响应排空的总时间。清理完成前，后续托管输入继续排队。释放失败、清理超时或连接中断会封锁该连接后续的托管输入，其 cause 为 `InputBlockedError`；调用方恢复目标状态并建立新连接后再继续。输入动作保留原命令结果，不会自动重发。需要 drain 时覆盖整个连接，也包括其他待响应的 raw 命令。
+`cleanupTimeout` 默认为 5000 ms，独立于输入 timeout 和已取消的 signal，限制释放及迟到响应排空的总时间。清理完成前，后续托管输入继续排队。清理失败后，后续托管输入会被拒绝，其 cause 为 `InputBlockedError`。输入动作保留原命令结果，不会自动重发。需要 drain 时覆盖整个连接，也包括其他待响应的 raw 命令。
+
+如果只有 composition 取消未确认，其他资源清理和待响应命令都已完成，而且该连接上没有任何托管按键或鼠标按钮仍被按住，封锁范围仅限此次 composition 所属的顶层页面 target，包括该页面的所有 attachment 和跨域子 frame。通过所属页面的任一 attachment 完成托管释放，或该页面已关闭，按住的按键或按钮即视为已释放。其他归属已知的页面可继续使用同一连接和输入队列。关闭页面并收到 `Target.targetDestroyed` 后会清除该页面的封锁。分离或重新附加 session、导航、渲染进程崩溃、销毁子 frame 都不会解除封锁。原动作的 cleanup 仍为失败；缩小封锁范围不表示组合已结束，也不会撤销 Chrome 在失焦时可能已经提交的文字。
+
+如果无法通过 target 元数据和 attachment 层级确认页面归属，composition 清理失败仍会封锁整条连接。存在页面封锁时，归属不明的 session 也会被拒绝输入，防止通过新的 raw frame attachment 绕过封锁。按键或按钮尚未释放、其他资源释放失败、drain 超时和断连也仍采用连接级封锁：恢复目标状态并建立新连接后再继续。直接发送 raw CDP 输入会绕过托管按住状态的跟踪和这些封锁。
 
 ```ts
 import { InputActionError } from 'nodriver-ts';
@@ -91,9 +95,11 @@ await tab.keyboard.compose(
 );
 ```
 
-更新使用 `Input.imeSetComposition`，提交使用 `Input.insertText`。回调返回时尚未提交或取消的 composition 会在清理期间尝试取消。重复 `cancel()` 无副作用；再次 commit 会被拒绝，包括第一次提交结果不确定的情况。普通 `type()` 保持字素、按键和 insertText 的既有行为。
+更新使用 `Input.imeSetComposition`，提交使用 `Input.insertText`。回调返回时尚未提交或取消的 composition 会在清理期间尝试取消。重复 `cancel()` 无副作用；再次 commit 会被拒绝，包括第一次提交结果不确定的情况。
 
-每次更新和提交前都会核对最初的焦点元素，包括开放 shadow root 和可访问的 iframe 祖先，并在文档改变时停止。只有确认仍是原编辑器时才发送提交或取消；无法检查的跨域祖先保持不变。焦点检查和 CDP 输入是不同操作，因此调用方可以继续验证最终文档。不启用 Runtime，也不修改浏览器方法。
+每次更新和提交前都会核对最初的焦点元素，包括开放和 closed shadow root 以及可访问的 iframe 祖先，并在文档改变时停止。只有确认仍是原编辑器时才发送提交或取消；无法检查的跨域祖先保持不变。如果 composition 进行中焦点离开编辑器或文档改变，清理不会发送取消命令，因为它会落到新的焦点上：cleanup 报告 `failed`，并按上文所述封锁后续的托管输入，范围是该 composition 所属的顶层页面或整条连接。原编辑器失去焦点时，Chrome 通常会把 composition 结束并保留在原编辑器中，因此已输入的组合文本可能留在那里。焦点检查和 CDP 输入是不同操作，因此调用方可以继续验证最终文档。不启用 Runtime，也不修改浏览器方法。焦点探针运行在库通过 `Page.createIsolatedWorld` 创建的隔离世界中，同一文档内复用，页面脚本无法观察到。向 `compose()` 或 `run()` 传入 `executionContextId` 可改用你自己的上下文。始终不开启 DOM 域：closed shadow root 通过 `DOM.describeNode` 和 `DOM.resolveNode` 检查，这两个命令不会开启该域。
+
+第一次 `update()` 会先检查焦点能否接收文本，不能则在发送任何 composition 命令之前失败。可接收文本的焦点包括：既非只读也未禁用（包括被所在 fieldset 禁用）的文本类 `input`（`text`、`search`、`url`、`tel`、`email`、`password`、`number`）和 `textarea`，以及 contenteditable 内容（包括 `designMode` 文档）。失败时抛出 `InputActionError`，其 `cause` 为 `ActionabilityError`。控制器会沿焦点进入开放和 closed shadow root 以及同源 frame；contenteditable 内容按其编辑宿主检查，因为 composition 开始时 Chrome 会把焦点从可聚焦的后代元素移到编辑宿主。跨域 frame 内的焦点无法从父 session 检查：其可编辑性未知，composition 照常进行，报告的 trace 记录 `compositionFocusUnknown`，且检测不到该 frame 内的焦点变化。如需完整检查，请通过该 frame 自己的 target session 执行 composition。超时、断开和文档变化仍会中止动作。
 
 ## Raw input scope
 
@@ -115,7 +121,7 @@ await scope.run(
 );
 ```
 
-Raw scope 为跟踪导航启用 Page 事件，不改变 target 焦点。域启用状态保留在调用方的 session 上，scope 自有监听器在结束后移除。`browser.inputScope()` 根据浏览器 UA 选择 macOS 编辑命令；`createInputScope()` 的 `mac` 默认为 false，可显式指定。scope 内使用 `input.composition`，不要嵌套 `keyboard.compose()`。
+Raw scope 和 `keyboard.compose()` 默认发送 `Page.enable`，让导航能够中断输入，但不改变 target 焦点。托管输入是库唯一会在 raw session 上开启域的地方。域启用状态保留在调用方的 session 上，scope 自有监听器在结束后移除。设置 `pageEvents: false`（`inputScope()`/`createInputScope()` 或 `compose()` 的选项）后不发送任何 `*.enable` 命令；此时导航只能通过你的 `signal` 中止 run，composition 仍会在每一步之前检查焦点和文档。`browser.inputScope()` 根据浏览器 UA 选择 macOS 编辑命令；`createInputScope()` 的 `mac` 默认为 false，可显式指定。scope 内使用 `input.composition`，不要嵌套 `keyboard.compose()`。
 
 `cleanupTimeout` 由外层 `run()` 配置，子操作沿用该预算。子操作失败会终止本次 run，即使回调捕获了该操作的异常。scope 内的鼠标事件携带该键盘当前按住的修饰键状态。
 

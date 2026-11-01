@@ -207,11 +207,14 @@ export class BrowserContext {
       );
     const id = this.id;
     return (this.closing ??= (async () => {
-      if (!this.browser.closed)
-        await this.browser.cdp.send('Target.disposeBrowserContext', { browserContextId: id });
-      this.disposed = true;
-      this.browser.contextMap.delete(this.id!);
-      await this.proxy?.close();
+      try {
+        if (!this.browser.closed)
+          await this.browser.cdp.send('Target.disposeBrowserContext', { browserContextId: id });
+      } finally {
+        this.disposed = true;
+        this.browser.contextMap.delete(this.id!);
+        await this.proxy?.close();
+      }
     })());
   }
   async [Symbol.asyncDispose](): Promise<void> {

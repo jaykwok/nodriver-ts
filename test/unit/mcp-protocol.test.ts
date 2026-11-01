@@ -63,3 +63,28 @@ test('compatibility CLI rejects the custom socket transport', () => {
   assert.equal(result.status, 1);
   assert.match(result.stderr, /stdio|HTTP/);
 });
+
+test('legacy boundary answers ping during initialization', () => {
+  const received: JSONRPCMessage[] = [];
+  const raw: Transport = { async start() {}, async close() {}, async send() {} };
+  const guarded = legacyOnlyTransport(raw);
+  guarded.onmessage = (message) => {
+    received.push(message);
+  };
+  raw.onmessage!({ jsonrpc: '2.0', id: 1, method: 'ping' });
+  assert.equal(received.length, 1);
+});
+
+test('CLI rejects a missing value and options for another transport', () => {
+  const cli = fileURLToPath(new URL('../../src/mcp/cli.ts', import.meta.url));
+  for (const [args, message] of [
+    [['--executable', '--headless'], /Missing value for --executable/],
+    [['--port', '9000'], /--port requires --mcp-transport http/],
+    [['constructor', '5'], /Unknown option or invalid value: constructor/],
+    [['--mcp-transport', 'http', '--socket-path', 'x'], /--socket-path requires/],
+  ] as const) {
+    const result = spawnSync(process.execPath, [cli, ...args], { encoding: 'utf8', timeout: 5000 });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, message);
+  }
+});

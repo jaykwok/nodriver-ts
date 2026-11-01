@@ -11,9 +11,11 @@ export function abortReason(signal: AbortSignal): Error {
     ? signal.reason
     : new DOMException(String(signal.reason ?? 'Aborted'), 'AbortError');
 }
-export function timeoutValue(value: number): number {
-  if (!Number.isFinite(value) || value < 0)
-    throw new RangeError('timeout must be a finite, non-negative number');
+/** Largest delay a Node.js timer supports; larger values fire after 1 ms instead. */
+export const MAX_TIMEOUT = 2 ** 31 - 1;
+export function timeoutValue(value: number, name = 'timeout'): number {
+  if (!Number.isFinite(value) || value < 0 || value > MAX_TIMEOUT)
+    throw new RangeError(`${name} must be a finite number from 0 to ${MAX_TIMEOUT} ms`);
   return value;
 }
 export function delay(ms: number, signal?: AbortSignal): Promise<void> {

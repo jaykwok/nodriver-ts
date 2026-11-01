@@ -159,8 +159,9 @@ export class Browser {
       } catch (e) {
         await launched.process.captureDiagnostics?.();
         startup.fail(e);
-        await connection.close();
-        await launched.process.close();
+        // Cleanup failures must not replace the startup error and its diagnostics.
+        await connection.close().catch(() => {});
+        await launched.process.close().catch(() => {});
         throw e;
       }
     });
@@ -298,7 +299,10 @@ export class Browser {
     for (const id of browserContextIds) this.contextMap.set(id, new BrowserContext(this, id));
     await this.cdp.sendWith('Target.setDiscoverTargets', step(), { discover: true });
     const { targetInfos } = await this.cdp.sendWith('Target.getTargets', step());
-    for (const info of targetInfos) this.targetInfo.set(info.targetId, info);
+    for (const info of targetInfos) {
+      this.targetInfo.set(info.targetId, info);
+      this.input.registerTarget(info);
+    }
     await Promise.all(
       targetInfos
         .filter((t) => t.type === 'page' && this.shouldAttach(t))
@@ -373,6 +377,8 @@ export class Browser {
       } catch (e) {
         tab.dispose();
         this.tabMap.delete(info.targetId);
+        if (!this.closed)
+          void this.cdp.send('Target.detachFromTarget', { sessionId }).catch(() => {});
         throw e;
       }
     })();

@@ -2,6 +2,27 @@
 
 All notable changes are recorded here. The project follows [Semantic Versioning](https://semver.org/); before 1.0, minor versions may contain breaking changes.
 
+## Unreleased
+
+## 0.6.1 — 2026-11-01
+
+- Unconfirmed composition cancellation blocks only its top-level page and child frames when all other cleanup and replies have settled and no managed keys/buttons remain held. Other pages keep using the connection. Only destruction of that top-level target clears its block; unknown ownership and other cleanup failures retain connection-wide blocking.
+- Managed held keys and mouse buttons are tracked per top-level page: an acknowledged release through any attachment or destruction of the page clears the hold, avoiding unnecessary connection-wide blocking.
+- `Keyboard.compose()` and input scopes accept `pageEvents: false`, which sends no `*.enable` command. Navigation then stops input only through the caller's signal; compositions still check focus and document before every step.
+- Composition focus probes run in an isolated world instead of the page's main world, and no longer send `DOM.getDocument`, which implicitly enabled the DOM domain. `compose()` and input scope `run()` accept `executionContextId` to use the caller's own context.
+- Composition requires an editable focus. The first `update()` fails with an `ActionabilityError` cause before any composition command unless the focus is a writable text input or textarea, or contenteditable content. Previously such a composition reported `completed` without inserting text.
+- Composition follows focus into closed shadow roots, so a focus change between two inputs of one closed root is detected, and checks contenteditable content by its editing host. Focus in a cross-origin frame has unknown editability: composition proceeds and the report trace records `compositionFocusUnknown`.
+- `PresentationLease` accepts `screencast` parameters (`format`, `quality`, `maxWidth`, `maxHeight`, `everyNthFrame`) for `Page.startScreencast`.
+- Timeouts, durations and input `wait()` reject values above 2147483647 ms instead of firing after 1 ms.
+- Starting a presentation lease on an ended session keeps the session's end reason as `cause`. Add `Session.closeReason` and `Connection.closeReason`.
+- `keyDefinition()` rejects `Object.prototype` names such as `toString` instead of returning inherited functions.
+- `handleSignals: true` re-raises SIGINT/SIGTERM after closing the owned Chrome when no other handler is registered, so the host terminates as it would by default.
+- A failed `close()` of an owned browser can be retried; launch cleanup failures no longer replace the original startup error.
+- `BrowserContext.close()` stops its proxy forwarder even when `Target.disposeBrowserContext` fails. A tab whose initialization fails is detached from Chrome.
+- `Tab.addInitScript()` removes the script again when registration fails.
+- MCP: the legacy transport answers `ping` during initialization; `POST /leases` answers 503 instead of 429 for non-capacity failures; idle sweeps no longer overlap.
+- `nodriver-mcp` rejects an option whose value is missing, `--port` without the HTTP transport and `--socket-path` without the socket transport.
+
 ## 0.6.0 — 2026-10-30
 
 - Apply one input deadline and cancellation signal to queueing, preparation and each effective CDP command. Expose prompt interruption snapshots and `InputActionError.cleanup`, with an independent cleanup budget and blocked input after unconfirmed cleanup. Inputs are never replayed.
@@ -21,9 +42,7 @@ All notable changes are recorded here. The project follows [Semantic Versioning]
 
 ## 0.4.2 — 2026-10-24
 
-- Keep the response observation and unanswered-request APIs introduced in 0.4.1.
-- Read the selected browser executable's version without launching Chrome during CI metadata collection.
-- Close integration fixture servers even when browser startup fails, with a subprocess regression that verifies failed startup does not keep the test runner alive. Bound the CI integration step to 20 minutes.
+- Maintenance release with CI and test-suite changes only; the API is the same as in 0.4.1.
 
 ## 0.4.1 — 2026-10-23
 

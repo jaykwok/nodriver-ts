@@ -1,7 +1,14 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import type { Protocol } from 'devtools-protocol';
 import { ScriptedChrome, NO_REPLY } from '../../src/testing/index.ts';
-import { Keyboard, InputActionError, InputBlockedError, TimeoutError } from '../../src/index.ts';
+import {
+  ActionabilityError,
+  Keyboard,
+  InputActionError,
+  InputBlockedError,
+  TimeoutError,
+} from '../../src/index.ts';
 function gate() {
   let resolve!: () => void;
   const promise = new Promise<void>((r) => {
@@ -9,24 +16,35 @@ function gate() {
   });
   return { resolve, promise };
 }
-function model(chrome: ScriptedChrome) {
-  let focused = true;
-  chrome.handle('DOM.getDocument', () => ({
-    root: {
-      nodeId: 1,
-      backendNodeId: 1,
-      nodeType: 9,
-      nodeName: '#document',
-      localName: '',
-      nodeValue: '',
-    },
+type Focus = { kind: 'editable' | 'none' | 'unknown'; host: boolean };
+/**
+ * `classify` answers the editability probe for each element, `inner` the probe that continues in
+ * a closed shadow root.
+ */
+function model(
+  chrome: ScriptedChrome,
+  classify: (objectId: string) => Focus = () => ({ kind: 'editable', host: false }),
+  inner: () => Protocol.Runtime.RemoteObject = () => ({
+    type: 'object',
+    subtype: 'null',
+    value: null,
+  }),
+) {
+  let focused = true,
+    worlds = 0;
+  chrome.handle('Page.createIsolatedWorld', () => ({ executionContextId: 100 + ++worlds }));
+  // The probe world's global object; probes on it return the focused element.
+  chrome.handle('Runtime.evaluate', () => ({
+    result: { type: 'object', objectId: `world-${worlds}` },
   }));
-  chrome.handle('DOM.resolveNode', () => ({ object: { type: 'object', objectId: 'document' } }));
-  chrome.handle('Runtime.callFunctionOn', (params) =>
-    params.objectId === 'document'
-      ? { result: { type: 'object', objectId: 'focus' } }
-      : { result: { type: 'boolean', value: focused } },
-  );
+  chrome.handle('Runtime.callFunctionOn', (params) => {
+    if (params.functionDeclaration.includes(':read-write'))
+      return { result: { type: 'object', value: classify(params.objectId!) } };
+    if (params.functionDeclaration.includes("'mismatch'")) return { result: inner() };
+    if (params.functionDeclaration.includes('isConnected'))
+      return { result: { type: 'boolean', value: focused } };
+    return { result: { type: 'object', objectId: 'focus' } };
+  });
   chrome.handle('Runtime.releaseObjectGroup', () => {});
   chrome.handle('Input.imeSetComposition', () => {});
   chrome.handle('Input.insertText', () => {});
@@ -235,4 +253,255 @@ test('unacknowledged composition cancellation fails cleanup without retries or l
   assert.equal(browser.connection.unansweredCount, 1);
   assert.equal(chrome.commands.filter((c) => c.method === 'Input.imeSetComposition').length, 2);
   assert.equal(chrome.commands.filter((c) => c.method === 'Input.insertText').length, 0);
+});
+
+test('focus probes run in a reused isolated world; pageEvents false sends no enable', async () => {
+  await using chrome = await ScriptedChrome.start();
+  model(chrome);
+  await using browser = await chrome.connect({ attach: 'none' });
+  const targetId = [...browser.targetInfo.keys()][0]!;
+  const session = await browser.attachSession(targetId);
+  const keyboard = new Keyboard(session);
+  for (let i = 0; i < 2; i++)
+    await keyboard.compose(
+      async (ime) => {
+        await ime.update('中文');
+        await ime.commit();
+      },
+      { pageEvents: false },
+    );
+  await browser.inputScope(session, { pageEvents: false }).run(async (input) => {
+    await input.composition.update('一');
+    await input.composition.commit();
+  });
+  const methods = chrome.commands.filter((c) => c.sessionId === session.id).map((c) => c.method);
+  assert.deepEqual(
+    methods.filter((m) => m.endsWith('.enable') || m.startsWith('DOM.')),
+    [],
+  );
+  assert.deepEqual(
+    chrome.commands.filter((c) => c.method === 'Page.createIsolatedWorld').map((c) => c.params),
+    [{ frameId: targetId }],
+  );
+  assert.deepEqual(
+    chrome.commands.filter((c) => c.method === 'Runtime.evaluate').map((c) => c.params),
+    [{ expression: 'globalThis', contextId: 101, objectGroup: 'nodriver-composition-world' }],
+  );
+  // Every capture runs on the world's global object, never by numeric context ID.
+  const captures = chrome.commands.filter(
+    (c) =>
+      c.method === 'Runtime.callFunctionOn' &&
+      (c.params as { objectId?: string }).objectId !== 'focus',
+  );
+  assert.equal(captures.length, 3);
+  for (const c of captures) assert.equal((c.params as { objectId?: string }).objectId, 'world-1');
+});
+
+test('an explicit execution context is used as is; Page events stay on by default', async () => {
+  await using chrome = await ScriptedChrome.start();
+  model(chrome);
+  await using browser = await chrome.connect({ attach: 'none' });
+  const session = await browser.attachSession([...browser.targetInfo.keys()][0]!);
+  await new Keyboard(session).compose(
+    async (ime) => {
+      await ime.update('中文');
+    },
+    { executionContextId: 42 },
+  );
+  assert.equal(chrome.commands.filter((c) => c.method === 'Page.enable').length, 1);
+  assert.equal(chrome.commands.filter((c) => c.method === 'Page.createIsolatedWorld').length, 0);
+  assert.equal(chrome.commands.filter((c) => c.method === 'Runtime.evaluate').length, 0);
+  const [capture] = chrome.commands.filter((c) => c.method === 'Runtime.callFunctionOn');
+  assert.equal((capture!.params as { executionContextId?: number }).executionContextId, 42);
+});
+
+test('a probe world gone with its document or released is replaced', async () => {
+  await using chrome = await ScriptedChrome.start();
+  model(chrome);
+  await using browser = await chrome.connect({ attach: 'none' });
+  const session = await browser.attachSession([...browser.targetInfo.keys()][0]!);
+  const keyboard = new Keyboard(session);
+  const compose = () =>
+    keyboard.compose(
+      async (ime) => {
+        await ime.update('中文');
+        await ime.commit();
+      },
+      { pageEvents: false },
+    );
+  await compose();
+  for (const message of [
+    'Cannot find context with specified id',
+    'Could not find object with given id',
+  ]) {
+    chrome.replyOnce('Runtime.callFunctionOn', () => {
+      throw new Error(message);
+    });
+    await compose();
+  }
+  assert.equal(chrome.commands.filter((c) => c.method === 'Page.createIsolatedWorld').length, 3);
+});
+
+test('a probe context destroyed with its document reads as lost focus', async () => {
+  await using chrome = await ScriptedChrome.start();
+  model(chrome);
+  await using browser = await chrome.connect({ attach: 'none' });
+  const session = await browser.attachSession([...browser.targetInfo.keys()][0]!);
+  chrome.handle('Runtime.callFunctionOn', (params) => {
+    if (params.functionDeclaration.includes(':read-write'))
+      return { result: { type: 'object', value: { kind: 'editable', host: false } } };
+    if (params.objectId === 'focus') throw new Error('Cannot find context with specified id');
+    return { result: { type: 'object', objectId: 'focus' } };
+  });
+  const error = await new Keyboard(session)
+    .compose(async (ime) => {
+      await ime.update('中文');
+    })
+    .catch((e) => e);
+  assert.ok(error instanceof InputActionError);
+  assert.match(String(error.cause), /lost focus or its document changed/);
+  await error.cleanup;
+  assert.equal(chrome.commands.filter((c) => c.method === 'Input.imeSetComposition').length, 0);
+});
+
+function node(shadowRoots: Array<{ shadowRootType: 'closed' | 'open' | 'user-agent' }> = []) {
+  return {
+    node: {
+      nodeId: 0,
+      backendNodeId: 1,
+      nodeType: 1,
+      nodeName: 'X-EDITOR',
+      localName: 'x-editor',
+      nodeValue: '',
+      shadowRoots: shadowRoots.map((root, i) => ({
+        ...root,
+        nodeId: 0,
+        backendNodeId: 10 + i,
+        nodeType: 11,
+        nodeName: '#document-fragment',
+        localName: '',
+        nodeValue: '',
+      })),
+    },
+  };
+}
+async function compose(
+  chrome: ScriptedChrome,
+  options: { cleanupTimeout?: number; timeout?: number } = {},
+) {
+  const browser = await chrome.connect({ attach: 'none' });
+  const session = await browser.attachSession([...browser.targetInfo.keys()][0]!);
+  const result = await new Keyboard(session)
+    .compose(async (ime) => {
+      await ime.update('中文');
+      await ime.commit();
+    }, options)
+    .catch((e: unknown) => e);
+  return { browser, result };
+}
+
+test('composition without an editable focus fails before any composition command', async () => {
+  await using chrome = await ScriptedChrome.start();
+  // A user-agent shadow root, as on native controls, is not a closed root to look into.
+  model(chrome, () => ({ kind: 'none', host: true }));
+  chrome.handle('DOM.describeNode', () => node([{ shadowRootType: 'user-agent' }]));
+  const { browser, result: error } = await compose(chrome);
+  await using _ = browser;
+  assert.ok(error instanceof InputActionError);
+  assert.ok(error.cause instanceof ActionabilityError);
+  assert.match(error.cause.message, /editable focused element/);
+  assert.equal((await error.cleanup).status, 'completed');
+  assert.equal(chrome.commands.filter((c) => c.method.startsWith('Input.')).length, 0);
+  assert.equal(chrome.commands.filter((c) => c.method === 'DOM.resolveNode').length, 0);
+  const [describe] = chrome.commands.filter((c) => c.method === 'DOM.describeNode');
+  assert.deepEqual(describe!.params, { objectId: 'focus', depth: 0, pierce: true });
+});
+
+test('focus inside a closed shadow root is resolved and checked on the inner element', async () => {
+  await using chrome = await ScriptedChrome.start();
+  model(
+    chrome,
+    (objectId) =>
+      objectId === 'focus' ? { kind: 'none', host: true } : { kind: 'editable', host: false },
+    () => ({ type: 'object', objectId: 'inner' }),
+  );
+  chrome.handle('DOM.describeNode', () => node([{ shadowRootType: 'closed' }]));
+  chrome.handle('DOM.resolveNode', () => ({ object: { type: 'object', objectId: 'root' } }));
+  const { browser, result: report } = await compose(chrome);
+  await using _ = browser;
+  assert.equal((report as { completedSegments: number }).completedSegments, 1);
+  const [resolve] = chrome.commands.filter((c) => c.method === 'DOM.resolveNode');
+  assert.deepEqual(
+    { ...(resolve!.params as object), objectGroup: undefined },
+    { backendNodeId: 10, executionContextId: 101, objectGroup: undefined },
+  );
+  const calls = chrome.commands.filter((c) => c.method === 'Runtime.callFunctionOn');
+  const descend = calls.find((c) => (c.params as { objectId?: string }).objectId === 'root')!;
+  // The host goes along so that a root resolved into another world is rejected unrun.
+  assert.deepEqual((descend.params as { arguments?: unknown }).arguments, [{ objectId: 'focus' }]);
+  const checks = calls.filter((c) =>
+    (c.params as { functionDeclaration: string }).functionDeclaration.includes('isConnected'),
+  );
+  assert.ok(checks.length >= 2);
+  for (const c of checks) assert.equal((c.params as { objectId?: string }).objectId, 'inner');
+});
+
+test('a closed root that holds no focus leaves the host, which is checked for editability', async () => {
+  await using chrome = await ScriptedChrome.start();
+  model(chrome, () => ({ kind: 'none', host: true }));
+  chrome.handle('DOM.describeNode', () => node([{ shadowRootType: 'closed' }]));
+  chrome.handle('DOM.resolveNode', () => ({ object: { type: 'object', objectId: 'root' } }));
+  const { browser, result: error } = await compose(chrome);
+  await using _ = browser;
+  assert.ok(error instanceof InputActionError);
+  assert.match(String(error.cause), /editable focused element/);
+  await error.cleanup;
+});
+
+test('focus in a cross-origin frame has unknown editability: composed and noted', async () => {
+  await using chrome = await ScriptedChrome.start();
+  model(chrome, () => ({ kind: 'unknown', host: false }));
+  const { browser, result: report } = await compose(chrome);
+  await using _ = browser;
+  const { trace, events, completedSegments } = report as {
+    trace: Array<{ type: string }>;
+    events: number;
+    completedSegments: number;
+  };
+  assert.equal(completedSegments, 1);
+  assert.deepEqual(
+    trace.map((entry) => entry.type),
+    ['compositionFocusUnknown', 'compositionUpdate', 'compositionCommit'],
+  );
+  // The note is not an input event.
+  assert.equal(events, 2);
+});
+
+test('a world mismatch reads as a changed document; timeouts are not unknown focus', async () => {
+  for (const mismatch of [
+    (): Protocol.Runtime.RemoteObject => ({ type: 'string', value: 'mismatch' }),
+    () => {
+      throw new Error('Argument should belong to the same JavaScript world as target object');
+    },
+  ]) {
+    await using chrome = await ScriptedChrome.start();
+    model(chrome, () => ({ kind: 'none', host: true }), mismatch);
+    chrome.handle('DOM.describeNode', () => node([{ shadowRootType: 'closed' }]));
+    chrome.handle('DOM.resolveNode', () => ({ object: { type: 'object', objectId: 'root' } }));
+    const { browser, result: error } = await compose(chrome);
+    await using _ = browser;
+    assert.ok(error instanceof InputActionError);
+    assert.match(String(error.cause), /lost focus or its document changed/);
+    assert.equal(chrome.commands.filter((c) => c.method.startsWith('Input.')).length, 0);
+    await error.cleanup;
+  }
+  await using chrome = await ScriptedChrome.start();
+  model(chrome, () => ({ kind: 'none', host: true }));
+  chrome.handle('DOM.describeNode', () => NO_REPLY);
+  const { browser, result: error } = await compose(chrome, { timeout: 100 });
+  await using _ = browser;
+  assert.ok(error instanceof InputActionError);
+  assert.ok(error.cause instanceof TimeoutError);
+  assert.equal(chrome.commands.filter((c) => c.method.startsWith('Input.')).length, 0);
+  await error.cleanup;
 });

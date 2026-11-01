@@ -160,6 +160,10 @@ export class Connection {
   get closed(): boolean {
     return !!this.failure;
   }
+  /** The error that closed this connection, once closed. */
+  get closeReason(): Error | undefined {
+    return this.failure;
+  }
   /** Requests still awaiting caller settlement, including queued sends. */
   get pendingCount(): number {
     return this.pending.size;
@@ -718,6 +722,10 @@ export class Session {
   }
   get closed(): boolean {
     return !!this.failure || this.connection.closed;
+  }
+  /** The error that ended this session or its connection, once closed. */
+  get closeReason(): Error | undefined {
+    return this.failure ?? this.connection.closeReason;
   }
   send<M extends Command>(method: M, ...params: Params<M>): Promise<Result<M>> {
     return this.sendWith(method, {}, ...params);

@@ -2,7 +2,9 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomInt } from 'node:crypto';
 import { abortReason, type WaitOptions } from '../utils.ts';
 import { TimeoutError } from '../errors.ts';
-import type { Connection } from '../protocol/connection.ts';
+import type { Command, Connection, Session } from '../protocol/connection.ts';
+import type { Protocol } from 'devtools-protocol';
+import { InputTargets, type InputPage } from './targets.ts';
 import { InputAction } from './action.ts';
 export { InputAction } from './action.ts';
 
@@ -65,6 +67,75 @@ export class InputCoordinator {
   private pending = 0;
   private failure?: InputBlockedError;
   private cleaning = 0;
+  private readonly targets?: InputTargets;
+  /** Managed holds by page, or by session when the page is unknown. */
+  private readonly held = new Map<string, InputPage | undefined>();
+  constructor(connection?: Connection) {
+    if (connection) this.targets = new InputTargets(connection);
+  }
+  /** @internal Records ownership established by Browser/Tab, without CDP setup. */
+  registerTarget(info: Protocol.Target.TargetInfo): void {
+    this.targets?.registerTarget(info);
+  }
+  /** @internal */
+  registerSession(session: Session, pageId: string): void {
+    this.targets?.registerSession(session, pageId);
+  }
+  /** @internal Capture ownership before a session can detach or its page can disappear. */
+  pageFor(session: Session): InputPage | undefined {
+    return this.targets?.pageFor(session);
+  }
+  assertSessionReady(session: Session): void {
+    this.assertReady();
+    const page = this.pageFor(session);
+    if (page?.failure) throw page.failure;
+    if (!page && this.targets?.hasBlockedPage)
+      throw new InputBlockedError(
+        'Input page ownership is unknown while a page is blocked; use a known page session',
+      );
+  }
+  /** Called only after all releases and late replies have settled. */
+  blockComposition(cause: unknown, page?: InputPage): void {
+    // A destroyed page takes its held keys and buttons with it.
+    for (const [key, owner] of this.held) if (owner?.destroyed) this.held.delete(key);
+    if (!page || this.held.size) {
+      this.block(cause);
+      return;
+    }
+    if (!page.destroyed)
+      page.failure ??= new InputBlockedError(
+        `Composition cleanup was not confirmed for page ${page.id}; close this page or use another page`,
+        { cause },
+      );
+  }
+  /**
+   * Track managed holds before dispatch; only an acknowledged release clears a hold. Attachments
+   * of one page share its input state, so a release through any of them counts.
+   */
+  trackCommand(session: Session, method: Command, params: unknown): () => void {
+    let control: string | undefined;
+    let release = false;
+    if (method === 'Input.dispatchKeyEvent') {
+      const key = params as Protocol.Input.DispatchKeyEventRequest;
+      if (key.type === 'keyDown' || key.type === 'rawKeyDown' || key.type === 'keyUp') {
+        control = `key:${key.code ?? key.windowsVirtualKeyCode ?? key.key}`;
+        release = key.type === 'keyUp';
+      }
+    } else if (method === 'Input.dispatchMouseEvent') {
+      const mouse = params as Protocol.Input.DispatchMouseEventRequest;
+      if (mouse.type === 'mousePressed' || mouse.type === 'mouseReleased') {
+        control = `mouse:${mouse.button}`;
+        release = mouse.type === 'mouseReleased';
+      }
+    }
+    if (!control) return () => {};
+    const page = this.pageFor(session);
+    const key = `${page ? 'page:' + page.id : 'session:' + session.id}:${control}`;
+    if (!release) this.held.set(key, page);
+    return () => {
+      if (release) this.held.delete(key);
+    };
+  }
   assertReady(): void {
     if (this.failure) throw this.failure;
     if (this.cleaning) throw new InputBlockedError('Input cleanup is still in progress');
@@ -124,7 +195,7 @@ const coordinators = new WeakMap<Connection, InputCoordinator>();
 /** @internal One queue for Tab input and every raw scope on this connection. */
 export function inputCoordinator(connection: Connection): InputCoordinator {
   let value = coordinators.get(connection);
-  if (!value) coordinators.set(connection, (value = new InputCoordinator()));
+  if (!value) coordinators.set(connection, (value = new InputCoordinator(connection)));
   return value;
 }
 const defaults = {

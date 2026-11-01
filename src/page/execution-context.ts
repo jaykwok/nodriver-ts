@@ -7,7 +7,8 @@ export function isContextGone(error: unknown): boolean {
   return (
     error instanceof ProtocolError &&
     error.code === -32000 &&
-    /Cannot find context with specified id|Execution context was destroyed|Cannot find object with given id|Inspected target navigated or closed/.test(
+    // Not "Could not find object with given id": a released handle does not mean a new document.
+    /Cannot find context with specified id|Execution context was destroyed|Inspected target navigated or closed/.test(
       error.message,
     )
   );

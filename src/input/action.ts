@@ -2,6 +2,7 @@ import { bounded, delay, timeoutValue, type WaitOptions } from '../utils.ts';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { StaleElementError, TimeoutError } from '../errors.ts';
 import type { Command, Connection, Params, Result, Session } from '../protocol/connection.ts';
+import type { InputPage } from './targets.ts';
 import {
   InputBlockedError,
   type InputBehavior,
@@ -27,6 +28,7 @@ export class InputAction {
   private acquired = false;
   private connections = new Set<Connection>();
   private debt = false;
+  private compositionFailures: Array<{ error: unknown; page?: InputPage }> = [];
   private finishing?: Promise<InputCleanupReport>;
   private cleanupEnd?: number;
   private stepQueue: Promise<unknown> = Promise.resolve();
@@ -52,6 +54,7 @@ export class InputAction {
     this.retained.add(release);
   }
   observe(session: Session): void {
+    this.behavior.coordinator?.assertSessionReady(session);
     this.connections.add(session.connection);
   }
   constructor(behavior: InputBehavior, action: string, options: InputOptions) {
@@ -122,9 +125,12 @@ export class InputAction {
     ...params: Params<M>
   ): Promise<Result<M>> {
     const options = this.step();
-    this.connections.add(session.connection);
+    this.observe(session);
+    const acknowledged = this.behavior.coordinator?.trackCommand(session, method, params[0]);
     try {
-      return await session.sendWith(method, options, ...params);
+      const result = await session.sendWith(method, options, ...params);
+      acknowledged?.();
+      return result;
     } catch (error) {
       this.debt = true;
       throw error;
@@ -144,15 +150,19 @@ export class InputAction {
     ...params: Params<M>
   ): Promise<Result<M>> {
     this.connections.add(session.connection);
+    const acknowledged = this.behavior.coordinator?.trackCommand(session, method, params[0]);
     try {
-      return await session.sendWith(method, this.cleanupStep(), ...params);
+      const result = await session.sendWith(method, this.cleanupStep(), ...params);
+      acknowledged?.();
+      return result;
     } catch (error) {
       this.debt = true;
       throw error;
     }
   }
-  release(task: () => Promise<void>): InputRelease {
+  release(task: () => Promise<void>, compositionSession?: Session): InputRelease {
     this.step();
+    const page = compositionSession && this.behavior.coordinator?.pageFor(compositionSession);
     let forgotten = false,
       pending: Promise<void> | undefined;
     const release: InputRelease = {
@@ -165,7 +175,10 @@ export class InputAction {
           try {
             await task();
           } catch (error) {
-            this.cleanupFailed(error);
+            if (compositionSession) {
+              this.report.cleanupErrors.push(String(error));
+              this.compositionFailures.push({ error, page });
+            } else this.cleanupFailed(error);
           }
         })());
       },
@@ -320,6 +333,8 @@ export class InputAction {
             release.forget();
           else await release.run();
         }
+        for (const { error, page } of this.compositionFailures)
+          this.behavior.coordinator?.blockComposition(error, page);
       } finally {
         if (this.acquired) this.behavior.coordinator?.cleaningFinished();
         for (const dispose of this.disposers) dispose();
@@ -339,11 +354,16 @@ export class InputAction {
       return result;
     })());
   }
+  /** A trace entry that is not an input event. */
+  note(type: string): void {
+    if (this.report.trace.length < 2000) this.report.trace.push({ type });
+  }
   record(type: string, fields: { x?: number; y?: number; delay?: number } = {}): void {
     this.report.events++;
     if (this.report.trace.length < 2000) this.report.trace.push({ type, ...fields });
   }
   async wait(ms: number): Promise<void> {
+    timeoutValue(ms, 'wait');
     await this.check();
     if (ms) {
       if (this.report.trace.length < 2000) this.report.trace.push({ type: 'pause', delay: ms });

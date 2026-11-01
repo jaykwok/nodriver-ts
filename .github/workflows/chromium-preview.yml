@@ -38,6 +38,7 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: '^24.22.0'
+          cache: npm
       - name: Set up preview Chrome
         id: chrome
         uses: browser-actions/setup-chrome@v2

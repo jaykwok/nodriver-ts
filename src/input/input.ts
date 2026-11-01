@@ -9,13 +9,21 @@ import {
 } from './behavior.ts';
 import { StaleElementError } from '../errors.ts';
 import type { InputRelease } from './action.ts';
-import { Composition } from './composition.ts';
+import { Composition, type CompositionOptions } from './composition.ts';
+export interface ComposeOptions extends InputOptions, CompositionOptions {
+  /**
+   * false never sends Page.enable. Navigation then stops the action only through your signal;
+   * the composition still checks focus and document before every step. Defaults to true.
+   */
+  pageEvents?: boolean;
+}
 function standalone(session: Session) {
   const coordinator = inputCoordinator(session.connection);
   const behavior = new InputBehavior(
     (task) => coordinator.run(task),
     () => {
-      if (session.closed) throw new StaleElementError('Input target closed');
+      if (session.closed)
+        throw new StaleElementError('Input target closed', { cause: session.closeReason });
     },
     undefined,
     async (action) => {
@@ -411,7 +419,9 @@ for (const [shortcuts, commands] of [
   for (const shortcut of shortcuts.split(' ')) macCommands[shortcut] = commands.split(' ');
 /** Resolves a named key or a US-layout character to its CDP key definition. */
 export function keyDefinition(key: string): KeyDefinition {
-  const definition = named[key] ?? characters.get(key)?.definition;
+  // Own keys only: "toString" or "__proto__" must not resolve through Object.prototype.
+  const definition =
+    (Object.hasOwn(named, key) ? named[key] : undefined) ?? characters.get(key)?.definition;
   if (!definition)
     throw new TypeError(`Unsupported physical key ${key}; use insertText() for Unicode`);
   return definition;
@@ -425,12 +435,12 @@ export function parseChord(chord: string): string[] {
 export class Keyboard {
   compose(
     task: (composition: Composition) => Promise<void>,
-    options: InputOptions = {},
+    options: ComposeOptions = {},
   ): Promise<InputReport> {
     if (this.scope) throw new Error('Use the scope composition controller inside an input scope');
     return this.behavior.action('composition', options, async (action) => {
-      await action.send(this.session, 'Page.enable');
-      await action.waitFor(task(new Composition(this.session, action)));
+      if (options.pageEvents !== false) await action.send(this.session, 'Page.enable');
+      await action.waitFor(task(new Composition(this.session, action, options)));
     });
   }
   /** Held key name -> dispatched DOM key value, so keyUp mirrors keyDown. */
@@ -467,7 +477,8 @@ export class Keyboard {
   }
   private get modifiers(): number {
     let result = 0;
-    for (const key of this.pressed.keys()) result |= modifierBits[key] ?? 0;
+    for (const key of this.pressed.keys())
+      result |= Object.hasOwn(modifierBits, key) ? modifierBits[key]! : 0;
     return result;
   }
   private shortcut(code: string): string {
@@ -512,7 +523,9 @@ export class Keyboard {
     this.pressed.set(key, value);
     this.behavior.modifiers = this.modifiers;
     const plain = !(this.modifiers & ~8);
-    const commands = this.mac ? macCommands[this.shortcut(definition.code)] : undefined;
+    const shortcut = this.shortcut(definition.code);
+    const commands =
+      this.mac && Object.hasOwn(macCommands, shortcut) ? macCommands[shortcut] : undefined;
     try {
       await action.send(this.session, 'Input.dispatchKeyEvent', {
         ...(commands && { commands }),

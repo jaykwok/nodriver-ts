@@ -272,3 +272,58 @@ test('presentation lease freezes its report when ACK cleanup times out', async (
     await chrome.close();
   }
 });
+
+test('presentation lease passes screencast parameters and rejects timer overflow', async () => {
+  const { chrome, browser, session } = await target();
+  try {
+    chrome.handle('Page.startScreencast', () => undefined);
+    chrome.handle('Page.stopScreencast', () => undefined);
+    const screencast = {
+      format: 'jpeg',
+      quality: 30,
+      maxWidth: 320,
+      maxHeight: 240,
+      everyNthFrame: 2,
+    } as const;
+    const lease = browser.presentationLease(session, { screencast });
+    await lease.start();
+    await lease.close();
+    const [start] = chrome.commands.filter((c) => c.method === 'Page.startScreencast');
+    assert.deepEqual(start!.params, screencast);
+    for (const options of [
+      { maxDuration: 2 ** 31 },
+      { stopTimeout: Number.MAX_SAFE_INTEGER },
+      { screencast: { quality: 101 } },
+      { screencast: { format: 'webp' as 'png' } },
+      { screencast: { everyNthFrame: 0 } },
+      { screencast: { maxWidth: 1.5 } },
+      { screencast: { scale: 1 } as object },
+    ])
+      assert.throws(
+        () => browser.presentationLease(session, options),
+        (e: unknown) => e instanceof RangeError || e instanceof TypeError,
+      );
+    assert.doesNotThrow(() => browser.presentationLease(session, { maxDuration: 2 ** 31 - 1 }));
+  } finally {
+    await browser.close();
+    await chrome.close();
+  }
+});
+
+test('presentation lease start on an ended session keeps the original reason', async () => {
+  const { chrome, browser, session } = await target();
+  try {
+    chrome.crashTarget(session.targetId);
+    await session.ended;
+    const lease = browser.presentationLease(session);
+    const error = await lease.start().catch((e) => e);
+    assert.ok(error instanceof NodriverError);
+    assert.equal(error.name, 'DisconnectedError');
+    assert.equal(error.cause, session.closeReason);
+    assert.equal((error.cause as { reason?: string }).reason, 'target-crashed');
+    assert.match(lease.report.error!, /target-crashed/);
+  } finally {
+    await browser.close();
+    await chrome.close();
+  }
+});

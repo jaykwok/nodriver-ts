@@ -37,6 +37,7 @@ export type { Response } from './page/network.ts';
 export { Element } from './dom/element.ts';
 export type { Selector, QueryOptions } from './dom/query.ts';
 export { Mouse, Keyboard, keyDefinition, parseChord } from './input/input.ts';
+export type { ComposeOptions } from './input/input.ts';
 export { InputActionError, InputBlockedError } from './input/behavior.ts';
 export type {
   InputPolicy,
@@ -45,14 +46,15 @@ export type {
   InputCleanupReport,
 } from './input/behavior.ts';
 export { Composition } from './input/composition.ts';
-export type { CompositionSelection } from './input/composition.ts';
+export type { CompositionSelection, CompositionOptions } from './input/composition.ts';
 export { InputScope, createInputScope } from './input/scope.ts';
-export type { InputScopeOptions, ScopedInput } from './input/scope.ts';
+export type { InputScopeOptions, InputScopeRunOptions, ScopedInput } from './input/scope.ts';
 export { PresentationLease, createPresentationLease } from './page/presentation.ts';
 export type {
   PresentationLeaseLifecycle,
   PresentationLeaseReason,
   PresentationLeaseOptions,
+  PresentationScreencastOptions,
   PresentationReport,
 } from './page/presentation.ts';
 export { Connection, Session, TargetSession, SessionEndedError } from './protocol/connection.ts';

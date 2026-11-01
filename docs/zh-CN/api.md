@@ -19,23 +19,23 @@
 
 测试入口 `nodriver-ts/testing` 导出 `ScriptedChrome`、`NO_REPLY` 及相关类型，见[脚本化测试](testing.md)。它不通过主入口导出。
 
-| 对象           | 高层入口                                                                                                                                                                                                |
-| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Browser        | `launch`, `connect`, `newTab`, `newContext`, `tabs`, `contexts`, `defaultContext`, `version`, `owned`, `endpoint`, `close`, `disconnect`, `release`, `waitForTab`, `errors`, `cdp`                      |
-| BrowserContext | `newTab`, `tabs`, `cookies`, `setCookies`, `clearCookies`, `saveCookies`, `loadCookies`, `storageState`, `restoreStorage`, `grantPermissions`, `resetPermissions`, `setDownloadDirectory`, `close`      |
-| Tab            | `goto`, `reload`, `go(delta)`, `waitForNavigation`, `stopLoading`, `bringToFront`, `activate`, `windowBounds`, `mainFrame`, `frames`, `waitForPopup`, `handleDialog`, `setInputPolicy`                  |
-| Tab 文件/环境  | `setContent`, `screenshot`, `pdf`, `resources`, `resourceContent`, `setEnvironment`, `addInitScript`, `waitForDownload`, `inspectEnvironment`, `diagnoseEnvironment`, `alignEnvironment`                |
-| Tab / Frame    | `evaluate`, `evaluateHandle`, `query`, `queryAll`, `waitForSelector`, `waitForFunction`, `content`                                                                                                      |
-| Frame          | `parent`, `children`, `session`, `url`, `generation`, `storage`, `setStorage`, `inspectEnvironment`                                                                                                     |
-| Element        | `text`, `html`, `attribute`, `describe`, `evaluate`, `query`, `queryAll`, `focus`, `click`, `hover`, `scrollIntoView`, `clickablePoint`, `fill`, `type`, `select`, `setChecked`, `upload`, `screenshot` |
-| Network        | `route`, `authenticate`, `setExtraHeaders`, `setCacheEnabled`, `setOffline`, `waitForResponse`, `responses`, `enable`, `networkEnabled`                                                                 |
-| Route          | `request`, `continue`, `fulfill`, `abort`；只能处理一次，handler 未处理时默认 continue                                                                                                                  |
-| Download       | `guid`, `url`, `suggestedFilename`, `status`, `updates`, `path`, `saveAs`, `cancel`                                                                                                                     |
-| Mouse          | `move`, `click`, `wheel`, `drag`；顶层视口 CSS 坐标                                                                                                                                                     |
-| Keyboard       | `insertText`, `type`, `down`, `up`, `press('Control+A')`                                                                                                                                                |
-| JSHandle       | `jsonValue`, `dispose`, `Symbol.asyncDispose`                                                                                                                                                           |
-| Session        | `send`, `sendWith`, `on`, `onAny`, `waitFor`, `disconnected`, `id`, `closed`                                                                                                                            |
-| Transport      | WebSocket / Pipe；自定义传输实现 `send`, `close`, `onmessage`, `onclose`                                                                                                                                |
+| 对象           | 高层入口                                                                                                                                                                                                              |
+| -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Browser        | `launch`, `connect`, `newTab`, `newContext`, `tabs`, `contexts`, `defaultContext`, `version`, `owned`, `endpoint`, `close`, `disconnect`, `release`, `waitForTab`, `inputScope`, `presentationLease`, `errors`, `cdp` |
+| BrowserContext | `newTab`, `tabs`, `cookies`, `setCookies`, `clearCookies`, `saveCookies`, `loadCookies`, `storageState`, `restoreStorage`, `grantPermissions`, `resetPermissions`, `setDownloadDirectory`, `close`                    |
+| Tab            | `goto`, `reload`, `go(delta)`, `waitForNavigation`, `stopLoading`, `bringToFront`, `activate`, `windowBounds`, `mainFrame`, `frames`, `waitForPopup`, `handleDialog`, `setInputPolicy`                                |
+| Tab 文件/环境  | `setContent`, `screenshot`, `pdf`, `resources`, `resourceContent`, `setEnvironment`, `addInitScript`, `waitForDownload`, `inspectEnvironment`, `diagnoseEnvironment`, `alignEnvironment`                              |
+| Tab / Frame    | `evaluate`, `evaluateHandle`, `query`, `queryAll`, `waitForSelector`, `waitForFunction`, `content`                                                                                                                    |
+| Frame          | `parent`, `children`, `session`, `url`, `generation`, `storage`, `setStorage`, `inspectEnvironment`                                                                                                                   |
+| Element        | `text`, `html`, `attribute`, `describe`, `evaluate`, `query`, `queryAll`, `focus`, `click`, `hover`, `scrollIntoView`, `clickablePoint`, `fill`, `type`, `select`, `setChecked`, `upload`, `screenshot`               |
+| Network        | `route`, `authenticate`, `setExtraHeaders`, `setCacheEnabled`, `setOffline`, `waitForResponse`, `responses`, `enable`, `networkEnabled`                                                                               |
+| Route          | `request`, `continue`, `fulfill`, `abort`；只能处理一次，handler 未处理时默认 continue                                                                                                                                |
+| Download       | `guid`, `url`, `suggestedFilename`, `status`, `updates`, `path`, `saveAs`, `cancel`                                                                                                                                   |
+| Mouse          | `move`, `click`, `wheel`, `drag`；顶层视口 CSS 坐标                                                                                                                                                                   |
+| Keyboard       | `insertText`, `type`, `down`, `up`, `press('Control+A')`, `compose`                                                                                                                                                   |
+| JSHandle       | `jsonValue`, `dispose`, `Symbol.asyncDispose`                                                                                                                                                                         |
+| Session        | `send`, `sendWith`, `on`, `onAny`, `waitFor`, `disconnected`, `id`, `closed`, `closeReason`                                                                                                                           |
+| Transport      | WebSocket / Pipe；自定义传输实现 `send`, `close`, `onmessage`, `onclose`                                                                                                                                              |
 
 输入策略与 `InputReport` 见 [输入](input.md)，环境采样、诊断与对齐见 [环境](environment.md)。
 
@@ -108,6 +108,8 @@ Node.js 24.22.0+ 支持用 `await using` 在正常退出和异常展开时关闭
 - `select()` 通过 DOM 改值并派发 input/change。
 - 物理按键支持命名键、F1–F12、修饰键组合与 US 布局字符（含上档符号）。
 - `Mouse.drag()` 是指针拖动，复杂 HTML5 DataTransfer 需要自行使用协议扩展。
+- 取消和超时会以 `InputActionError` 拒绝，其 `cleanup` 报告按住的键和鼠标按钮如何释放。元素输入在元素所在 frame 或任一祖先 frame 导航或分离时停止；Tab 上直接调用的鼠标/键盘输入只监视主 frame。
+- `browser.inputScope(session)` 和 `createInputScope(session)` 把鼠标、键盘和组合输入放在同一个截止时间和报告下，详见[输入](input.md)。
 
 ## 截图、PDF 与错误
 

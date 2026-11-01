@@ -73,7 +73,7 @@ export function parse(args: string[]): Parsed {
       continue;
     }
     const value = args[++i];
-    if (!value) throw new TypeError(`Missing value for ${option}`);
+    if (!value || value.startsWith('--')) throw new TypeError(`Missing value for ${option}`);
     if (
       (option === '--transport' || option === '--browser-transport') &&
       ['pipe', 'websocket'].includes(value)
@@ -108,7 +108,7 @@ export function parse(args: string[]): Parsed {
     else if (option === '--port' && /^\d+$/.test(value) && Number(value) <= 65535)
       port = Number(value);
     else if (option === '--token-env' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(value)) tokenEnv = value;
-    else if (LIMITS[option] && /^\d+$/.test(value))
+    else if (Object.hasOwn(LIMITS, option) && /^\d+$/.test(value))
       Object.assign(limits, { [LIMITS[option]!]: Number(value) });
     else throw new TypeError(`Unknown option or invalid value: ${option}`);
   }
@@ -119,6 +119,10 @@ export function parse(args: string[]): Parsed {
     delete options.launch;
     options.connect = { endpoint };
   }
+  if (args.includes('--port') && transport !== 'http')
+    throw new TypeError('--port requires --mcp-transport http');
+  if (args.includes('--socket-path') && transport !== 'socket')
+    throw new TypeError('--socket-path requires --mcp-transport socket');
   if (compatibility && transport === 'socket')
     throw new TypeError('--mcp-compat supports standard stdio and HTTP transports');
   return {

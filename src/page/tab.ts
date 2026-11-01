@@ -79,6 +79,7 @@ export class Tab {
     this.context = context;
     this.id = id;
     this.session = session;
+    browser.input.registerSession(session, id);
     this.environment = structuredClone(browser.baseEnvironment);
     this.framesManager = new FrameManager(this, session);
     this.framesManager.changes.on(({ frame, sameDocument }) => {
@@ -409,19 +410,29 @@ export class Tab {
       identifiers: new Map<Session, string>(),
     };
     this.scripts.push(script);
-    for (const s of this.framesManager.sessions)
-      if (!s.closed) {
-        const { identifier } = await s.send('Page.addScriptToEvaluateOnNewDocument', {
-          source,
-          worldName: script.worldName,
-        });
-        script.identifiers.set(s, identifier);
-      }
-    return async () => {
+    const remove = async () => {
       this.scripts = this.scripts.filter((item) => item !== script);
       for (const [s, identifier] of script.identifiers)
         if (!s.closed) await s.send('Page.removeScriptToEvaluateOnNewDocument', { identifier });
+      script.identifiers.clear();
     };
+    for (const s of this.framesManager.sessions)
+      if (!s.closed) {
+        try {
+          const { identifier } = await s.send('Page.addScriptToEvaluateOnNewDocument', {
+            source,
+            worldName: script.worldName,
+          });
+          script.identifiers.set(s, identifier);
+        } catch (e) {
+          // A session that closed mid-registration needs no script; any other failure
+          // must not leave a script that future sessions keep receiving.
+          if (s.closed) continue;
+          await remove().catch(() => {});
+          throw e;
+        }
+      }
+    return remove;
   }
   async windowBounds(bounds?: Protocol.Browser.Bounds): Promise<Protocol.Browser.Bounds> {
     const result = await this.browser.cdp.send('Browser.getWindowForTarget', { targetId: this.id });

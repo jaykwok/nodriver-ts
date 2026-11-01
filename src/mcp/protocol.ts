@@ -54,7 +54,7 @@ export function legacyOnlyTransport(transport: Transport): Transport {
                 return;
               }
               initializing = message.id;
-            } else if (!ready) {
+            } else if (!ready && message.method !== 'ping') {
               reject(message, 'Complete initialize and notifications/initialized first');
               return;
             }

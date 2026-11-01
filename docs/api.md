@@ -19,23 +19,23 @@ Raw CDP applications can use `attach: 'none'` and `browser.attachSession(targetI
 
 The test entry point `nodriver-ts/testing` exports `ScriptedChrome`, `NO_REPLY` and related types; see [scripted testing](testing.md). They are not exported from the main entry point.
 
-| Object                | High-level members                                                                                                                                                                                      |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Browser               | `launch`, `connect`, `newTab`, `newContext`, `tabs`, `contexts`, `defaultContext`, `version`, `owned`, `endpoint`, `close`, `disconnect`, `release`, `waitForTab`, `errors`, `cdp`                      |
-| BrowserContext        | `newTab`, `tabs`, `cookies`, `setCookies`, `clearCookies`, `saveCookies`, `loadCookies`, `storageState`, `restoreStorage`, `grantPermissions`, `resetPermissions`, `setDownloadDirectory`, `close`      |
-| Tab                   | `goto`, `reload`, `go(delta)`, `waitForNavigation`, `stopLoading`, `bringToFront`, `activate`, `windowBounds`, `mainFrame`, `frames`, `waitForPopup`, `handleDialog`, `setInputPolicy`                  |
-| Tab files/environment | `setContent`, `screenshot`, `pdf`, `resources`, `resourceContent`, `setEnvironment`, `addInitScript`, `waitForDownload`, `inspectEnvironment`, `diagnoseEnvironment`, `alignEnvironment`                |
-| Tab / Frame           | `evaluate`, `evaluateHandle`, `query`, `queryAll`, `waitForSelector`, `waitForFunction`, `content`                                                                                                      |
-| Frame                 | `parent`, `children`, `session`, `url`, `generation`, `storage`, `setStorage`, `inspectEnvironment`                                                                                                     |
-| Element               | `text`, `html`, `attribute`, `describe`, `evaluate`, `query`, `queryAll`, `focus`, `click`, `hover`, `scrollIntoView`, `clickablePoint`, `fill`, `type`, `select`, `setChecked`, `upload`, `screenshot` |
-| Network               | `route`, `authenticate`, `setExtraHeaders`, `setCacheEnabled`, `setOffline`, `waitForResponse`, `responses`, `enable`, `networkEnabled`                                                                 |
-| Route                 | `request`, `continue`, `fulfill`, `abort`; a route can be handled once, and a route the handler leaves unhandled is continued                                                                           |
-| Download              | `guid`, `url`, `suggestedFilename`, `status`, `updates`, `path`, `saveAs`, `cancel`                                                                                                                     |
-| Mouse                 | `move`, `click`, `wheel`, `drag`; CSS coordinates in the top-level viewport                                                                                                                             |
-| Keyboard              | `insertText`, `type`, `down`, `up`, `press('Control+A')`                                                                                                                                                |
-| JSHandle              | `jsonValue`, `dispose`, `Symbol.asyncDispose`                                                                                                                                                           |
-| Session               | `send`, `sendWith`, `on`, `onAny`, `waitFor`, `disconnected`, `id`, `closed`                                                                                                                            |
-| Transport             | WebSocket / Pipe; a custom transport implements `send`, `close`, `onmessage`, `onclose`                                                                                                                 |
+| Object                | High-level members                                                                                                                                                                                                    |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Browser               | `launch`, `connect`, `newTab`, `newContext`, `tabs`, `contexts`, `defaultContext`, `version`, `owned`, `endpoint`, `close`, `disconnect`, `release`, `waitForTab`, `inputScope`, `presentationLease`, `errors`, `cdp` |
+| BrowserContext        | `newTab`, `tabs`, `cookies`, `setCookies`, `clearCookies`, `saveCookies`, `loadCookies`, `storageState`, `restoreStorage`, `grantPermissions`, `resetPermissions`, `setDownloadDirectory`, `close`                    |
+| Tab                   | `goto`, `reload`, `go(delta)`, `waitForNavigation`, `stopLoading`, `bringToFront`, `activate`, `windowBounds`, `mainFrame`, `frames`, `waitForPopup`, `handleDialog`, `setInputPolicy`                                |
+| Tab files/environment | `setContent`, `screenshot`, `pdf`, `resources`, `resourceContent`, `setEnvironment`, `addInitScript`, `waitForDownload`, `inspectEnvironment`, `diagnoseEnvironment`, `alignEnvironment`                              |
+| Tab / Frame           | `evaluate`, `evaluateHandle`, `query`, `queryAll`, `waitForSelector`, `waitForFunction`, `content`                                                                                                                    |
+| Frame                 | `parent`, `children`, `session`, `url`, `generation`, `storage`, `setStorage`, `inspectEnvironment`                                                                                                                   |
+| Element               | `text`, `html`, `attribute`, `describe`, `evaluate`, `query`, `queryAll`, `focus`, `click`, `hover`, `scrollIntoView`, `clickablePoint`, `fill`, `type`, `select`, `setChecked`, `upload`, `screenshot`               |
+| Network               | `route`, `authenticate`, `setExtraHeaders`, `setCacheEnabled`, `setOffline`, `waitForResponse`, `responses`, `enable`, `networkEnabled`                                                                               |
+| Route                 | `request`, `continue`, `fulfill`, `abort`; a route can be handled once, and a route the handler leaves unhandled is continued                                                                                         |
+| Download              | `guid`, `url`, `suggestedFilename`, `status`, `updates`, `path`, `saveAs`, `cancel`                                                                                                                                   |
+| Mouse                 | `move`, `click`, `wheel`, `drag`; CSS coordinates in the top-level viewport                                                                                                                                           |
+| Keyboard              | `insertText`, `type`, `down`, `up`, `press('Control+A')`, `compose`                                                                                                                                                   |
+| JSHandle              | `jsonValue`, `dispose`, `Symbol.asyncDispose`                                                                                                                                                                         |
+| Session               | `send`, `sendWith`, `on`, `onAny`, `waitFor`, `disconnected`, `id`, `closed`, `closeReason`                                                                                                                           |
+| Transport             | WebSocket / Pipe; a custom transport implements `send`, `close`, `onmessage`, `onclose`                                                                                                                               |
 
 The input policy and `InputReport` are described in [Input](input.md). Environment sampling, diagnostics and alignment are described in [Environment](environment.md).
 
@@ -108,6 +108,8 @@ Node.js 24.22.0+ supports `await using` to close resources on normal exit and du
 - `select()` changes the value through the DOM and dispatches input/change.
 - Physical keys support named keys, F1–F12, modifier combinations and US-layout characters (including shifted symbols).
 - `Mouse.drag()` is a pointer drag; complex HTML5 DataTransfer needs your own protocol code.
+- Cancellation and deadlines reject with `InputActionError`, whose `cleanup` reports how held keys and buttons were released. Element input stops when the element's frame or any ancestor frame navigates or detaches; raw Tab mouse/keyboard input watches the main frame.
+- `browser.inputScope(session)` and `createInputScope(session)` group mouse, keyboard and composition calls under one deadline and report. See [Input](input.md).
 
 ## Screenshots, PDF and errors
 

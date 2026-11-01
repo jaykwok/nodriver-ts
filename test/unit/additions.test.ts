@@ -10,6 +10,7 @@ import type { Transport } from '../../src/transport/transport.ts';
 import { InputBehavior } from '../../src/input/behavior.ts';
 import { Keyboard, keyDefinition, parseChord } from '../../src/input/input.ts';
 import { acquireProfileLock } from '../../src/browser/launcher.ts';
+import { MAX_TIMEOUT, timeoutValue } from '../../src/utils.ts';
 import { BrowserSessionManager, LeaseError } from '../../src/mcp/manager.ts';
 import { BrowserMcpSession } from '../../src/mcp/session.ts';
 import { removeTree } from '../../src/utils.ts';
@@ -39,6 +40,14 @@ test('chords parse a trailing plus and keys resolve to US-QWERTY definitions', (
   expect(keyDefinition('Space')).toMatchObject({ key: ' ', code: 'Space' });
   expect(keyDefinition('Enter')).toMatchObject({ key: 'Enter', code: 'Enter' });
   expect(() => keyDefinition('NoSuchKey')).toThrow();
+  for (const key of ['toString', 'constructor', '__proto__', 'hasOwnProperty', 'valueOf'])
+    expect(() => keyDefinition(key)).toThrow(/Unsupported physical key/);
+});
+
+test('timeouts above the Node.js timer limit are rejected instead of firing after 1 ms', () => {
+  expect(timeoutValue(MAX_TIMEOUT)).toBe(2 ** 31 - 1);
+  for (const value of [2 ** 31, Number.MAX_SAFE_INTEGER, -1, Number.NaN, Infinity])
+    expect(() => timeoutValue(value, 'maxDuration')).toThrow(/maxDuration must be a finite number/);
 });
 
 test('keyUp mirrors keyDown; held Shift yields shifted keys; modifiers send rawKeyDown', async () => {

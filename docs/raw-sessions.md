@@ -3,7 +3,7 @@
 [简体中文](zh-CN/raw-sessions.md)
 
 Use `attach: 'none'` when your application owns page initialization, target tracking and CDP
-commands. Available in 0.3.0 on both `Browser.launch()` and `Browser.connect()`.
+commands. It is available on both `Browser.launch()` and `Browser.connect()`.
 
 ```ts
 import { Browser } from 'nodriver-ts';
@@ -43,7 +43,9 @@ Use `pageTargets` and root `Target.*` events, not `tabs`, to track pages.
 is rejected. Chrome launch flags still apply. Each raw attach sends only
 `Target.attachToTarget({ targetId, flatten: true })`. It does not send `Page.enable`,
 `Page.setLifecycleEventsEnabled`, `Target.setAutoAttach`, or any `Runtime.*` command.
-Callers choose all domain setup, screencast acknowledgements and teardown themselves.
+Callers choose all domain setup, screencast acknowledgements and teardown themselves. Managed input
+is the one exception: `inputScope()` runs and `keyboard.compose()` send `Page.enable` by default so
+that navigation interrupts input; pass `pageEvents: false` to keep all domain setup to yourself.
 
 Launch/connect use one total initialization deadline (default 30 s), including endpoint
 discovery, version, contexts, target discovery/listing and automatic attachments. The abort signal
@@ -53,7 +55,7 @@ outlast the initialization deadline; a host hard crash still cannot run cleanup.
 
 ## Managed raw input
 
-`browser.inputScope(session)` and `createInputScope(session)` share the connection queue with Tab input and standalone mouse/keyboard objects. Each `run()` manages held keys/buttons and explicit composition, one deadline/signal/guard, reverse-order cleanup, and an `InputReport`. Raw scopes enable Page events for navigation tracking without activating the target. Direct `session.sendWith()` remains independent of this queue. See [input scopes, composition and cleanup](input.md) for the API and interruption contract.
+`browser.inputScope(session)` and `createInputScope(session)` share the connection queue with Tab input and standalone mouse/keyboard objects. Each `run()` manages held keys/buttons and explicit composition, one deadline/signal/guard, reverse-order cleanup, and an `InputReport`. Raw scopes enable Page events for navigation tracking without activating the target; `pageEvents: false` sends no `*.enable` command. Direct `session.sendWith()` remains independent of this queue. See [input scopes, composition and cleanup](input.md) for the API and interruption contract.
 
 ## Bounded background presentation
 
@@ -63,6 +65,7 @@ of target focus, Runtime, input retry and unrelated connection work.
 
 ```ts
 const lease = browser.presentationLease(session, {
+  screencast: { format: 'jpeg', quality: 30, maxWidth: 320, maxHeight: 240 },
   maxDuration: 3000,
   maxFrames: 8,
   maxBytes: 2_000_000,
@@ -83,6 +86,11 @@ stop/ACK cleanup budget. Reaching a duration, frame, byte or ACK limit stops the
 the reason. `close()` is idempotent and waits for the stop command plus the lease's own ACK work;
 other commands on the connection keep their own lifecycle. If the session disconnects, the final
 report is `disconnected` and cleanup ends with the connection.
+
+`screencast` passes `format`, `quality`, `maxWidth`, `maxHeight` and `everyNthFrame` to
+`Page.startScreencast`; Chrome's defaults apply to omitted fields. Durations and timeouts accept
+up to 2147483647 ms, the Node.js timer limit. Starting a lease on an ended session rejects with a
+`DisconnectedError` whose `cause` is the session's `closeReason`.
 
 Only one presentation lease can be active for a session at a time. A lease that is still idle can
 be started after the current lease closes. Frames received while a lease is `starting` are handled
@@ -174,7 +182,7 @@ in milliseconds. It records a send attempt, not confirmation Chrome received or 
 Reentrant observer sends are queued to preserve transport invocation order. Observer exceptions
 are isolated. Keep callbacks short; aborting from a callback cannot unsend the observed attempt.
 
-`onSettle` retains its existing meaning: once per sent request when the caller's promise settles,
+`onSettle` runs once per sent request when the caller's promise settles,
 in completion order, with elapsed time from the send attempt and the protocol error code or
 error name on failure. A late response does not produce a second settlement.
 

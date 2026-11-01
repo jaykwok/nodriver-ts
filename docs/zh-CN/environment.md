@@ -83,7 +83,7 @@ await tab.alignEnvironment(
 - **GeoIP**：只应用 `fields` 选中的 timezone/geolocation，显式 `environment` 优先。不从 IP 推导品牌、UA-CH、硬件、精确位置或语言。resolver 收到取消信号和剩余期限，由宿主负责取消其外部工作。
 - **单独设置 Accept-Language**：保留当前 UA 和可取得的 UA-CH，不生成另一品牌身份。
 - **核验**：每个 frame 的文档与新建 dedicated Worker 分别核验；Worker 不支持的字段（如 viewport）记为 unavailable，实际不一致记为 mismatch。locale 只在页面根 session 设置，不保证所有 renderer/Worker 的 Intl 同步。UA-CH 按配置字段比较，高熵值不可用时不伪造成功。Geolocation 不自动授权，只有权限已为 granted 时才读取位置核验，否则为 unavailable。
-- **部分失败**：保留 `applicationError`、session 记录和实际报告，不声称原子回滚。
+- **部分失败**：保留 `applicationError`、session 记录和实际报告；覆盖不会原子回滚。
 
 `setEnvironment()` 是不带核验的显式覆盖接口。UA、Client Hints、时区等覆盖不保证传播到所有 Worker、SharedWorker 或 Service Worker。有界面模式默认保留真实值；headless 也默认保留原生值。显式 `maskHeadless: true` 改变页面 UA/UA-CH 与 Dedicated Worker，但会与 Shared/Service Worker 及其请求不一致，见[分阶段审计](differential-audit.md)，见 [自动化痕迹审计](automation-audit.md)。
 

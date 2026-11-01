@@ -35,7 +35,7 @@ import { Browser } from 'nodriver-ts';
 }
 ```
 
-`detached` is `false` by default, so existing launch/close behaviour is unchanged. With `true` and without `supervised`, Chrome is spawned detached on every platform, and its stdin/stdout/stderr are not tied to host pipes; Chrome's stderr no longer feeds launch diagnostics. Supervised mode instead captures bounded stderr through an independent helper. CDP still uses WebSocket, and the debugging port must stay available for as long as the browser lives.
+`detached` is `false` by default, which keeps Chrome tied to the host process. With `true` and without `supervised`, Chrome is spawned detached on every platform, and its stdin/stdout/stderr are not tied to host pipes; Chrome's stderr does not feed launch diagnostics. Supervised mode instead captures bounded stderr through an independent helper. CDP still uses WebSocket, and the debugging port must stay available for as long as the browser lives.
 
 `release()` is idempotent and returns the browser's WebSocket endpoint. It does not send `Browser.close`, kill the process, close tabs or delete the profile. Instead it removes signal cleanup, unrefs the child process from Node's event loop and disconnects CDP. Afterwards `browser.owned === false` and `browser.closed === true` (for this connection), and neither `close()`, `Symbol.asyncDispose` nor the original `browser.process.close()` will terminate Chrome. Old Tab/Session objects can no longer be used; reconnect to get new ones. A `close()` already in progress makes a later `release()` reject; a `release()` already in progress makes a concurrent `close()` wait for the handoff and then only disconnect.
 

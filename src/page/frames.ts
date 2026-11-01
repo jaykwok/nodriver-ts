@@ -488,8 +488,12 @@ export class FrameManager {
         for (const frame of this.frames.values()) if (frame.session === child) this.retire(frame);
       });
       this.upsert(e.targetInfo.targetId, child);
-      const resume = () =>
-        child.sendWith('Runtime.runIfWaitingForDebugger', { timeout: 2000 }).catch(() => {});
+      let resumed = false;
+      const resume = async () => {
+        if (resumed) return;
+        resumed = true;
+        await child.sendWith('Runtime.runIfWaitingForDebugger', { timeout: 2000 }).catch(() => {});
+      };
       const watchdog = setTimeout(() => {
         void resume();
       }, 5000);

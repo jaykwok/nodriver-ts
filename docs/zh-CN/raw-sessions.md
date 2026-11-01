@@ -2,7 +2,7 @@
 
 [English](../raw-sessions.md)
 
-0.3.0 起，`Browser.launch()` 和 `Browser.connect()` 支持 `attach: 'none'`，供应用自行管理页面初始化、target 和 CDP 命令。
+`Browser.launch()` 和 `Browser.connect()` 都支持 `attach: 'none'`，供应用自行管理页面初始化、target 和 CDP 命令。
 
 ```ts
 import { Browser } from 'nodriver-ts';
@@ -38,7 +38,9 @@ none 的 ready 条件是连接建立及 `Browser.getVersion`、`Target.getBrowse
 none 跳过可选 headless UA 探针和覆盖；显式 `maskHeadless: true` 会报错。Chrome 启动参数仍然生效。
 每次 raw attach 只发送 `Target.attachToTarget({ targetId, flatten: true })`，
 不发送 `Page.enable`、`Page.setLifecycleEventsEnabled`、`Target.setAutoAttach` 或任何 `Runtime.*`。
-域初始化、录屏帧 ack 和停止录屏由调用方负责。
+域初始化、录屏帧 ack 和停止录屏由调用方负责。托管输入是唯一的例外：`inputScope()` 的 run
+和 `keyboard.compose()` 默认发送 `Page.enable`，让导航能够中断输入；传入 `pageEvents: false`
+即可让所有域初始化完全由你掌握。
 
 launch/connect 使用一个总初始化 deadline（默认 30 秒），覆盖端点发现、版本、contexts、
 target discovery/listing 及自动 attach。signal 贯穿上述阶段。
@@ -47,7 +49,7 @@ launch 失败会断开连接并清理自有进程，connect 失败只断开连�
 
 ## 托管 raw 输入
 
-`browser.inputScope(session)` 和 `createInputScope(session)` 与 Tab 输入及独立 mouse/keyboard 对象共享连接队列。每次 `run()` 管理持有的按键、按钮和显式 composition，共用一次 deadline/signal/guard，逆序清理并返回 `InputReport`。Raw scope 为跟踪导航启用 Page 事件，但不激活 target。直接调用 `session.sendWith()` 仍独立于该队列。接口及中断约定见[输入 scope、composition 与清理](input.md)。
+`browser.inputScope(session)` 和 `createInputScope(session)` 与 Tab 输入及独立 mouse/keyboard 对象共享连接队列。每次 `run()` 管理持有的按键、按钮和显式 composition，共用一次 deadline/signal/guard，逆序清理并返回 `InputReport`。Raw scope 为跟踪导航启用 Page 事件，但不激活 target；`pageEvents: false` 时不发送任何 `*.enable` 命令。直接调用 `session.sendWith()` 仍独立于该队列。接口及中断约定见[输入 scope、composition 与清理](input.md)。
 
 ## 有界后台呈现租约
 
@@ -57,6 +59,7 @@ launch 失败会断开连接并清理自有进程，connect 失败只断开连�
 
 ```ts
 const lease = browser.presentationLease(session, {
+  screencast: { format: 'jpeg', quality: 30, maxWidth: 320, maxHeight: 240 },
   maxDuration: 3000,
   maxFrames: 8,
   maxBytes: 2_000_000,
@@ -76,6 +79,11 @@ try {
 字节数或 ACK 并发上限时会停止租约并记录原因。`close()` 幂等，会等待停止命令和该租约
 自己的 ACK 工作；连接上的其他命令继续按各自生命周期运行。session 断开后，最终报告为
 `disconnected`，清理随连接生命周期结束。
+
+`screencast` 会把 `format`、`quality`、`maxWidth`、`maxHeight` 和 `everyNthFrame` 传给
+`Page.startScreencast`，未指定的字段使用 Chrome 默认值。时长和超时最大为 2147483647 毫秒，
+即 Node.js 定时器的上限。在已结束的 session 上启动租约会以 `DisconnectedError` 拒绝，
+其 `cause` 为该 session 的 `closeReason`。
 
 同一个 session 同时只能有一个活动中的呈现租约。仍处于 `idle` 的租约会在当前租约关闭后
 重新启动。租约处于 `starting` 时收到的帧，也会按与 `active` 阶段相同的帧数、字节数和

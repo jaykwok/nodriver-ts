@@ -374,7 +374,14 @@ export class BrowserProcess {
       if (options.handleSignals)
         for (const signal of ['SIGINT', 'SIGTERM'] as const) {
           const listener = () => {
-            void processHandle!.close().catch(options.onError ?? (() => {}));
+            void processHandle!
+              .close()
+              .catch(options.onError ?? (() => {}))
+              .finally(() => {
+                // Restore default termination once Chrome is gone, unless the host
+                // installed its own handler.
+                if (process.listenerCount(signal) === 0) process.kill(process.pid, signal);
+              });
           };
           process.on(signal, listener);
           processHandle.signalListeners.push([signal, listener]);
@@ -412,13 +419,14 @@ export class BrowserProcess {
     } catch (e) {
       await processHandle?.captureDiagnostics();
       startup.fail(e);
-      if (processHandle) await processHandle.close();
+      // Cleanup failures must not replace the startup error and its diagnostics.
+      if (processHandle) await processHandle.close().catch(() => {});
       else {
         if (lock) {
-          await lock.close();
-          await rm(join(profile, '.nodriver.lock'), { force: true });
+          await lock.close().catch(() => {});
+          await rm(join(profile, '.nodriver.lock'), { force: true }).catch(() => {});
         }
-        if (temporary) await removeTree(profile);
+        if (temporary) await removeTree(profile).catch(() => {});
       }
       throw e;
     }
@@ -433,9 +441,16 @@ export class BrowserProcess {
       return this.releasing
         .catch(() => {})
         .then(() => {
-          if (!this.handedOff) return (this.closing ??= this.closeOwned());
+          if (!this.handedOff) return this.closeOnce();
         });
-    return (this.closing ??= this.closeOwned());
+    return this.closeOnce();
+  }
+  /** A failed close is not cached, so a later close() can retry the shutdown. */
+  private closeOnce(): Promise<void> {
+    return (this.closing ??= this.closeOwned().catch((e: unknown) => {
+      this.closing = undefined;
+      throw e;
+    }));
   }
   get released(): boolean {
     return this.handedOff;

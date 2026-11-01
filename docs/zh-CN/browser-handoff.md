@@ -35,7 +35,7 @@ import { Browser } from 'nodriver-ts';
 }
 ```
 
-`detached` 默认为 `false`，既有启动/关闭行为不变。设为 `true` 且未启用 `supervised` 时，所有平台都以分离模式 spawn Chrome，stdin/stdout/stderr 都不绑定宿主管道；Chrome 的 stderr 不再进入启动诊断。监管模式则通过独立 helper 采集有界 stderr。CDP 仍使用 WebSocket，调试端口须在浏览器存活期间保持可用。
+`detached` 默认为 `false`，Chrome 与宿主进程绑定。设为 `true` 且未启用 `supervised` 时，所有平台都以分离模式 spawn Chrome，stdin/stdout/stderr 都不绑定宿主管道；Chrome 的 stderr 不会进入启动诊断。监管模式则通过独立 helper 采集有界 stderr。CDP 仍使用 WebSocket，调试端口须在浏览器存活期间保持可用。
 
 `release()` 幂等，返回浏览器的 WebSocket endpoint。它不发送 `Browser.close`、不终止进程、不关闭标签页或删除 profile，而是解除信号清理、取消子进程对 Node 事件循环的引用并断开 CDP。之后 `browser.owned === false`，`browser.closed === true`（指本连接），`close()`、`Symbol.asyncDispose` 和原 `browser.process.close()` 都不会终止 Chrome。旧 Tab/Session 不可继续使用，重连后获取新对象。已开始的 `close()` 会使后续 `release()` 拒绝；已开始的 `release()` 则使并发 `close()` 等待交接后仅断开。
 

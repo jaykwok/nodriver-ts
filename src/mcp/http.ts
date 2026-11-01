@@ -305,7 +305,9 @@ export function createBrowserMcpHttpService(options: BrowserMcpHttpOptions): Bro
         try {
           return Response.json(manager.create(principal), { status: 201 });
         } catch (cause) {
-          return error(429, String(cause));
+          if (cause instanceof LeaseError && cause.code === 'capacity')
+            return error(429, 'Lease capacity reached');
+          return error(503, 'Service unavailable');
         }
       }
       if (url.pathname.startsWith('/leases/')) {
@@ -454,7 +456,6 @@ export async function startBrowserMcpHttpServer(
     server = await serveFetch({
       hostname,
       port: options.port ?? 3100,
-      maxRequestBodySize: options.maxRequestBodySize ?? 256 * 1024,
       fetch: (request, port) => {
         if (new URL(request.url).port !== String(port))
           return new Response('Host port rejected', { status: 403 });
