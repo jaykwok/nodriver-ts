@@ -84,12 +84,12 @@ for (const transport of ['pipe', 'websocket'] as const) {
       expect(calls).toBe(1);
       expect(aligned.requested.geolocation).toBeUndefined();
       expect(aligned.requested.userAgent).toBeUndefined();
-      expect(aligned.after.frames[0]!.document.userAgent).toBe(ua);
-      expect(aligned.after.frames[0]!.document.language).toBe(language);
-      expect(aligned.after.frames[0]!.document.timezone).toBe('Europe/Paris');
-      expect(aligned.after.frames[0]!.document.screen.width).toBe(1100);
-      expect(aligned.after.frames[0]!.document.viewport.width).toBe(720);
-      expect(aligned.after.nativeBaseline!.document.userAgent).toBe(ua);
+      expect(aligned.after!.frames[0]!.document.userAgent).toBe(ua);
+      expect(aligned.after!.frames[0]!.document.language).toBe(language);
+      expect(aligned.after!.frames[0]!.document.timezone).toBe('Europe/Paris');
+      expect(aligned.after!.frames[0]!.document.screen.width).toBe(1100);
+      expect(aligned.after!.frames[0]!.document.viewport.width).toBe(720);
+      expect(aligned.after!.nativeBaseline!.document.userAgent).toBe(ua);
       expect(
         aligned.verification.some(
           (v) => v.field === 'timezone' && v.scope.endsWith('/document') && v.status === 'match',
@@ -100,6 +100,11 @@ for (const transport of ['pipe', 'websocket'] as const) {
           .filter((v) => v.field === 'viewport' && v.scope.endsWith('/worker'))
           .every((v) => v.status === 'unavailable'),
       ).toBe(true);
+      // A page with iframes verifies its viewport once, on the main frame.
+      expect(aligned.verification.filter((v) => v.field === 'viewport')).toMatchObject([
+        { scope: `${tab.mainFrame.id}/document`, status: 'match' },
+        { scope: `${tab.mainFrame.id}/worker`, status: 'unavailable' },
+      ]);
       await expect(
         tab.alignEnvironment({ geoip: { address: 'x', fields: ['timezone'] } }),
       ).rejects.toThrow('caller-supplied resolver');
@@ -110,9 +115,14 @@ for (const transport of ['pipe', 'websocket'] as const) {
         environment: { locale: 'fr-FR', acceptLanguage: 'fr-FR,fr', timezone: 'Europe/Berlin' },
         inspect: { httpProbe: fixture.base + '/signals/ip' },
       });
-      expect(explicit.after.frames[0]!.document.intlLocale).toBe('fr-FR');
-      expect(explicit.after.frames[0]!.document.language).toBe('fr-FR');
-      expect(explicit.after.http.value!.headers!['accept-language']).toContain('fr');
+      expect(explicit.after!.frames[0]!.document.intlLocale).toBe('fr-FR');
+      expect(explicit.after!.frames[0]!.document.language).toBe('fr-FR');
+      expect(explicit.after!.http.value!.headers!['accept-language']).toContain('fr');
+      expect(explicit.verification.find((v) => v.field === 'acceptLanguage')).toMatchObject({
+        expected: 'fr-FR,fr',
+        actual: 'fr-FR,fr;q=0.9',
+        status: 'match',
+      });
       expect(audit.messages.filter((m) => forbiddenAutomaticCommands.includes(m.method))).toEqual(
         [],
       );
@@ -123,6 +133,42 @@ for (const transport of ['pipe', 'websocket'] as const) {
     }
   });
 }
+test('alignment compares what Chrome reports for aliases, case and language weights', async () => {
+  const fixture = await fixtureServer(),
+    browser = await Browser.launch({ headless: process.env.NODRIVER_HEADFUL !== '1' });
+  try {
+    const tab = await browser.newTab(fixture.base + '/signals');
+    const aligned = await tab.alignEnvironment({
+      environment: {
+        timezone: 'Asia/Kolkata',
+        locale: 'fr-fr',
+        acceptLanguage: 'fr-FR,fr,en',
+        viewport: { width: 800, height: 600 },
+      },
+      inspect: { httpProbe: fixture.base + '/signals/ip' },
+    });
+    expect(aligned.applicationError).toBeUndefined();
+    expect(aligned.verificationError).toBeUndefined();
+    const main = `${tab.mainFrame.id}/document`;
+    expect(
+      aligned.verification
+        .filter((v) => v.scope === main || v.scope === 'HTTP')
+        .map((v) => [v.field, v.status]),
+    ).toEqual([
+      ['timezone', 'match'],
+      ['locale', 'match'],
+      ['viewport', 'match'],
+      ['acceptLanguage', 'match'],
+    ]);
+    expect(aligned.verification.find((v) => v.scope === main)!.actual).toBe('Asia/Calcutta');
+    expect(aligned.verification.find((v) => v.field === 'acceptLanguage')!.actual).toBe(
+      'fr-FR,fr;q=0.9,en;q=0.8',
+    );
+  } finally {
+    await browser.close();
+    await fixture.server.stop();
+  }
+});
 test('explicit WebRTC routing policy is observable and does not become the default', async () => {
   const fixture = await fixtureServer(),
     browser = await Browser.launch({

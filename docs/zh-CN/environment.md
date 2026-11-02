@@ -35,7 +35,7 @@ console.log(report.worker, report.differences);
 - **Worker**：`worker: true` 创建临时 Blob dedicated Worker 读取同类字段，`differences` 按字段比较文档与 Worker（忽略对象键顺序，保留数组顺序，不比较 Worker 中不存在的 webdriver）。Worker 成功、失败或到期后都会 terminate 并撤销 Blob URL；受 CSP 阻止时 `worker.status` 为 `unavailable`，不会绕过 CSP。
 - **WebGL**：`webgl: true` 使用未插入 DOM 的临时 canvas 读取 vendor/renderer 并释放 context；不可用时返回错误字段。
 - **UA-CH**：非安全上下文没有 UA-CH 时省略该字段，高熵值错误保留在 `highEntropyError`。
-- **期限**：默认 5000 毫秒，可用 `timeout` 与 `signal` 调整。跨越导航、session 切换或文档失效时抛 `StaleElementError`，不合并不同文档的结果，也不重试。取消只停止等待；已创建的 Worker 仍在原期限内被清理。
+- **期限**：默认 5000 毫秒，可用 `timeout` 与 `signal` 调整。跨越导航、session 切换或文档失效时抛 `StaleElementError`，执行上下文在采样中途消失时以 Chrome 的错误作为 `cause`；不合并不同文档的结果，也不重试。取消只停止等待；已创建的 Worker 仍在原期限内被清理。
 
 空的 `differences` 只说明比较的字段一致，不证明完整环境一致。
 
@@ -54,6 +54,8 @@ const diagnosis = await tab.diagnoseEnvironment({
 
 诊断汇总标签页内所有 frame 的文档与 Worker、字体、WebGL 和显式网络探针。报告区分 observed / unavailable / not-requested，以及 match / mismatch / unavailable / not-tested；未采集的项目不算通过。
 
+所有探针共用一个期限：默认 10000 毫秒，可用 `timeout` 与 `signal` 调整，到期时抛 `TimeoutError`。不可用的探针选项（超过 16 个 `fontSelectors`、`httpProbe` 不是普通 HTTP(S) 或带 URL 凭证、`stunServers` 超过四个或格式错误）在采样前就会被拒绝。
+
 - **字体**：在独立临时 session 上显式启用 DOM/CSS，结束时 detach，不会关闭调用方订阅；读取 `CSS.getPlatformFontsForNode` 返回的实际渲染字体。结果是浏览器选用的字体，不保证每个字符都有字形，也不安装字体。
 - **HTTP 探针**：由页面发起，省略凭证、禁止重定向，受 CSP/CORS 与网络影响；返回的 headers 只是调用方服务的反射观测。
 - **STUN**：只接受显式给出的最多四个 STUN 端点，不请求音视频权限或 TURN 凭证，限时后关闭数据通道和 peer。
@@ -66,7 +68,7 @@ const aligned = await tab.alignEnvironment({
   environment: { timezone: 'Europe/Paris', viewport: { width: 900, height: 700 } },
   inspect: { worker: true },
 });
-console.log(aligned.applicationError, aligned.verification);
+console.log(aligned.applicationError, aligned.verificationError, aligned.verification);
 
 await tab.alignEnvironment(
   { geoip: { address: '由调用方获得的地址', fields: ['timezone'] } },
@@ -82,16 +84,16 @@ await tab.alignEnvironment(
 - **应用方式**：timezone、locale、viewport、UA 与 UA-CH、Accept-Language、geolocation 都通过 CDP 设置，没有全局 getter 或原型补丁。配置作用于当前及之后附加的页面 session，不追溯改写页面已有脚本和网络连接。
 - **GeoIP**：只应用 `fields` 选中的 timezone/geolocation，显式 `environment` 优先。不从 IP 推导品牌、UA-CH、硬件、精确位置或语言。resolver 收到取消信号和剩余期限，由宿主负责取消其外部工作。
 - **单独设置 Accept-Language**：保留当前 UA 和可取得的 UA-CH，不生成另一品牌身份。
-- **核验**：每个 frame 的文档与新建 dedicated Worker 分别核验；Worker 不支持的字段（如 viewport）记为 unavailable，实际不一致记为 mismatch。locale 只在页面根 session 设置，不保证所有 renderer/Worker 的 Intl 同步。UA-CH 按配置字段比较，高熵值不可用时不伪造成功。Geolocation 不自动授权，只有权限已为 granted 时才读取位置核验，否则为 unavailable。
-- **部分失败**：保留 `applicationError`、session 记录和实际报告；覆盖不会原子回滚。
+- **核验**：每个 frame 的文档与新建 dedicated Worker 分别核验；`expected` 与 `actual` 保留原始值。Worker 不支持的字段（如 viewport）记为 unavailable，实际不一致记为 mismatch。viewport 只在主 frame 核验，因为 iframe 的视口是它自己的布局框。locale 与时区按规范形式比较，因此 `fr-fr` 与 `fr-FR` 匹配，`Asia/Kolkata` 与 Chrome 报告的 `Asia/Calcutta` 匹配。Accept-Language 按有序语言标签列表比较，不含 `;q=` 权重；只有 `httpProbe` 在 `headers` 中以 `accept-language` 反射该请求头时才会比较，否则记为 not-tested。locale 只在页面根 session 设置，不保证所有 renderer/Worker 的 Intl 同步。UA-CH 按配置字段比较，高熵值不可用时不伪造成功。Geolocation 不自动授权，只有权限已为 granted 时才读取位置核验，否则为 unavailable。
+- **部分失败**：保留 `applicationError`、session 记录和实际报告；覆盖不会原子回滚。`inspect` 选项在应用任何配置前校验。应用后的采样失败或超时时，`after` 为 undefined，`verificationError` 保存原因，所有请求的字段记为 not-tested；此时只有调用方的 `signal` 会使调用拒绝。
 
-`setEnvironment()` 是不带核验的显式覆盖接口。UA、Client Hints、时区等覆盖不保证传播到所有 Worker、SharedWorker 或 Service Worker。有界面模式默认保留真实值；headless 也默认保留原生值。显式 `maskHeadless: true` 改变页面 UA/UA-CH 与 Dedicated Worker，但会与 Shared/Service Worker 及其请求不一致，见[分阶段审计](differential-audit.md)，见 [自动化痕迹审计](automation-audit.md)。
+`setEnvironment()` 是不带核验的显式覆盖接口。UA、Client Hints、时区等覆盖不保证传播到所有 Worker、SharedWorker 或 Service Worker。有界面模式默认保留真实值；headless 也默认保留原生值。显式 `maskHeadless: true` 改变页面 UA/UA-CH 与 Dedicated Worker，但可能与 Shared/Service Worker 及其请求不一致，见[差分审计](differential-audit.md)。另见[自动化痕迹审计](automation-audit.md)。
 
 MCP 宿主可在 `BrowserSessionManagerOptions.environmentDiagnostics` 中配置 `httpProbe`/`stunServers`，并注入 `geoIPResolver`；工具只能选择是否使用这些配置，不能传入任意探测 URL。
 
 ## 代理与 WebRTC
 
-`launch` / `newContext` 的 `proxyServer` 直接交给 Chrome；`proxy` 经本机转发器支持认证 HTTP(S)/SOCKS 上游。诊断报告只记录是否配置代理，不输出代理凭证；外部连接的路由来源记为 unknown。
+`launch` / `newContext` 的 `proxyServer` 直接交给 Chrome；`proxy` 经本机转发器支持认证 HTTP(S)/SOCKS 上游，scheme 可以是 `http`、`https`、`socks`、`socks4`、`socks4a`、`socks5` 或 `socks5h`。使用 `socks`、`socks4a` 和 `socks5h` 时所有主机名都由代理解析；使用 `socks4` 和 `socks5` 时，明文 HTTP 的主机名由转发器自行解析。转发器运行在宿主进程中，因此用 `proxy` 创建的 context 只在创建它的连接存续期间有效：连接关闭时，Chrome 会销毁该 context 及其标签页。诊断报告只记录是否配置代理，不输出代理凭证；外部连接的路由来源记为 unknown。
 
 `Browser.launch({ webRtcIPHandlingPolicy })` 显式设置 WebRTC 路由策略，取值为 `default`、`default_public_interface_only`、`default_public_and_private_interfaces`、`disable_non_proxied_udp`。库只为自有临时 profile 写入 `webrtc.ip_handling_policy` 偏好并传启动开关；持久 profile 由所有者自行配置，库拒绝代写。仅靠启动开关时 Chrome 155 仍会产生 UDP 候选，因此偏好与开关同时设置。测试验证 `disable_non_proxied_udp` 下本地 ICE 没有 UDP 候选，默认策略能完成原生数据通道。
 
@@ -99,7 +101,7 @@ MCP 宿主可在 `BrowserSessionManagerOptions.environmentDiagnostics` 中配置
 
 ## 测试
 
-启动 UA/语言参数、暂停 Worker 后覆盖、首段脚本和初始请求头的验证，请参阅 [Worker 环境实验](worker-environment.md)。它分开记录实际能力和采集是否完成，不改变生产默认行为。
+启动 UA/语言参数、暂停 Worker 后覆盖、首段脚本和初始请求头的验证，请参阅 [Worker 启动环境基准](worker-environment.md)。
 
 ```sh
 npm run test:compat    # 用 CHROME_PATH 指定待验证的 Chrome

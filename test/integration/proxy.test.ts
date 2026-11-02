@@ -4,8 +4,9 @@ import { Server } from 'proxy-chain';
 import { createServer } from 'node:net';
 import { request } from 'node:http';
 import { Browser, ProxyForwarder } from '../../src/index.ts';
+import { poll } from '../../src/utils.ts';
 import { fixtureServer } from '../fixtures/server.ts';
-import { socksFixture } from '../fixtures/socks.ts';
+import { socksFixture, socks4aFixture } from '../fixtures/socks.ts';
 describe('proxy routing', () => {
   test('authenticated HTTP upstream, context-specific egress, and CONNECT tunnel', async () => {
     const fixture = await fixtureServer();
@@ -76,6 +77,45 @@ describe('proxy routing', () => {
     } finally {
       await b.close();
       await upstream.close(true);
+      await fixture.server.stop();
+    }
+  });
+  test('a proxy context ends with the connection that holds its forwarder', async () => {
+    await using owner = await Browser.launch({ headless: true, transport: 'websocket' });
+    const client = await Browser.connect({ endpoint: owner.endpoint!, attach: 'created' });
+    const proxied = await client.newContext({ proxy: 'http://127.0.0.1:9' });
+    const plain = await client.newContext();
+    const tab = await proxied.newTab();
+    await client.close();
+    await poll(
+      async () =>
+        !(await owner.cdp.send('Target.getBrowserContexts')).browserContextIds.includes(
+          proxied.id!,
+        ) || undefined,
+      { timeout: 5_000 },
+    );
+    const { targetInfos } = await owner.cdp.send('Target.getTargets');
+    expect(targetInfos.some((target) => target.targetId === tab.id)).toBe(false);
+    // A context without a forwarder does not depend on this client.
+    const { browserContextIds } = await owner.cdp.send('Target.getBrowserContexts');
+    expect(browserContextIds.includes(plain.id!)).toBe(true);
+  });
+  test('SOCKS4a leaves hostnames for the proxy to resolve', async () => {
+    const fixture = await fixtureServer();
+    const socks = await socks4aFixture(fixture.server.port);
+    const b = await Browser.launch({
+      headless: process.env.NODRIVER_HEADFUL !== '1',
+      timeout: 15_000,
+    });
+    try {
+      const context = await b.newContext({ proxy: `socks4a://127.0.0.1:${socks.port}` });
+      const tab = await context.newTab('http://socks4a.invalid/page');
+      expect(await tab.evaluate('secret')).toBe('main-secret');
+      expect(socks.requests).toContain('socks4a.invalid:80');
+      await context.close();
+    } finally {
+      await b.close();
+      await socks.close();
       await fixture.server.stop();
     }
   });

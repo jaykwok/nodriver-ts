@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import { expect } from '../fixtures/expect.ts';
-import { Browser } from '../../src/index.ts';
+import { Browser, ProtocolError, StaleElementError } from '../../src/index.ts';
 import { fixtureServer } from '../fixtures/server.ts';
 import { appendFile } from 'node:fs/promises';
 import { forbiddenAutomaticCommands, recordWire } from '../fixtures/wire.ts';
@@ -75,6 +75,24 @@ for (const transport of ['websocket', 'pipe'] as const) {
     }
   });
 }
+
+test('a document replaced during sampling is stale, not a protocol failure', async () => {
+  const fixture = await fixtureServer();
+  const browser = await Browser.launch({ headless: process.env.NODRIVER_HEADFUL !== '1' });
+  try {
+    const tab = await browser.newTab(fixture.base + '/empty');
+    await tab.evaluate(`NavigatorUAData.prototype.getHighEntropyValues=function(){
+      location.href='/empty?next';return new Promise(()=>{})}`);
+    const error = await tab
+      .inspectEnvironment({ world: 'main', timeout: 5000 })
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(StaleElementError);
+    expect((error as Error).cause).toBeInstanceOf(ProtocolError);
+  } finally {
+    await browser.close();
+    await fixture.server.stop();
+  }
+});
 
 test('Worker sampling obeys CSP and disposes temporary Worker/blob resources', async () => {
   const fixture = await fixtureServer();

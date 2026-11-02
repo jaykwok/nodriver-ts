@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { NO_REPLY, ScriptedChrome } from '../../src/testing/index.ts';
-import { NodriverError, TimeoutError } from '../../src/index.ts';
+import { NodriverError, TimeoutError, type PresentationReport } from '../../src/index.ts';
 
 const frame = (sessionId: number, data: string) => ({
   data,
@@ -160,7 +160,7 @@ test('presentation lease bounds ACK concurrency and total duration', async () =>
     const stopFailure = browser.presentationLease(session, { stopTimeout: 10 });
     await stopFailure.start();
     const stopFailureReport = await stopFailure.close();
-    assert.equal(stopFailureReport.reason, 'stop-failed');
+    assert.equal(stopFailureReport.reason, 'closed');
     assert.equal(stopFailureReport.state, 'failed');
     assert.equal(stopFailureReport.cleanup, 'failed');
   } finally {
@@ -322,6 +322,54 @@ test('presentation lease start on an ended session keeps the original reason', a
     assert.equal(error.cause, session.closeReason);
     assert.equal((error.cause as { reason?: string }).reason, 'target-crashed');
     assert.match(lease.report.error!, /target-crashed/);
+  } finally {
+    await browser.close();
+    await chrome.close();
+  }
+});
+
+test('a failed stop keeps the reason the lease ended for', async () => {
+  const { chrome, browser, session } = await target();
+  try {
+    chrome.handle('Page.startScreencast', () => undefined);
+    chrome.handle('Page.screencastFrameAck', () => undefined);
+    chrome.handle('Page.stopScreencast', () => {
+      throw new Error('stop refused');
+    });
+    const assertStopFailure = (report: PresentationReport, reason: string) => {
+      assert.equal(report.reason, reason);
+      assert.equal(report.state, 'failed');
+      assert.equal(report.cleanup, 'failed');
+      assert.equal(report.cleanupErrors.length, 1);
+      assert.match(report.cleanupErrors[0]!, /stop refused/);
+    };
+
+    const byFrames = browser.presentationLease(session, { maxFrames: 1 });
+    await byFrames.start();
+    chrome.emit('Page.screencastFrame', frame(11, 'YQ=='), session.id);
+    chrome.emit('Page.screencastFrame', frame(12, 'Yg=='), session.id);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assertStopFailure(await byFrames.close(), 'frame-limit');
+
+    const byDuration = browser.presentationLease(session, { maxDuration: 10 });
+    await byDuration.start();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assertStopFailure(await byDuration.close(), 'duration-limit');
+
+    const controller = new AbortController();
+    const byAbort = browser.presentationLease(session, { signal: controller.signal });
+    await byAbort.start();
+    controller.abort(new Error('cancel presentation'));
+    assertStopFailure(await byAbort.close(), 'aborted');
+
+    chrome.replyOnce('Page.startScreencast', () => {
+      throw new Error('start refused');
+    });
+    const byStart = browser.presentationLease(session);
+    await assert.rejects(byStart.start(), /start refused/);
+    const report = await byStart.close();
+    assertStopFailure(report, 'start-failed');
+    assert.match(report.error!, /start refused/);
   } finally {
     await browser.close();
     await chrome.close();

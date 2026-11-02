@@ -13,7 +13,6 @@ export type PresentationLeaseReason =
   | 'ack-limit'
   | 'ack-timeout'
   | 'start-failed'
-  | 'stop-failed'
   | 'disconnected'
   | 'aborted';
 
@@ -382,6 +381,7 @@ export class PresentationLease {
     // close races with the start response, while the start deadline keeps the wait bounded.
     await this.startTask?.catch(() => {});
     const deadline = performance.now() + this.options.stopTimeout;
+    let stopFailed = false;
     if (this.startAttempted && !this.session.closed && !this.disconnected) {
       try {
         await this.session.sendWith('Page.stopScreencast', {
@@ -390,7 +390,7 @@ export class PresentationLease {
       } catch (error) {
         this.report.cleanupErrors.push(String(error));
         this.report.error ??= String(error);
-        if (!this.session.closed && !this.disconnected) this.requestedReason = 'stop-failed';
+        stopFailed = true;
       }
     }
     const pending = [...this.inFlight];
@@ -418,17 +418,18 @@ export class PresentationLease {
       this.report.cleanup = this.report.cleanupErrors.length ? 'failed' : 'completed';
     this.report.reason =
       this.disconnected || this.session.closed ? 'disconnected' : this.requestedReason;
+    // A failed stop is a state of its own; `reason` keeps why the lease ended.
     this.report.state =
       this.disconnected || this.session.closed
         ? 'disconnected'
-        : this.report.reason === 'duration-limit' ||
-            this.report.reason === 'ack-timeout' ||
-            this.report.reason === 'frame-limit' ||
-            this.report.reason === 'byte-limit' ||
-            this.report.reason === 'ack-limit'
-          ? 'timed-out'
-          : this.report.reason === 'start-failed' || this.report.reason === 'stop-failed'
-            ? 'failed'
+        : stopFailed || this.report.reason === 'start-failed'
+          ? 'failed'
+          : this.report.reason === 'duration-limit' ||
+              this.report.reason === 'ack-timeout' ||
+              this.report.reason === 'frame-limit' ||
+              this.report.reason === 'byte-limit' ||
+              this.report.reason === 'ack-limit'
+            ? 'timed-out'
             : 'stopped';
     if (this.ownsSession) {
       release(this.session, this);

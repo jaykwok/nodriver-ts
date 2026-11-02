@@ -3,6 +3,7 @@ import type { WaitOptions } from '../utils.ts';
 import { timeoutValue } from '../utils.ts';
 import { abortReason } from '../utils.ts';
 import { StaleElementError, TimeoutError } from '../errors.ts';
+import { isContextGone } from './execution-context.ts';
 
 export interface NavigatorSnapshot {
   userAgent: string;
@@ -90,6 +91,19 @@ async function navigatorSnapshot(): Promise<NavigatorSnapshot> {
 export async function inspectEnvironment(
   frame: Frame,
   options: InspectEnvironmentOptions = {},
+): Promise<EnvironmentReport> {
+  try {
+    return await sampleEnvironment(frame, options);
+  } catch (error) {
+    if (isContextGone(error))
+      throw new StaleElementError('Frame changed during environment sampling', { cause: error });
+    throw error;
+  }
+}
+
+async function sampleEnvironment(
+  frame: Frame,
+  options: InspectEnvironmentOptions,
 ): Promise<EnvironmentReport> {
   const timeout = timeoutValue(options.timeout ?? 5000);
   const deadline = performance.now() + timeout;

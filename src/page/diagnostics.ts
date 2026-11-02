@@ -1,8 +1,8 @@
 import type { Tab, Environment } from './tab.ts';
 import type { EnvironmentReport, NavigatorSnapshot } from './environment.ts';
 import type { WaitOptions } from '../utils.ts';
-import { StaleElementError } from '../errors.ts';
-import { timeoutValue } from '../utils.ts';
+import { StaleElementError, TimeoutError } from '../errors.ts';
+import { budget, timeoutValue } from '../utils.ts';
 /** Optional measurements for a diagnostic run; these do not apply environment overrides. */
 export interface DiagnoseEnvironmentOptions extends WaitOptions {
   /** Sample a new temporary Dedicated Worker per frame, not existing/Shared/Service Workers. */
@@ -21,7 +21,7 @@ export interface DiagnoseEnvironmentOptions extends WaitOptions {
 }
 export interface Observation<T> {
   status: 'observed' | 'unavailable' | 'not-requested';
-  source: 'browser' | 'explicit-configuration' | 'site-assessment' | 'resolver';
+  source: 'browser' | 'site-assessment' | 'resolver';
   value?: T;
   error?: string;
 }
@@ -69,6 +69,22 @@ export interface EnvironmentVerification {
   expected: unknown;
   actual?: unknown;
 }
+/** Rejects unusable probes before any sampling, or any override an alignment would apply. */
+function validateProbes(options: Omit<DiagnoseEnvironmentOptions, 'signal' | 'timeout'>): void {
+  if (options.fontSelectors && options.fontSelectors.length > 16)
+    throw new RangeError('At most 16 font selectors');
+  if (options.httpProbe) {
+    const url = new URL(options.httpProbe);
+    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password)
+      throw new TypeError('Use an explicit HTTP(S) probe without URL credentials');
+  }
+  if (
+    options.stunServers &&
+    (options.stunServers.length > 4 ||
+      options.stunServers.some((s) => !/^stuns?:[a-z0-9.\-\[\]:]+$/i.test(s)))
+  )
+    throw new TypeError('Use at most four explicit STUN endpoints');
+}
 /**
  * Collect evidence when investigating a configuration or comparing controlled browser runs.
  * Sampling does not change the requested environment, but is not free of observable work:
@@ -82,15 +98,18 @@ export async function diagnoseEnvironment(
   tab: Tab,
   options: DiagnoseEnvironmentOptions = {},
 ): Promise<EnvironmentDiagnostics> {
-  const deadline = performance.now() + timeoutValue(options.timeout ?? 10000),
+  validateProbes(options);
+  const step = budget(
+      { signal: options.signal, timeout: options.timeout ?? 10000 },
+      'Environment diagnostic',
+    ),
     frame = tab.mainFrame,
     generation = frame.generation;
   const wait = () => {
-    options.signal?.throwIfAborted();
-    if (performance.now() >= deadline) throw new Error('Environment diagnostic deadline exceeded');
+    const { signal, timeout = 0 } = step();
     if (frame.generation !== generation || frame.detached)
       throw new StaleElementError('Document changed during diagnostics');
-    return { signal: options.signal, timeout: Math.max(1, deadline - performance.now()) };
+    return { signal, timeout };
   };
   const frames: EnvironmentReport[] = [];
   for (const f of tab.frames)
@@ -126,7 +145,6 @@ export async function diagnoseEnvironment(
     ],
   };
   if (options.fontSelectors) {
-    if (options.fontSelectors.length > 16) throw new RangeError('At most 16 font selectors');
     try {
       const values: NonNullable<EnvironmentDiagnostics['fonts']['value']> = [];
       for (const f of tab.frames) {
@@ -138,7 +156,7 @@ export async function diagnoseEnvironment(
           await probe.sendWith('CSS.enable', wait());
           await probe.sendWith('DOM.getDocument', wait(), { depth: 0 });
           for (const selector of options.fontSelectors) {
-            const el = await f.query(selector);
+            const el = await f.query(selector, wait());
             if (!el) continue;
             const { nodeIds } = await probe.sendWith(
               'DOM.pushNodesByBackendIdsToFrontend',
@@ -155,7 +173,7 @@ export async function diagnoseEnvironment(
         } finally {
           // Detach only our agents; disabling the caller's DOM/CSS domains could
           // silently stop its active subscriptions or another concurrent diagnostic.
-          await probe.detach().catch(() => {});
+          await probe.detach({ timeout: 1000 }).catch(() => {});
         }
       }
       report.fonts = {
@@ -170,8 +188,6 @@ export async function diagnoseEnvironment(
   }
   if (options.httpProbe) {
     const url = new URL(options.httpProbe);
-    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password)
-      throw new TypeError('Use an explicit HTTP(S) probe without URL credentials');
     try {
       const value = await frame.evaluate(
         async ({ url, timeout }) => {
@@ -211,11 +227,6 @@ export async function diagnoseEnvironment(
     }
   }
   if (options.stunServers) {
-    if (
-      options.stunServers.length > 4 ||
-      options.stunServers.some((s) => !/^stuns?:[a-z0-9.\-\[\]:]+$/i.test(s))
-    )
-      throw new TypeError('Use at most four explicit STUN endpoints');
     try {
       const value = await frame.evaluate(
         ({ servers, timeout }) =>
@@ -315,12 +326,136 @@ export async function diagnoseEnvironment(
   wait();
   return report;
 }
+/** Canonical form for comparison. A value Intl refuses is compared as it is, not thrown. */
+function canonical(field: string, value: unknown): unknown {
+  try {
+    if (field === 'locale') return Intl.getCanonicalLocales(value as string)[0];
+    if (field === 'timezone')
+      return new Intl.DateTimeFormat('en', { timeZone: value as string }).resolvedOptions()
+        .timeZone;
+  } catch {}
+  return value;
+}
+/** Ordered tags of an Accept-Language list; Chrome appends `;q=` weights to the one it is given. */
+const languageTags = (value: string): unknown[] =>
+  value
+    .split(',')
+    .map((item) => item.split(';')[0]!.trim())
+    .filter(Boolean)
+    .map((tag) => canonical('locale', tag));
+function verifyEnvironment(
+  requested: Environment,
+  after: EnvironmentDiagnostics,
+  mainFrameId: string,
+): EnvironmentVerification[] {
+  const verification: EnvironmentVerification[] = [];
+  const fields: Array<[keyof Environment, keyof NavigatorSnapshot | 'viewport']> = [
+    ['timezone', 'timezone'],
+    ['locale', 'intlLocale'],
+    ['userAgent', 'userAgent'],
+    ['viewport', 'viewport'],
+  ];
+  for (const frame of after.frames)
+    for (const [key, observed] of fields) {
+      if (requested[key] === undefined) continue;
+      // The override sizes the page; an iframe's viewport is its own layout box.
+      if (key === 'viewport' && frame.frameId !== mainFrameId) continue;
+      const expected =
+        key === 'viewport'
+          ? {
+              width: requested.viewport!.width,
+              height: requested.viewport!.height,
+              devicePixelRatio: requested.viewport!.deviceScaleFactor ?? 1,
+            }
+          : requested[key];
+      for (const scope of ['document', 'worker'] as const) {
+        const snapshot =
+          scope === 'document'
+            ? frame.document
+            : frame.worker?.status === 'ok'
+              ? frame.worker.navigator
+              : undefined;
+        const actual =
+          snapshot && observed in snapshot ? Reflect.get(snapshot, observed) : undefined;
+        verification.push({
+          field: key,
+          scope: `${frame.frameId}/${scope}`,
+          expected,
+          actual,
+          status:
+            actual === undefined
+              ? 'unavailable'
+              : JSON.stringify(canonical(key, actual)) === JSON.stringify(canonical(key, expected))
+                ? 'match'
+                : 'mismatch',
+        });
+      }
+    }
+  if (requested.acceptLanguage) {
+    const actual: unknown = after.http.value?.headers?.['accept-language'];
+    verification.push({
+      field: 'acceptLanguage',
+      scope: 'HTTP',
+      expected: requested.acceptLanguage,
+      status:
+        actual === undefined
+          ? 'not-tested'
+          : typeof actual === 'string' &&
+              JSON.stringify(languageTags(actual)) ===
+                JSON.stringify(languageTags(requested.acceptLanguage))
+            ? 'match'
+            : 'mismatch',
+      actual,
+    });
+  }
+  if (requested.userAgentMetadata)
+    for (const frame of after.frames)
+      for (const scope of ['document', 'worker'] as const) {
+        const actual =
+          scope === 'document'
+            ? frame.document.userAgentData
+            : frame.worker?.status === 'ok'
+              ? frame.worker.navigator.userAgentData
+              : undefined;
+        for (const [field, expected] of Object.entries(requested.userAgentMetadata))
+          verification.push({
+            field: `userAgentMetadata.${field}`,
+            scope: `${frame.frameId}/${scope}`,
+            expected,
+            actual: actual?.[field],
+            status:
+              actual?.[field] === undefined
+                ? 'unavailable'
+                : JSON.stringify(actual[field]) === JSON.stringify(expected)
+                  ? 'match'
+                  : 'mismatch',
+          });
+      }
+  if (requested.geolocation)
+    verification.push({
+      field: 'geolocation',
+      scope: 'permission-dependent navigator.geolocation',
+      expected: requested.geolocation,
+      status:
+        after.geolocation.status === 'observed'
+          ? Math.abs(after.geolocation.value!.latitude - requested.geolocation.latitude) <
+              0.000001 &&
+            Math.abs(after.geolocation.value!.longitude - requested.geolocation.longitude) <
+              0.000001
+            ? 'match'
+            : 'mismatch'
+          : 'unavailable',
+      actual: after.geolocation.value ?? after.geolocation.error,
+    });
+  return verification;
+}
 /**
  * Apply a caller-selected environment for a reproducible test and report before/after evidence.
  * This is a mutation: partial application is possible, with no atomic rollback. Verification
  * covers frame documents and newly created Dedicated Workers, not every execution context or
  * request. CDP overrides do not align native OS fonts, GPU hardware or browser window chrome.
- * GeoIP resolves only explicitly selected fields through the caller's resolver.
+ * GeoIP resolves only explicitly selected fields through the caller's resolver. Once overrides
+ * are applied, only the caller's abort rejects; a failed after-sample stays in the report.
  */
 export async function alignEnvironment(
   tab: Tab,
@@ -331,6 +466,7 @@ export async function alignEnvironment(
     throw new TypeError(
       'GeoIP requires a caller-supplied resolver; no default service is contacted',
     );
+  validateProbes(options.inspect ?? {});
   const controller = new AbortController();
   const signal = options.signal
     ? AbortSignal.any([options.signal, controller.signal])
@@ -338,7 +474,7 @@ export async function alignEnvironment(
   const deadline = performance.now() + timeoutValue(options.timeout ?? 10000);
   const remaining = () => Math.max(1, deadline - performance.now());
   const timer = setTimeout(
-    () => controller.abort(new Error('Alignment deadline exceeded')),
+    () => controller.abort(new TimeoutError('Alignment deadline exceeded')),
     remaining(),
   );
   try {
@@ -350,10 +486,6 @@ export async function alignEnvironment(
     let resolved: Observation<GeoIPResult> = { status: 'not-requested', source: 'resolver' };
     const requested: Environment = structuredClone(options.environment ?? {});
     if (options.geoip) {
-      if (!resolver)
-        throw new TypeError(
-          'GeoIP requires a caller-supplied resolver; no default service is contacted',
-        );
       options.signal?.throwIfAborted();
       const value = await new Promise<GeoIPResult>((resolve, reject) => {
         const abort = () => reject(signal.reason);
@@ -383,113 +515,37 @@ export async function alignEnvironment(
     } catch (error) {
       applicationError = String(error);
     }
-    const after = await tab.diagnoseEnvironment({
-      ...options.inspect,
-      worker: true,
-      timeout: remaining(),
-      signal,
-      geolocation: !!requested.geolocation,
-    });
-    const verification: EnvironmentVerification[] = [];
-    const fields: Array<[keyof Environment, keyof NavigatorSnapshot | 'viewport']> = [
-      ['timezone', 'timezone'],
-      ['locale', 'intlLocale'],
-      ['userAgent', 'userAgent'],
-      ['viewport', 'viewport'],
-    ];
-    for (const frame of after.frames)
-      for (const [key, observed] of fields) {
-        if (requested[key] === undefined) continue;
-        const expected =
-          key === 'viewport'
-            ? {
-                width: requested.viewport!.width,
-                height: requested.viewport!.height,
-                devicePixelRatio: requested.viewport!.deviceScaleFactor ?? 1,
-              }
-            : requested[key];
-        for (const scope of ['document', 'worker'] as const) {
-          const snapshot =
-            scope === 'document'
-              ? frame.document
-              : frame.worker?.status === 'ok'
-                ? frame.worker.navigator
-                : undefined;
-          const actual =
-            snapshot && observed in snapshot ? Reflect.get(snapshot, observed) : undefined;
-          verification.push({
-            field: key,
-            scope: `${frame.frameId}/${scope}`,
-            expected,
-            actual,
-            status:
-              actual === undefined
-                ? 'unavailable'
-                : JSON.stringify(actual) === JSON.stringify(expected)
-                  ? 'match'
-                  : 'mismatch',
-          });
-        }
-      }
-    if (requested.acceptLanguage)
-      verification.push({
-        field: 'acceptLanguage',
-        scope: 'HTTP',
-        expected: requested.acceptLanguage,
-        status:
-          after.http.value?.headers?.['accept-language'] === undefined
-            ? 'not-tested'
-            : after.http.value.headers['accept-language'] === requested.acceptLanguage
-              ? 'match'
-              : 'mismatch',
-        actual: after.http.value?.headers?.['accept-language'],
+    let after: EnvironmentDiagnostics | undefined;
+    let verificationError: string | undefined;
+    try {
+      after = await tab.diagnoseEnvironment({
+        ...options.inspect,
+        worker: true,
+        timeout: remaining(),
+        signal,
+        geolocation: !!requested.geolocation,
       });
-    if (requested.userAgentMetadata)
-      for (const frame of after.frames)
-        for (const scope of ['document', 'worker'] as const) {
-          const actual =
-            scope === 'document'
-              ? frame.document.userAgentData
-              : frame.worker?.status === 'ok'
-                ? frame.worker.navigator.userAgentData
-                : undefined;
-          for (const [field, expected] of Object.entries(requested.userAgentMetadata))
-            verification.push({
-              field: `userAgentMetadata.${field}`,
-              scope: `${frame.frameId}/${scope}`,
-              expected,
-              actual: actual?.[field],
-              status:
-                actual?.[field] === undefined
-                  ? 'unavailable'
-                  : JSON.stringify(actual[field]) === JSON.stringify(expected)
-                    ? 'match'
-                    : 'mismatch',
-            });
-        }
-    if (requested.geolocation)
-      verification.push({
-        field: 'geolocation',
-        scope: 'permission-dependent navigator.geolocation',
-        expected: requested.geolocation,
-        status:
-          after.geolocation.status === 'observed'
-            ? Math.abs(after.geolocation.value!.latitude - requested.geolocation.latitude) <
-                0.000001 &&
-              Math.abs(after.geolocation.value!.longitude - requested.geolocation.longitude) <
-                0.000001
-              ? 'match'
-              : 'mismatch'
-            : 'unavailable',
-        actual: after.geolocation.value ?? after.geolocation.error,
-      });
+    } catch (error) {
+      options.signal?.throwIfAborted();
+      verificationError = String(error);
+    }
     return {
       before,
       applicationError,
       requested,
       resolver: resolved,
       after,
-      verification,
+      verificationError,
+      verification: after
+        ? verifyEnvironment(requested, after, tab.mainFrame.id)
+        : Object.entries(requested)
+            .filter(([, expected]) => expected !== undefined)
+            .map(([field, expected]): EnvironmentVerification => ({
+              field,
+              scope: 'tab',
+              status: 'not-tested',
+              expected,
+            })),
       notes: [
         'Only explicitly selected resolver fields are applied. Language, brand and hardware are never inferred from an IP.',
         'Geolocation permission is separate. Unsupported or unverified Worker fields are not marked successful.',

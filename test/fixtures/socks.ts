@@ -86,3 +86,51 @@ export async function socksFixture() {
     },
   };
 }
+/** Local SOCKS4a fixture: records each requested destination and tunnels it to loopback `port`. */
+export async function socks4aFixture(port: number) {
+  const sockets = new Set<Socket>();
+  const requests: string[] = [];
+  const server = createServer((socket) => {
+    sockets.add(socket);
+    socket.on('error', () => {});
+    socket.on('close', () => sockets.delete(socket));
+    let buffer = Buffer.alloc(0);
+    const data = (chunk: Buffer) => {
+      buffer = Buffer.concat([buffer, chunk]);
+      const userEnd = buffer.indexOf(0, 8);
+      if (userEnd < 0) return;
+      // Address 0.0.0.x marks the 4a form: a hostname follows for the proxy to resolve.
+      const address = buffer.subarray(4, 8);
+      const named = !address[0] && !address[1] && !address[2] && !!address[3];
+      const end = named ? buffer.indexOf(0, userEnd + 1) : userEnd;
+      if (end < 0) return;
+      const host = named ? buffer.subarray(userEnd + 1, end).toString() : address.join('.');
+      requests.push(`${host}:${buffer.readUInt16BE(2)}`);
+      socket.removeListener('data', data);
+      const remote = connect({ host: '127.0.0.1', port });
+      sockets.add(remote);
+      remote.on('error', () => socket.destroy());
+      remote.on('close', () => {
+        sockets.delete(remote);
+        socket.destroy();
+      });
+      const rest = buffer.subarray(end + 1);
+      remote.once('connect', () => {
+        socket.write(Buffer.from([0, 0x5a, 0, 0, 0, 0, 0, 0]));
+        if (rest.length) remote.write(rest);
+        socket.pipe(remote);
+        remote.pipe(socket);
+      });
+    };
+    socket.on('data', data);
+  });
+  await new Promise<void>((r) => server.listen(0, '127.0.0.1', r));
+  return {
+    port: (server.address() as { port: number }).port,
+    requests,
+    async close() {
+      for (const s of sockets) s.destroy();
+      await new Promise<void>((r) => server.close(() => r()));
+    },
+  };
+}
