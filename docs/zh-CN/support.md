@@ -20,9 +20,9 @@
 | Linux ARM64          | Chrome for Testing         |
 | macOS ARM64          | Chrome                     |
 
-每次推送都会在 Windows 与 Ubuntu 上用当前 Node.js 24 运行源码套件，并分别在当前 Node.js 24 与最低版本 24.22.0 上检查构建产物。按需触发的平台矩阵（`.github/workflows/platforms.yml`）覆盖 macOS ARM64、Linux ARM64、Windows 上的 Edge 以及上一个 Chrome 大版本，每个套件只运行一次、不重试。[Chromium 预览工作流](../../.github/workflows/chromium-preview.yml) 在 Chrome Beta、Dev、Canary 上运行主世界发现、生命周期与差分检查。每个公开 API 由哪些测试调用，见 [测试映射](test-map.md)。
+每次推送都会在 Windows 与 Ubuntu 上用当前 Node.js 24 运行源码套件，并分别在当前 Node.js 24 与最低版本 24.22.0 上检查构建产物；在 macOS 上运行监管生命周期、输入生命周期与 composition、呈现租约测试，以及构建产物的 raw session 检查。按需触发的平台矩阵（`.github/workflows/platforms.yml`）覆盖 macOS ARM64、Linux ARM64、Windows 上的 Edge，以及比当前稳定版低一个大版本的 Chrome for Testing，每个套件只运行一次、不重试。[Chromium 预览工作流](../../.github/workflows/chromium-preview.yml) 在 Chrome Beta、Dev、Canary 上运行主世界发现、生命周期与差分检查。每个公开 API 由哪些测试调用，见 [测试映射](test-map.md)。
 
-打包产物在空项目中检查：Node.js 24 可导入全部入口，TypeScript 7.0.2 与 5.9.3 在 `nodenext` 和 `bundler` 解析下以 `skipLibCheck: false` 通过类型检查，`npx nodriver-mcp` 可运行。长时间运行的表现见 [长稳测试](soak.md)。
+长时间运行的表现见 [长稳测试](soak.md)。
 
 调用方可用 `await using` 或 `try/finally` 与 `close()` 管理资源。
 
@@ -60,6 +60,7 @@
 - **网络**：Fetch 路由不覆盖浏览器自身流量和独立的 Service Worker target。HTTPS 代理证书、IPv6 与复杂 DNS 出口组合由 proxy-chain 处理，本项目没有覆盖全部组合。
 - **范围外**：不内置 OpenCV、视频编码、验证码或挑战自动处理、屏幕布局探测；可通过 typed CDP、页面脚本或外部适配器扩展。
 - **MCP**：HTTP 服务需显式启用且只绑定 loopback，HTTP/socket 强制预配令牌与应用租约；不提供远程不可信多租户、OAuth 或全部内核能力的工具映射。AX 快照限制输出大小，但底层仍读取完整 AX 树；在同一页面上反复输入并快照时，Chrome 会保留少量 Blink 内存（约 1 KB/次，导航后释放），见 [长稳测试](soak.md)。
+- **Snap Chromium**：snap 有私有的 `/tmp`，因此使用 WebSocket 传输且临时 profile 位于系统临时目录时，启动会在等待 `DevToolsActivePort` 时超时。请改用 Pipe、把 `userDataDir` 放在主目录下的非隐藏目录，或使用非 snap 构建。
 - **清理**：`await using`、finally 与可选信号处理不能保证宿主被强杀或断电后的即时清理。重连不自动重放操作。
 
 ## 运行检查

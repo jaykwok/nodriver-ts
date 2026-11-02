@@ -4,6 +4,97 @@ All notable changes are recorded here. The project follows [Semantic Versioning]
 
 ## Unreleased
 
+### Breaking changes
+
+- MCP: `browser_storage_state` files move to `<state-dir>/<principal>/<name>.json` (`p-<sha256>` for principals outside `[a-z0-9_-]{1,64}`), so principals can no longer read or overwrite each other's states. To keep existing states, move `<state-dir>/<name>.json` into `<state-dir>/private/` (stdio and embedded servers without a binding) or `<state-dir>/local-operator/` (CLI HTTP and socket services).
+- MCP: tools reject arguments they would ignore with a `TypeError`: `browser_environment` inspect with `environment`/`geoip`, `browser_drag` `to` with `toX`/`toY`, `browser_scroll` `ref` with non-zero deltas or coordinates, `browser_screenshot` `ref` with `fullPage`.
+- A context created with `newContext({ proxy })` ends with the connection that created it. Its forwarder runs in the host process; such a context used to stay open in Chrome, pointing at a closed port.
+- `PresentationLeaseReason` drops `'stop-failed'`: a failed `Page.stopScreencast` keeps the original `reason`, sets `state` to `failed` and records the error in `cleanupErrors`.
+- `Observation.source` drops the unused `'explicit-configuration'`.
+- The `after` field of the `alignEnvironment()` report is optional; see below.
+
+### Input
+
+- `click()`, `hover()` and `clickablePoint()` work on `<input>`, `<textarea>`, custom elements with a shadow root and buttons that contain shadow-DOM icons, which used to time out: hit tests ignore user-agent shadow DOM and follow the composed tree.
+- A control inside a disabled `<fieldset>` counts as disabled; `click()` used to report success without a click event.
+- Remote objects that die with their context or session count as released, so a click or typing that races a navigation no longer blocks managed input on the connection.
+- While a JavaScript dialog is open on a page the action used, the cleanup budget pauses, because Chrome holds the replies to input until the dialog closes. Such a click no longer blocks managed input on the connection. The trace records `dialogWait`.
+- A page that closes during an action takes its input state with it: requests it leaves unanswered and steps that fail because its session ended are not cleanup failures, and other failures on that page block no input. The trace records `pageClosed`.
+- With Shift held through `keyboard.down('Shift')`, `type()` produces the given text: characters that need no Shift use `insertText`.
+- Launched browsers select macOS editing commands by the host platform, so a Mac `userAgent` option no longer changes `Control+A` on other systems. Connected browsers use the user agent that `Browser.getVersion` reports.
+- `Keyboard.compose()` and input scope `run()` accept `forceCancel: true` to cancel at the session's current focus during explicit cancellation and cleanup, including when focus moved during `compositionstart`. Updates and commits retain their original focus/document checks. Cleanup is armed only after the first update's focus checks pass. Away from the original editor, the cancel is sent only at an inspectable editor with a collapsed selection, because Chrome deletes selected text on an empty update without a composition.
+- A composition that ended by itself, for example because focus left and came back, is cancelled only over a collapsed selection. The empty update used to delete a range selection and report success.
+- Composing through an out-of-process frame's own session works; its focus check always failed.
+- An explicit `executionContextId` is resolved to its global object once, before the first update, so a newer document that reuses the numeric ID is never probed.
+- Input cleanup waits only for the action's own late replies (input commands, element preparation, raw commands issued from its callback on any connection, and the detach sent for an attach that answers late) instead of every pending command on the connection, so unrelated work on other tabs no longer delays cleanup or blocks managed input after `cleanupTimeout`. A connection the action used that closes with nothing outstanding is not a failure.
+- `InputScope.recoverComposition()` lets callers acknowledge an inspected/restored page and clear its composition-only block across attachments and child frames without destroying the target. Recovery shares the input queue, sends no CDP commands, preserves failed cleanup reports, and refuses connection-wide failures or managed holds on that page.
+- `InputActionError` and `InputBlockedError` extend `NodriverError`; `InputBlockedError` keeps the first cleanup failure as `cause`.
+
+### Pages and queries
+
+- `goto()` no longer completes before `load` or `networkidle` when the new document changes its URL with `history.replaceState()` or a hash; the change only updates the returned URL. `reload()` completes only with a new document, and `go()` completes a same-document history navigation only at the entry's URL.
+- `tab.crashed` reports a crash of the page's own renderer, not of an out-of-process iframe, and a new main-frame document clears it, including after `goto()` or `go()`.
+- `waitForSelector()` and `waitForFunction()` keep polling through the moment a navigation replaces the execution context.
+- `addInitScript()` registers a script once per session, including new out-of-process frames that attach meanwhile, and a removal that overlaps a registration holds. A removal that failed can be retried.
+- Closed shadow roots found by a query are cached until the DOM structure changes, so later queries on an unchanged document do not scan it again.
+- `evaluate()`, `clickablePoint()` and `go()` share one deadline across their steps. `Frame.content()` runs in the isolated world. A failed evaluation releases its exception object, and `EvaluationError` includes a thrown primitive's value.
+- `Tab.close()` can be retried after a failure, and a navigation wait on a closed session rejects instead of throwing synchronously.
+- `Element.withObject()` passes an object group to its callback; objects created in the group are released with the handle.
+
+### Browser and process lifecycle
+
+- `handleSignals` closes every browser launched with it before the host terminates, and a host handler registered with `process.once()` counts as handling the signal.
+- On macOS and Linux, Chrome launched without `detached` ends when the host exits, including through `process.exit()` or an uncaught exception. Its process group is signalled when Chrome exits, and `close()` no longer signals a group whose ID the system may have reused.
+- `release()` rejects once Chrome has exited. In supervised mode, a request the helper refused or never received rejects and keeps ownership; `ReleaseUncertainError` is only for a request that was sent and not answered.
+- A failed `Browser.close()` can be retried, including in supervised mode; `release()` stays refused once closing began.
+- The supervision helper does not inherit `NODE_OPTIONS`, so a preload that writes to stdout cannot corrupt its protocol and end a healthy Chrome. On Windows, its private directory is removed with retries when it closes, and a supervised launch removes directories that earlier launches left behind after a release or a host crash, once their helper has exited and they are more than an hour old.
+- A page that closes during the initial attach no longer fails `launch()` or `connect()`, and concurrent attaches no longer create duplicate context objects.
+- A leftover `DevToolsActivePort` whose port is held by another HTTP service no longer fails launch. Losing the race for a stale profile lock raises `ProfileInUseError` instead of a bare `EEXIST`.
+- Chrome's stderr is decoded across chunk boundaries, so startup diagnostics no longer corrupt multi-byte characters.
+
+### Protocol
+
+- `SessionEndedError`, `Session.closeReason` and WebSocket errors keep the error that caused them as `cause`. Errors thrown by `Session.disconnected` listeners reach `onError`.
+- `TargetSession.detach()` succeeds without another command when Chrome no longer has the attachment, and an attach still queued when its target is destroyed is not cleaned up as if it had been sent.
+- `attachSession()` ends a plain `Session` that a root listener created for the same attachment with `connection.session(id)`; it used to stop receiving events without closing.
+- Deadlines use the monotonic clock. Fractional budgets are rounded up for APIs that accept only whole milliseconds.
+- The root entry point exports the `EventHub`, `Listener` and `WaitOptions` types.
+- `ScriptedChrome` answers like Chrome for unknown sessions and targets, and no longer repeats the method and data of a `ProtocolError` that a handler throws.
+
+### Network and environment
+
+- `alignEnvironment()` verifies the viewport on the main frame only, compares locale and timezone in canonical form (`fr-fr` matches `fr-FR`, `Asia/Kolkata` matches Chrome's `Asia/Calcutta`), and compares Accept-Language as ordered language tags without `;q=` weights; `expected` and `actual` keep the raw values.
+- `alignEnvironment()` validates `inspect` options before applying anything. If the sample after applying fails or times out, the report is returned with a `verificationError`, an undefined `after` and every requested field `not-tested`; only the caller's `signal` rejects once overrides are applied.
+- `diagnoseEnvironment()` spends one `timeout`/`signal` budget across all probes including fonts, detaches font-probe sessions within 1 s, rejects unusable probe options before sampling, and expires with `TimeoutError`. The alignment deadline is a `TimeoutError` too.
+- `inspectEnvironment()` throws `StaleElementError` with Chrome's error as `cause` when the document goes away mid-sample.
+- `setExtraHeaders()` rejects invalid header names and values with `TypeError` before sending; headers, cache and offline settings are kept only after Chrome accepts them.
+- Each step of a new frame session's setup is attempted on its own. Refused Network and Fetch setup is reported through `onError` / `browser.errors`, and a refused environment override no longer costs the session its init scripts. Each `responses` subscription and `enable()` call retries a failed setup.
+- A Route answer that Chrome refuses rejects with `ProtocolError` and reopens the route instead of leaving the request paused. Answers and auth replies for a request Chrome no longer holds resolve without reporting an error.
+- A refused `route()` or `authenticate()` restores the previous routes or credentials on every session; Network operations skip sessions that close while they run.
+- `route()` never reads or changes a RegExp's `lastIndex`; sticky patterns stay anchored at the start of the URL.
+- `proxy` accepts `socks4a://` upstreams, which leave hostname resolution to the proxy.
+
+### MCP
+
+- An action that a JS dialog interrupts returns at once with `dialog` and `pending: true`. It keeps the lease and browser queues until it settles (bounded by its timeout and the operation deadline), and reports `action-completed` or `action-failed` in `browser://events`. The pool gives no new allocations to a browser whose input is blocked and closes it once unused.
+- A failed follow-up snapshot returns the action result with `snapshotError`. A cancellation or deadline after the action ran reports a `TimeoutError` starting with `Action completed, but`.
+- Snapshots stop at 20,000 nodes and report `capped: true`. Password values are masked whatever other attribute values say. Refs are evicted least recently used first.
+- `lastInput` in `browser_tabs` carries only `action`, `status`, `events`, `completedSegments` and `cleanup`. Queue changes notify subscribers without `state` events in the log. Resource update notifications are coalesced over 25 ms.
+- `browser_network` `clear` reports whether recording is active. Screenshot, select, upload, tab close and storage state honour the operation deadline and cancellation. `browser_upload` refuses names leaving its directory before touching the file system and hides host paths in errors.
+- `browser_handoff` takes its first round through the operation queue, and a refused or expired handoff no longer sends the next click to a background tab.
+- HTTP: `DELETE /leases/{id}` answers 500 when a release fails (cause through `onError`) and 404 for unknown leases. A failed body read keeps its cause. A failed `startBrowserMcpHttpServer()` closes only a manager it created. Closing continues past failures. Requests without a port are checked as port 80. Closing leases do not count against `maxLeases`. A failed compatibility initialize frees its session slot.
+- The manager and pool close every browser even when one fails, and a browser that fails to close no longer keeps its pool slot. Socket options and paths are validated before connecting or creating the temporary directory, and handshake errors keep their `cause`.
+- SDK transports are wrapped by an explicit decorator instead of being patched in place.
+
+### Tooling
+
+- Releases are published by a separate job that alone can request the npm OIDC token. It installs no dependencies and publishes, with `--ignore-scripts`, the tarball that the verification job built and tested.
+- The release gate depends only on the regression and platform workflows on the tagged commit. It ignores pull-request runs, and the Chromium preview never blocks a release.
+- The platform matrix tests Chrome for Testing one major version behind the current stable release, resolved at run time.
+- `@types/node` is pinned to 24.19.2, matching `engines: >=24.22.0`, so type checks no longer accept APIs from later Node.js majors.
+- `npm run test:mcp` runs every MCP unit test (`test/unit/mcp-*.test.ts`), including the action and state tests. The test map derives the public API from the package's entry points.
+- Soak runs fail when a forbidden command is attempted, and `status.json` is replaced atomically. `bench:compare` reports `coldStart` and `coldStartMasked`. The unused `example` script is removed.
+
 ## 0.6.1 — 2026-11-01
 
 - Unconfirmed composition cancellation blocks only its top-level page and child frames when all other cleanup and replies have settled and no managed keys/buttons remain held. Other pages keep using the connection. Only destruction of that top-level target clears its block; unknown ownership and other cleanup failures retain connection-wide blocking.
@@ -87,9 +178,7 @@ All notable changes are recorded here. The project follows [Semantic Versioning]
 - `Browser.launch()` accepts the same `trace` callback/boolean as `connect()`, including startup commands, duration, failures and cancellation.
 - Add `nodriver-ts/testing`: `ScriptedChrome` provides a strict loopback CDP peer with startup replies, real Browser/Tab/Session objects, typed scripts, command records, target events, crashes and disconnection.
 - Add `ProfileInUseError` for verified live controller/endpoint ownership and Windows Chrome's native `lockfile` sharing conflict, including browsers without a debugging port. Unlocked leftover files do not count as ownership; native Unix singleton inspection is not added.
-
 - Add opt-in `detached: true` WebSocket launch and `Browser.release()` for handing Chrome to a later process, including on Windows. Release returns the endpoint, drops process ownership and signal hooks, removes the controller profile lock, and retains the profile; later close/disposal only disconnects. Pipe handoff and host-dependent proxy contexts are rejected. Detached launch discards stderr and documents the pre-release crash window.
-
 - Without a `timeout`, `Browser.launch()` and `Browser.connect()` wait up to 30 seconds for Chrome to start or answer and complete the CDP handshake (was 15 s for launch, 10 s for connect and the WebSocket handshake). A first start on a fresh CI runner can exceed 15 seconds. The MCP server uses the same default for launching and for `--endpoint`, and its per-command deadline rises from 10 to 30 seconds; operations stay bounded by the operation deadline.
 
 ## 0.1.0 — 2026-10-20

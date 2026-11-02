@@ -28,7 +28,7 @@
 
 Worker 在**每个操作阶段重新采样**，以响应 ID 排除前一阶段迟到的数据。HTTP 请求与 navigator 按 run、上下文、阶段和文档生命周期匹配，不复用初始数据。连接组提供 WebSocket 同一文档的初始化对照。
 
-字段区分 `observed`、`unsupported`、`unavailable`、`not-observed`，不要求 Worker 拥有全部 Window API。loopback 属于安全上下文；JS Client Hints 可用性、高熵 Promise 和 HTTP hints 分开记录，后者受请求类型及 Accept-CH 协商影响。请求未携带某 hint 标为“未观测”，不等于 JS 不支持。请求头与各自 navigator 的比较保留这些边界。
+字段区分 `observed`、`unsupported`、`unavailable`、`not-observed`，不要求 Worker 拥有全部 Window API。loopback 属于安全上下文；JS Client Hints 可用性、高熵 Promise 和 HTTP hints 分开记录，后者受请求类型及 Accept-CH 协商影响。请求未携带某 hint 时标为 `not-observed`，不等于 JS 不支持。请求头与各自 navigator 的比较保留这些边界。
 
 域审计保留 session ID、实际 enable/disable 及会开启 DOM 结构事件的 `DOM.getDocument`。默认操作只发送 Page.enable 与 DOM.getDocument；其他 API 按需启用 CSS、Network 或 Accessibility。关闭本 run 所有的 session/进程完成清理，不盲目 disable 其他调用方使用中的域。主世界 objectId 校验与现代发现另外由 audit/compat 覆盖。
 

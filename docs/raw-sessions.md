@@ -101,7 +101,9 @@ This coordination covers managed presentation leases; do not mix direct `Page.st
 The report separates the lease lifecycle (`state`) from cleanup (`cleanup`). `state` describes
 whether the lease is active, stopped, timed out, failed or disconnected. `cleanup` is `pending`,
 `completed`, `timed-out`, `failed` or `disconnected`; `timed-out` means the lease ended while ACK
-work remained. `inFlightAcks` is the number of ACKs still outstanding when the report was closed,
+work remained. `reason` records why the lease ended; when `Page.stopScreencast` fails, `reason`
+keeps that cause, `state` is `failed` and the error is added to `cleanupErrors`.
+`inFlightAcks` is the number of ACKs still outstanding when the report was closed,
 and the report is a stable snapshot after `close()` resolves. The report also includes frames
 offered for acknowledgement, acknowledged frames, dropped frames, encoded bytes, ACK errors and
 cleanup errors. Screencast ACKs are reported separately from input actions. Background throttling
@@ -139,7 +141,13 @@ behavior is separate. A target can crash again; a new attachment is not a recove
 
 `detach()` closes the local lifetime synchronously, then awaits `Target.detachFromTarget`.
 Repeated calls share the same promise. A signal already aborted before the call leaves the
-session open; aborting after send does not reopen it and triggers independent cleanup.
+session open; aborting after send does not reopen it and triggers independent cleanup. If Chrome
+no longer has the attachment, `detach()` succeeds without another command.
+
+A root `Target.attachedToTarget` listener that calls `connection.session(id)` for an attachment
+that `attachSession()` is creating gets a plain `Session`. Once the attach completes, events go
+to the `TargetSession` that `attachSession()` returns, and the plain `Session` ends: `closed`
+is true, `closeReason` says why, and its commands reject.
 
 ## Cancelled attaches and bounded cleanup
 
@@ -198,7 +206,7 @@ For an ordinary response, `onResponse` runs before the asynchronous `onSettle` n
 Internal response processing and scheduling of cancelled-attach cleanup happen before `onResponse`.
 If a transport responds synchronously during a send, the cleanup send can still be queued;
 `pendingCount` includes it even before `unansweredCount` does.
-Existing `trace` callbacks still run on completion with their existing shape and stderr behavior.
+`trace` callbacks run on completion; their shape and stderr output are independent of observers.
 
 ### Unanswered commands and bounded waiting
 

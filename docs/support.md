@@ -20,9 +20,9 @@
 | Linux ARM64                | Chrome for Testing         |
 | macOS ARM64                | Chrome                     |
 
-Every push runs the source suites on Windows and Ubuntu with current Node.js 24, and the built-package checks on current Node.js 24 and on the minimum 24.22.0. The on-demand platform matrix (`.github/workflows/platforms.yml`) covers macOS ARM64, Linux ARM64, Edge on Windows and the previous Chrome major; each suite there runs once without retries. The [Chromium preview workflow](../.github/workflows/chromium-preview.yml) runs main-world discovery, lifecycle and differential checks against Chrome Beta, Dev and Canary. The tests that call each public API are listed in the [API test map](test-map.md).
+Every push runs the source suites on Windows and Ubuntu with current Node.js 24, and the built-package checks on current Node.js 24 and on the minimum 24.22.0; on macOS it runs the supervised lifecycle, input lifecycle and composition, and presentation lease tests, and the raw-session check of the built package. The on-demand platform matrix (`.github/workflows/platforms.yml`) covers macOS ARM64, Linux ARM64, Edge on Windows and Chrome for Testing one major version behind the current stable release; each suite there runs once without retries. The [Chromium preview workflow](../.github/workflows/chromium-preview.yml) runs main-world discovery, lifecycle and differential checks against Chrome Beta, Dev and Canary. The tests that call each public API are listed in the [API test map](test-map.md).
 
-The packed tarball is checked in an empty project: Node.js 24 imports every entry point, TypeScript 7.0.2 and 5.9.3 type-check it with `skipLibCheck: false` under both `nodenext` and `bundler` resolution, and `npx nodriver-mcp` runs. Long-running behavior is described in the [soak test](soak.md).
+Long-running behavior is described in the [soak test](soak.md).
 
 Callers can use `await using` or manage resources with `try/finally` and `close()`.
 
@@ -60,6 +60,7 @@ Integration tests use only local fixtures. Cross-site OOPIFs are built from 127.
 - **Network**: Fetch routing does not cover the browser's own traffic or separate Service Worker targets. HTTPS proxy certificates, IPv6 and complex DNS egress combinations are handled by proxy-chain, and this project does not cover every combination.
 - **Out of scope**: no built-in OpenCV, video encoding, automatic CAPTCHA or challenge handling, or screen layout detection; these can be built with typed CDP, page scripts or external adapters.
 - **MCP**: the HTTP service must be enabled explicitly and binds only to loopback; HTTP/socket enforce provisioned tokens and application leases. There is no remote untrusted multi-tenancy, no OAuth, and not every core capability is mapped to a tool. AX snapshots limit the output size, but the full AX tree is still read underneath. When you type and snapshot repeatedly on the same page, Chrome retains a little Blink memory (about 1 KB per iteration, released on navigation); see the [soak test](soak.md).
+- **Snap Chromium**: a snap has a private `/tmp`, so with WebSocket transport and a temporary profile in the system temp directory, launch times out waiting for `DevToolsActivePort`. Use Pipe, a `userDataDir` in a non-hidden directory under your home directory, or a build that is not a snap.
 - **Cleanup**: `await using`, `finally` and optional signal handling cannot guarantee prompt cleanup if the host is force-killed or loses power. Reconnecting never replays operations automatically.
 
 ## Running the checks

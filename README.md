@@ -19,7 +19,7 @@ nodriver-ts drives Chrome, Chromium and Edge directly over the Chrome DevTools P
 
 - Node.js ≥ 24.22.0 for package use, development and tests. Node runs the TypeScript sources directly.
 - A locally installed Chrome, Chromium or Edge. It is auto-detected on Windows, macOS and Linux, including on `PATH`; otherwise set `CHROME_PATH` or `executablePath`.
-- Chrome opens with a window by default (`headless: false`). Servers and CI without a display should pass `headless: true` / `--headless`. Run Linux as a normal user with Chrome's shared libraries installed; the library never adds `--no-sandbox`.
+- Chrome opens with a window by default (`headless: false`). Servers and CI without a display should pass `headless: true` / `--headless`. Run Linux as a normal user with Chrome's shared libraries installed; the library never adds `--no-sandbox`. On WSL, headful mode needs WSLg or another display server.
 
 Supported platforms are listed in [docs/support.md](docs/support.md).
 
@@ -60,9 +60,9 @@ try {
 - **Main world.** `evaluate` runs there by default (`{ world: 'isolated' }` is also available); functions are serialized into the page.
 - **Frames.** `tab.frames` lists every frame, including OOPIFs, and queries never cross frames silently.
 - **Browser contexts.** `browser.newContext({ proxy })` isolates cookies and storage per context, and supports authenticated HTTP(S) and SOCKS upstream proxies.
-- **Network.** `tab.network.route()` intercepts and fulfils requests, `authenticate()` answers auth challenges, and `responses` subscribes to responses. `Network.enable` is only sent when you subscribe to responses or set headers/cache/offline.
+- **Network.** `tab.network.route()` intercepts and fulfils requests, `authenticate()` answers auth challenges, and `responses` subscribes to responses. `Network.enable` is only sent when you subscribe to responses, call `enable()` or set headers/cache/offline.
 - **Input policy.** `tab.setInputPolicy({ mode: 'human', seed })` switches on reproducible trajectories, key-event typing for US-layout characters, and wheel scrolling. Other text, such as CJK or emoji, goes through `insertText`.
-- **Existing browsers.** `Browser.connect({ endpoint, attach: 'created' })` attaches only to tabs that this client opens or that they open (the default, `'all'`, attaches to every tab). `close()` only disconnects.
+- **Existing browsers.** `Browser.connect({ endpoint, attach: 'created' })` attaches only to tabs that this client opens or that they open (the default, `'all'`, attaches to every tab). `close()` only disconnects. A remote debugging endpoint gives full control of the browser, so restrict access to it.
 - **Raw sessions.** `attach: 'none'` discovers targets without creating Tabs. `attachSession()` gives independent sessions with explicit lifecycle, cancellation cleanup and send-time observation. See [raw sessions](docs/raw-sessions.md).
 - **CDP tracing.** Pass `trace: (entry) => ...` to `launch` or `connect` to collect method, session, duration, and error code. `trace: true` or `NODRIVER_TRACE=1` logs to stderr; parameters and results are never logged.
 - **Lifecycle diagnostics.** `browser.drain()` waits for late replies and attachment cleanup with distinct disconnect/timeout failures. Optional `observe.onPerformance` reports phase timings without payloads; see [raw sessions](docs/raw-sessions.md). [Startup diagnostics](docs/startup-diagnostics.md) expose failure stage, elapsed time and available process information.
@@ -103,7 +103,7 @@ nodriver-mcp --mcp-transport http --port 3100
 
 - **HTTP leases.** HTTP listens on loopback only. A client that omits `Browser-Lease-Id` uses the token's `default` lease. Any lease name made of letters, digits and `. _ -` creates a separate lease on first use, which lets several agents keep independent browser state. The lease id is echoed in the `Browser-Lease-Id` response header.
 - **Client requirements.** The default entrance requires MCP 2026-07-28 (`server/discover` with per-request metadata). With the official TypeScript client 2.3.1, pin `versionNegotiation: { mode: { pin: '2026-07-28' } }`. For 2025-11-25 / 2025-06-18 clients, add `--mcp-compat` to stdio arguments, or enable it on HTTP and connect to `/mcp/compat`. See [generic agent compatibility](docs/agent-compatibility.md) and [Pi 1.3.0](docs/pi.md).
-- **Browser launch.** Chrome starts lazily on the first `browser_open`, using the `agent` launch preset, which suppresses first-run and search-engine-choice UI and background throttling.
+- **Browser launch.** Chrome starts lazily on the first `browser_open`, using the `agent` launch preset, which suppresses first-run and search-engine-choice UI, the crash-restore bubble and background throttling, and sets `--password-store=basic` (on Linux, saved passwords and cookies use Chrome's built-in key instead of the system keyring; see [docs/mcp.md](docs/mcp.md)).
 
 Run `nodriver-mcp --help` for every flag. Some useful ones:
 
@@ -123,7 +123,7 @@ The 26 default tools are:
 
 Three tools are optional and appear only when their directory flag is set: `browser_upload`, `browser_downloads` and `browser_storage_state`.
 
-Action tools accept `waitFor: "auto" | "load" | "none"` and `snapshot: true`. They return what happened (`navigated`, `newTabs`, `dialog`, `tabClosed`), so the agent does not need an extra round-trip after each step.
+Action tools other than `browser_scroll` and `browser_dialog` accept `waitFor: "auto" | "load" | "none"` and `snapshot: true`. They return what happened (`navigated`, `newTabs`, `dialog`, `tabClosed`), so the agent does not need an extra round-trip after each step. An action interrupted by a JS dialog returns at once with `pending: true`; answer it with `browser_dialog`.
 
 The stdio, HTTP, socket and in-memory entry points share one tool implementation, lease manager and browser pool. More detail is in [docs/mcp.md](docs/mcp.md), [docs/mcp-http.md](docs/mcp-http.md) and [docs/mcp-socket.md](docs/mcp-socket.md).
 
