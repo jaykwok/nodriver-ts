@@ -4,10 +4,11 @@ import { test } from 'node:test';
 import { expect } from '../fixtures/expect.ts';
 import { Client, type CallToolResult } from '@modelcontextprotocol/client';
 import { InMemoryTransport } from '@modelcontextprotocol/server';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { access, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createBrowserMcpServer } from '../../src/mcp/server.ts';
+import { BrowserSessionManager } from '../../src/mcp/manager.ts';
 import { fixtureServer } from '../fixtures/server.ts';
 
 for (const transport of ['pipe', 'websocket'] as const)
@@ -98,6 +99,8 @@ for (const transport of ['pipe', 'websocket'] as const)
       await evaluate('localStorage.setItem("review", "saved");');
       const saved = await call('browser_storage_state', { action: 'save', name: 'login' });
       expect(saved.origins).toBe(1);
+      // A server without an authenticated principal keeps its names under "private".
+      await access(join(directory, 'private', 'login.json'));
       await evaluate('localStorage.clear();');
       await call('browser_storage_state', { action: 'load', name: 'login' });
       await evaluate(
@@ -110,6 +113,112 @@ for (const transport of ['pipe', 'websocket'] as const)
       await rm(directory, { recursive: true, force: true });
     }
   });
+
+test('MCP snapshots mask a password field whose other attributes mention "type"', async () => {
+  const site = await serve({
+    hostname: '127.0.0.1',
+    fetch: () =>
+      new Response(
+        `<!doctype html><title>Forms</title>
+<input aria-label="secret" name="type" type="password" value="hunter2">
+<input aria-label="reversed" type="password" name="type" value="swordfish">
+<input aria-label="visible" name="type" value="plain-value">`,
+        { headers: { 'content-type': 'text/html' } },
+      ),
+  });
+  const server = createBrowserMcpServer({
+    launch: { headless: process.env.NODRIVER_HEADFUL !== '1', transport: 'pipe' },
+  });
+  const client = new Client(
+    { name: 'masks', version: '1' },
+    { versionNegotiation: { mode: { pin: '2026-07-28' } } },
+  );
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  try {
+    await server.connect(b);
+    await client.connect(a);
+    const opened = (await client.callTool({
+      name: 'browser_open',
+      arguments: { url: `http://127.0.0.1:${site.port}/` },
+    })) as CallToolResult;
+    const { tabId } = opened.structuredContent as { tabId: string };
+    const snapshot = (await client.callTool({
+      name: 'browser_snapshot',
+      arguments: { tabId, interactiveOnly: true },
+    })) as CallToolResult;
+    const text = JSON.stringify(snapshot);
+    expect(text).not.toContain('hunter2');
+    expect(text).not.toContain('swordfish');
+    expect(text).toContain('plain-value');
+    const { nodes } = snapshot.structuredContent as {
+      nodes: Array<{ name: string; value?: string }>;
+    };
+    expect(nodes.find((node) => node.name === 'secret')?.value).toBe('••••');
+    expect(nodes.find((node) => node.name === 'reversed')?.value).toBe('••••');
+  } finally {
+    await client.close();
+    await server.close();
+    await site.stop();
+  }
+});
+
+test('MCP storage state names belong to the authenticated principal', async () => {
+  const fixture = await fixtureServer();
+  const directory = await mkdtemp(join(tmpdir(), 'nodriver-mcp-principals-'));
+  const manager = new BrowserSessionManager({
+    launch: { headless: process.env.NODRIVER_HEADFUL !== '1', transport: 'pipe' },
+    stateDir: directory,
+  });
+  const clients: Client[] = [];
+  const connect = async (principal: string) => {
+    const { id } = manager.create(principal);
+    const server = createBrowserMcpServer({}, { manager, principal, leaseId: id });
+    const client = new Client(
+      { name: principal, version: '1' },
+      { versionNegotiation: { mode: { pin: '2026-07-28' } } },
+    );
+    clients.push(client);
+    const [a, b] = InMemoryTransport.createLinkedPair();
+    await server.connect(b);
+    await client.connect(a);
+    const tool = (name: string, args: Record<string, unknown> = {}) =>
+      client.callTool({ name, arguments: args }) as Promise<CallToolResult>;
+    const { tabId } = (await tool('browser_open', { url: fixture.base + '/mcp' }))
+      .structuredContent as { tabId: string };
+    const evaluate = async (script: string) =>
+      ((await tool('browser_evaluate', { tabId, script })).structuredContent as { value: unknown })
+        .value;
+    return { tool, evaluate };
+  };
+  try {
+    const alice = await connect('alice'),
+      bob = await connect('bob');
+    await alice.evaluate('localStorage.setItem("owner", "alice");');
+    expect(
+      (await alice.tool('browser_storage_state', { action: 'save', name: 'login' })).isError,
+    ).toBeFalsy();
+    await access(join(directory, 'alice', 'login.json'));
+    const refused = await bob.tool('browser_storage_state', { action: 'load', name: 'login' });
+    expect(refused.isError).toBe(true);
+    expect(refused.structuredContent).toMatchObject({ message: 'No saved state named login' });
+    expect(await bob.evaluate('return localStorage.getItem("owner");')).toBeNull();
+
+    // Both may use the same name without touching each other's state.
+    await bob.evaluate('localStorage.setItem("owner", "bob");');
+    await bob.tool('browser_storage_state', { action: 'save', name: 'login' });
+    await alice.evaluate('localStorage.clear();');
+    await alice.tool('browser_storage_state', { action: 'load', name: 'login' });
+    expect(await alice.evaluate('return localStorage.getItem("owner");')).toBe('alice');
+    await bob.evaluate('localStorage.clear();');
+    await bob.tool('browser_storage_state', { action: 'load', name: 'login' });
+    expect(await bob.evaluate('return localStorage.getItem("owner");')).toBe('bob');
+  } finally {
+    for (const client of clients) await client.close();
+    await manager.close();
+    await fixture.server.stop();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 test('MCP download wait runs beside the triggering click, before or after it', async () => {
   const attachment = { 'content-disposition': 'attachment; filename=f.txt' };

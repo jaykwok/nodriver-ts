@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { realpath } from 'node:fs/promises';
-import { isAbsolute, join, relative, resolve } from 'node:path';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { Protocol } from 'devtools-protocol';
 import { Browser, type ConnectOptions } from '../browser/browser.ts';
 import type { BrowserContext } from '../browser/context.ts';
@@ -40,11 +40,17 @@ export interface BrowserMcpOptions {
   uploadDir?: string;
   /** Enables browser_downloads; downloads are saved here under their GUID. */
   downloadDir?: string;
-  /** Enables browser_storage_state; named JSON files live here and never reach the model. */
+  /**
+   * Enables browser_storage_state. Named JSON files live in a subdirectory per principal and
+   * never reach the model.
+   */
   stateDir?: string;
   /** Tool names that are not registered. */
   disabledTools?: string[];
-  /** Registers only observation and navigation tools (no input, scripts, uploads or state). */
+  /**
+   * Registers only observation, navigation and tab or browser lifecycle tools (no input, scripts,
+   * uploads or state).
+   */
   readOnly?: boolean;
 }
 interface SessionOptions extends BrowserMcpOptions {
@@ -125,6 +131,7 @@ const STATES = [
 ];
 const VALUED = new Set(['textbox', 'searchbox', 'combobox', 'spinbutton', 'slider']);
 const MAX_REFS = 2000;
+const MAX_SNAPSHOT_NODES = 20_000;
 const quote = (text: string) => JSON.stringify(text);
 
 /** One browser and short-ref registry per MCP connection or lease. */
@@ -143,7 +150,13 @@ export class BrowserMcpSession {
   private unwatch?: () => void;
   readonly changes = new EventHub<void>();
   private sequence = 0;
-  private events: Array<{ sequence: number; type: string; tabId?: string; time: number }> = [];
+  private events: Array<{
+    sequence: number;
+    type: string;
+    tabId?: string;
+    time: number;
+    error?: string;
+  }> = [];
   private handoffs = new Map<string, { tabId: string; expires: number; completed: boolean }>();
   private downloads: DownloadEntry[] = [];
   private downloadSequence = 0;
@@ -155,6 +168,8 @@ export class BrowserMcpSession {
     this.options = options;
     if (options.launch && options.connect)
       throw new TypeError('Choose launch or connect, not both');
+    if (options.connect && !options.acquire)
+      throw new TypeError('Connecting to a browser requires a browser pool');
     this.queue = new OperationQueue(options.queueLimit ?? 32);
   }
   private track<T>(task: Promise<T>): Promise<T> {
@@ -162,8 +177,14 @@ export class BrowserMcpSession {
     void task.finally(() => this.tasks.delete(task)).catch(() => {});
     return task;
   }
-  changed(type = 'state', tabId?: string): void {
-    this.events.push({ sequence: ++this.sequence, type, tabId, time: Date.now() });
+  changed(type: string, tabId?: string, error?: string): void {
+    this.events.push({
+      sequence: ++this.sequence,
+      type,
+      tabId,
+      time: Date.now(),
+      ...(error === undefined ? {} : { error }),
+    });
     if (this.events.length > 64) this.events.shift();
     this.changes.emit();
   }
@@ -173,25 +194,29 @@ export class BrowserMcpSession {
   run<T>(signal: AbortSignal, task: (signal: AbortSignal) => Promise<T>, open = false): Promise<T> {
     const controller = new AbortController();
     const timer = setTimeout(
-      () => controller.abort(new Error('Browser operation deadline exceeded')),
+      () => controller.abort(new TimeoutError('Browser operation deadline exceeded')),
       this.options.operationTimeout ?? 30000,
     );
     const combined = AbortSignal.any([signal, this.lifetime.signal, controller.signal]);
-    const result = this.queue.run(combined, async () => {
-      combined.throwIfAborted();
-      if (open) await this.getBrowser(combined);
-      // All leases sharing a process coordinate browser focus/input together.
-      const invoke = () => task(combined);
-      return this.allocation ? this.allocation.queue.run(combined, invoke) : invoke();
-    });
     // Never release serialization early when a cancelled operation may still
     // be finishing an input sequence. Commands already sent cannot be undone.
-    return this.track(
-      result.finally(() => {
+    // The deadline also bounds an action that act() left running behind its result.
+    const result = this.queue.run(
+      combined,
+      async () => {
+        combined.throwIfAborted();
+        if (open) await this.getBrowser(combined);
+        // All leases sharing a process coordinate browser focus/input together.
+        const invoke = () => task(combined);
+        return this.allocation ? this.allocation.queue.run(combined, invoke) : invoke();
+      },
+      () => {
         clearTimeout(timer);
-        this.changed();
-      }),
+        this.changes.emit();
+      },
     );
+    this.changes.emit();
+    return this.track(result);
   }
   interrupt<T>(signal: AbortSignal, task: (signal: AbortSignal) => Promise<T>): Promise<T> {
     const combined = AbortSignal.any([signal, this.lifetime.signal]);
@@ -215,14 +240,7 @@ export class BrowserMcpSession {
           this.allocation = allocation;
           return allocation.browser;
         })
-      : this.options.connect
-        ? Browser.connect({
-            ...this.options.connect,
-            attach:
-              this.options.connect.attach ?? (this.options.exposeExistingTabs ? 'all' : 'created'),
-            signal: combined,
-          })
-        : Browser.launch({ ...this.options.launch, signal: combined });
+      : Browser.launch({ ...this.options.launch, signal: combined });
     this.opening = opening;
     try {
       const browser = await opening;
@@ -315,7 +333,7 @@ export class BrowserMcpSession {
     return tab;
   }
   beginHandoff(tabId: string): string {
-    const tab = this.tab(tabId);
+    this.tab(tabId);
     if (!this.options.humanInteraction && this.options.launch?.headless !== false)
       throw new Error('Human interaction requires an explicitly accessible browser UI');
     for (const [id, handoff] of this.handoffs)
@@ -323,26 +341,32 @@ export class BrowserMcpSession {
     if (this.handoffs.size >= 64) throw new Error('Handoff capacity reached');
     const id = randomUUID();
     this.handoffs.set(id, { tabId, expires: Date.now() + 300000, completed: false });
-    // The user may switch tabs or windows; never assume this client still owns the front tab.
-    tab.browser.frontTab = undefined;
     return id;
   }
   handoff(token: string, tabId: string, complete = false) {
     const state = this.handoffs.get(token);
     if (!state || state.tabId !== tabId || state.expires < Date.now())
       throw new Error('Invalid or expired handoff state');
-    if (complete) {
-      state.completed = true;
-      this.tab(tabId).browser.frontTab = undefined;
-    }
+    if (complete) state.completed = true;
     return state;
   }
+  /** During a handoff the user may switch tabs or windows; no tab counts as known to be in front. */
+  forgetFrontTab(): void {
+    if (this.browser) this.browser.frontTab = undefined;
+  }
   tabInfo(tab: Tab) {
+    const input = tab.inputBehavior.lastReport;
     return {
       tabId: tab.id,
       url: tab.url,
       inputPolicy: structuredClone(tab.inputBehavior.policy),
-      lastInput: tab.inputBehavior.lastReport,
+      lastInput: input && {
+        action: input.action,
+        status: input.status,
+        events: input.events,
+        completedSegments: input.completedSegments,
+        cleanup: input.cleanup,
+      },
       dialog: this.dialogs.get(tab.id) ?? null,
       frames: tab.frames.map((f) => ({
         frameId: f.id,
@@ -368,9 +392,10 @@ export class BrowserMcpSession {
   addRef(element: Element): string {
     const key = `${element.frame.tab.id}|${element.frame.id}|${element.session.id ?? ''}|${element.generation}|${element.backendNodeId}`;
     const existing = this.refKeys.get(key);
-    if (existing && this.refs.has(existing)) return existing;
+    if (existing && this.touch(existing)) return existing;
     if (this.refs.size >= MAX_REFS) this.prune();
-    // Bound retained backend references; no remote JS objects are kept here.
+    // Bound retained backend references, evicting the least recently used; no remote JS objects
+    // are kept here.
     while (this.refs.size >= MAX_REFS) {
       const [oldest, record] = this.refs.entries().next().value!;
       this.refs.delete(oldest);
@@ -387,7 +412,16 @@ export class BrowserMcpSession {
     if (!element || element.frame.tab.id !== tabId)
       throw new StaleElementError('Unknown or expired ref; take a fresh snapshot or find');
     element.assertValid();
+    this.touch(ref);
     return element;
+  }
+  /** Marks a ref as most recently used; false when it no longer exists. */
+  private touch(ref: string): boolean {
+    const record = this.refs.get(ref);
+    if (!record) return false;
+    this.refs.delete(ref);
+    this.refs.set(ref, record);
+    return true;
   }
   private prune() {
     for (const [ref, { element, key }] of this.refs) {
@@ -454,10 +488,15 @@ export class BrowserMcpSession {
       throw new StaleElementError('root ref is not in the accessibility tree');
     const out: Array<{ node: Protocol.Accessibility.AXNode; depth: number }> = [];
     const seen = new Set<string>();
+    let capped = false;
     const property = (node: Protocol.Accessibility.AXNode, name: string) =>
       node.properties?.find((p) => p.name === name)?.value.value;
     const visit = (node: Protocol.Accessibility.AXNode, depth: number, parentName: string) => {
-      if (seen.has(node.nodeId) || out.length > 20_000) return;
+      if (seen.has(node.nodeId)) return;
+      if (out.length >= MAX_SNAPSHOT_NODES) {
+        capped = true;
+        return;
+      }
       seen.add(node.nodeId);
       const role = String(node.role?.value ?? '');
       const name = String(node.name?.value ?? '');
@@ -502,9 +541,12 @@ export class BrowserMcpSession {
           const { node: dom } = await session
             .send('DOM.describeNode', { backendNodeId: node.backendDOMNodeId })
             .catch(() => ({ node: undefined }));
+          // A flat [name, value, ...] list: a value may equal an attribute name.
           const attributes = dom?.attributes ?? [];
-          const type = attributes[attributes.indexOf('type') + 1]?.toLowerCase();
-          const secret = !dom || (attributes.includes('type') && type === 'password');
+          let type: string | undefined;
+          for (let i = 0; i < attributes.length && type === undefined; i += 2)
+            if (attributes[i] === 'type') type = attributes[i + 1]?.toLowerCase();
+          const secret = !dom || type === 'password';
           item.value = secret ? '••••' : String(value).slice(0, 500);
         }
         return item;
@@ -519,9 +561,11 @@ export class BrowserMcpSession {
       generation,
       nodes: items,
       offset,
-      truncated: next < out.length,
+      truncated: next < out.length || capped,
       nextOffset: next < out.length ? next : null,
       totalNodes: out.length,
+      /** Traversal stopped at the node limit; totalNodes and paging end there. */
+      capped,
     };
   }
   /** Indented, model-friendly rendering of snapshot() output. */
@@ -546,9 +590,13 @@ export class BrowserMcpSession {
       lines.push(
         `Other frames (snapshot with frameId): ${others.map((f) => `${f.frameId} ${f.url}`).join('; ')}`,
       );
-    if (snapshot.truncated)
+    if (snapshot.nextOffset !== null)
       lines.push(
-        `[${snapshot.offset + snapshot.nodes.length} of ${snapshot.totalNodes} nodes; continue with offset=${snapshot.nextOffset}]`,
+        `[${snapshot.offset + snapshot.nodes.length} of ${snapshot.totalNodes}${snapshot.capped ? '+' : ''} nodes; continue with offset=${snapshot.nextOffset}]`,
+      );
+    else if (snapshot.capped)
+      lines.push(
+        `[Stopped at the limit of ${snapshot.totalNodes} nodes; snapshot a root element or another frame for the rest]`,
       );
     return lines.join('\n');
   }
@@ -556,12 +604,19 @@ export class BrowserMcpSession {
    * Runs an action, then optionally waits for a navigation it started: "auto" allows 250 ms
    * for the main frame to start loading, "load" expects one within the timeout. A JS dialog
    * ends the wait. Returns what changed so the agent need not re-observe blindly.
+   *
+   * Chrome holds the replies to an action's input while a dialog is open, so an action still
+   * running when one is open returns at once: no result, `pending: true`, and the action keeps
+   * the queues until it settles (see settleInBackground). browser_dialog bypasses them.
    */
   async act<T>(
     tab: Tab,
     options: { waitFor: WaitFor; timeout: number; signal: AbortSignal },
     action: () => Promise<T>,
-  ): Promise<{ result: T; summary: ReturnType<BrowserMcpSession['summary']> }> {
+  ): Promise<{
+    result?: T;
+    summary: ReturnType<BrowserMcpSession['summary']> & { pending?: boolean };
+  }> {
     const before = {
       url: tab.url,
       generation: tab.mainFrame.generation,
@@ -569,9 +624,15 @@ export class BrowserMcpSession {
       tabs: new Set(this.tabs().map((t) => t.id)),
     };
     let started = false,
-      stopped = false;
+      stopped = false,
+      dialogOpened!: () => void;
+    const dialog = new Promise<undefined>((resolve) => {
+      dialogOpened = () => resolve(undefined);
+    });
+    if (this.dialogs.has(tab.id)) dialogOpened();
     const end = performance.now() + options.timeout;
     const offs = [
+      tab.session.on('Page.javascriptDialogOpening', () => dialogOpened()),
       tab.session.on('Page.frameStartedLoading', (e) => {
         if (e.frameId === tab.mainFrame.id) {
           started = true;
@@ -589,12 +650,23 @@ export class BrowserMcpSession {
       }),
     ];
     try {
-      const result = await action();
+      const running = action();
+      const finished = await Promise.race([running.then((result) => ({ result })), dialog]);
+      if (!finished) {
+        this.settleInBackground(tab.id, running);
+        return { summary: { ...this.summary(tab, before, started && !stopped), pending: true } };
+      }
       if (options.waitFor !== 'none') {
         const begin = performance.now();
         const grace = options.waitFor === 'auto' ? Math.min(begin + 250, end) : end;
         while (!tab.closed && !this.dialogs.has(tab.id)) {
-          options.signal.throwIfAborted();
+          if (options.signal.aborted) {
+            const cause = abortReason(options.signal);
+            throw new TimeoutError(
+              `Action completed, but the wait for its navigation stopped: ${String(cause)}; the action was not replayed`,
+              { cause },
+            );
+          }
           const now = performance.now();
           if (started && stopped) break;
           if (now >= end && (started || options.waitFor === 'load'))
@@ -602,13 +674,34 @@ export class BrowserMcpSession {
               `Action completed, but navigation ${started ? 'did not finish' : 'did not start'} within ${options.timeout}ms; the action was not replayed`,
             );
           if (!started && now >= grace) break;
-          await delay(Math.max(0, Math.min(25, (started ? end : grace) - now)), options.signal);
+          // An abort ends the delay; the next iteration reports it.
+          await delay(
+            Math.max(0, Math.min(25, (started ? end : grace) - now)),
+            options.signal,
+          ).catch(() => {});
         }
       }
-      return { result, summary: this.summary(tab, before, started && !stopped) };
+      return { ...finished, summary: this.summary(tab, before, started && !stopped) };
     } finally {
       for (const off of offs) off();
     }
+  }
+  /**
+   * The caller already has its result: this operation's queue slots stay taken until the action
+   * settles, which its own deadline and signal bound. Its outcome reaches the event log.
+   */
+  private settleInBackground(tabId: string, running: Promise<unknown>): void {
+    const settled = running.then(
+      () => this.changed('action-completed', tabId),
+      (error: unknown) =>
+        this.changed(
+          'action-failed',
+          tabId,
+          (error instanceof Error ? error.message : String(error)).slice(0, 2000),
+        ),
+    );
+    this.queue.hold(settled);
+    this.allocation?.queue.hold(settled);
   }
   private summary(
     tab: Tab,
@@ -636,16 +729,26 @@ export class BrowserMcpSession {
   async uploadPaths(files: string[]): Promise<string[]> {
     const base = this.options.uploadDir;
     if (!base) throw new Error('Uploads are disabled; the host must configure an upload directory');
-    const root = await realpath(resolve(base));
+    const root = await realpath(resolve(base)).catch((cause: unknown) => {
+      throw new Error('The upload directory is not available', { cause });
+    });
+    const outside = (path: string) => {
+      const inside = relative(root, path);
+      return !inside || inside === '..' || inside.startsWith(`..${sep}`) || isAbsolute(inside);
+    };
     return Promise.all(
       files.map(async (file) => {
         if (isAbsolute(file))
           throw new TypeError('Use a file name relative to the upload directory');
-        const path = await realpath(join(root, file));
-        const inside = relative(root, path);
-        if (!inside || inside.startsWith('..') || isAbsolute(inside))
-          throw new TypeError(`File is outside the upload directory: ${file}`);
-        return path;
+        // Refused before the file system is asked, so a probe cannot tell what exists out there.
+        const path = join(root, file);
+        if (outside(path)) throw new TypeError(`File is outside the upload directory: ${file}`);
+        // File system messages name absolute host paths.
+        const real = await realpath(path).catch((cause: unknown) => {
+          throw new Error(`Cannot read upload file: ${file}`, { cause });
+        });
+        if (outside(real)) throw new TypeError(`File is outside the upload directory: ${file}`);
+        return real;
       }),
     );
   }
@@ -702,20 +805,23 @@ export class BrowserMcpSession {
     );
     return entry!;
   }
-  /** Opt-in per-tab ring buffer of recent responses (enables the Network domain). */
-  async capture(tabId: string, action: 'start' | 'stop' | 'clear'): Promise<void> {
+  /**
+   * Opt-in per-tab ring buffer of recent responses. Starting it enables the Network domain, which
+   * stays enabled for the tab's lifetime; stop ends only the recording. Returns whether it records.
+   */
+  async capture(tabId: string, action: 'start' | 'stop' | 'clear'): Promise<boolean> {
     const tab = this.tab(tabId);
     const existing = this.captures.get(tabId);
     if (action === 'clear') {
       if (existing) existing.entries.length = 0;
-      return;
+      return !!existing;
     }
     if (action === 'stop') {
       existing?.off();
       this.captures.delete(tabId);
-      return;
+      return false;
     }
-    if (existing) return;
+    if (existing) return true;
     const entries: NetworkEntry[] = [];
     const off = tab.network.responses.on(({ event }) => {
       entries.push({
@@ -736,6 +842,7 @@ export class BrowserMcpSession {
       this.captures.delete(tabId);
       throw error;
     }
+    return true;
   }
   captured(tabId: string, filter: string | undefined, limit: number) {
     this.tab(tabId);

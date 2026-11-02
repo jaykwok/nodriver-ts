@@ -2,7 +2,7 @@
 
 [English](../mcp-socket.md)
 
-`--mcp-transport socket` 或 `nodriver-ts/mcp/socket` 提供常驻的本地 IPC 服务：Linux 使用 Unix domain socket，Windows 使用本机命名管道。它与其他接入共用 26 个默认工具、应用租约、浏览器池、资源和取消行为，仅支持 MCP 2026-07-28。这是需要配套客户端的自定义传输；普通 MCP 客户端请使用 stdio 或 HTTP。
+`--mcp-transport socket` 或 `nodriver-ts/mcp/socket` 提供常驻的本地 IPC 服务：Linux 和 macOS 使用 Unix domain socket，Windows 使用本机命名管道。它与其他接入共用 26 个默认工具、应用租约、浏览器池、资源和取消行为，仅支持 MCP 2026-07-28。这是需要配套客户端的自定义传输；普通 MCP 客户端请使用 stdio 或 HTTP。
 
 服务使用官方 SDK 的 `serveStdio(factory, { transport, legacy: 'reject' })` 与 `StdioServerTransport`，复用其 UTF-8 NDJSON 分帧、协议发现、订阅和取消。分帧方式参见 [MCP 自定义传输](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports)，路径格式参见 [Node IPC](https://nodejs.org/api/net.html#ipc-support)。
 
@@ -15,9 +15,9 @@ npm run build
 node dist/mcp/cli.js --mcp-transport socket
 ```
 
-服务在前台运行，实际路径写 stderr，stdout 不输出日志或认证信息。默认生成随机路径；`--socket-path PATH` 可指定 Linux 上已有私有目录中的绝对路径，或 Windows 本机的 `\\.\pipe\nodriver-NAME`。`--token-env` 修改令牌所在的环境变量名，Chrome 启动参数与 [MCP](mcp.md) 相同。
+服务在前台运行，实际路径写 stderr，stdout 不输出日志或认证信息。默认生成随机路径；`--socket-path PATH` 可指定 Linux 和 macOS 上已有私有目录中的绝对路径，或 Windows 本机的 `\\.\pipe\nodriver-NAME`。`--token-env` 修改令牌所在的环境变量名，Chrome 启动参数与 [MCP](mcp.md) 相同。
 
-- **Linux**：父目录必须属于运行用户、没有组或其他用户权限且不是符号链接；socket 权限为 0600。默认临时目录为 0700，关闭后删除。路径最多 100 个 UTF-8 字节；已存在的文件或 socket 一律拒绝替换，崩溃残留需调用者核实后处理。
+- **Linux 和 macOS**：父目录必须属于运行用户、没有组或其他用户权限且不是符号链接；socket 权限为 0600。默认临时目录为 0700，关闭后删除。路径最多 100 个 UTF-8 字节；已存在的文件或 socket 一律拒绝替换，崩溃残留需调用者核实后处理。
 - **Windows**：只接受 `\\.\pipe\nodriver-` 前缀的本机路径，不接受远程管道。使用系统默认的管道 ACL 并额外强制令牌认证，不提供跨用户沙箱。
 
 关闭是幂等的：listen 失败时不重复关闭未监听的端点，已销毁的 socket 不再次销毁。
@@ -74,6 +74,6 @@ try {
 | 8 MiB            | 客户端响应接收上限            |
 | 30 秒 / 30 分钟  | 浏览器操作期限 / 租约闲置回收 |
 
-重复的在途请求 ID、超出容量、非法 NDJSON 和过慢的写入都会关闭连接。除协议通知外，不向流中写入任意 CDP 事件。
+重复的在途请求 ID、超出容量、不是 JSON-RPC 消息的 JSON 行和过慢的写入都会关闭连接；不是合法 JSON 的行会被跳过。除协议通知外，不向流中写入任意 CDP 事件。
 
 取消使用 `notifications/cancelled`，连接 EOF 会中断该连接的全部请求。已产生的副作用不能撤销，不同连接仍由同一浏览器写队列协调。资源更新由 SDK 的 `subscriptions/listen` 过滤，不支持旧的 `resources/subscribe`。通知与同批响应按接收顺序分派，确保 SDK 的异步进度回调在请求完成前处理。

@@ -15,6 +15,8 @@ interface Entry {
   lastUsed: number;
   queue: OperationQueue;
 }
+/** A blocked connection refuses managed input, so it gets no new allocations. */
+const unusable = ({ browser }: Entry) => browser.closed || !!browser.input.blocked;
 
 export class BrowserPool {
   private entries = new Set<Entry>();
@@ -61,12 +63,12 @@ export class BrowserPool {
     return this.gate.run(signal, async () => {
       if (this.closed) throw new Error('Browser pool closed');
       for (const entry of this.entries)
-        if (entry.browser.closed && !entry.users) {
-          await entry.browser.close();
+        if (unusable(entry) && !entry.users) {
           this.entries.delete(entry);
+          await entry.browser.close();
         }
       let entry = [...this.entries].find(
-        (e) => !e.browser.closed && e.users < (this.exclusive ? 1 : this.contextsPerBrowser),
+        (e) => !unusable(e) && e.users < (this.exclusive ? 1 : this.contextsPerBrowser),
       );
       if (!entry) {
         // A persistent profile or external connection has a single process owner.
@@ -105,12 +107,16 @@ export class BrowserPool {
           try {
             await context?.close();
           } finally {
-            if (this.exclusive || selected.browser.closed) {
-              await selected.browser.close();
-              this.entries.delete(selected);
-            }
             selected.users--;
             selected.lastUsed = Date.now();
+            if (
+              this.exclusive ||
+              selected.browser.closed ||
+              (unusable(selected) && !selected.users)
+            ) {
+              this.entries.delete(selected);
+              await selected.browser.close();
+            }
           }
         },
       };
@@ -135,8 +141,11 @@ export class BrowserPool {
   async close(): Promise<void> {
     this.closed = true;
     await this.gate.run(new AbortController().signal, async () => {
-      await Promise.all([...this.entries].map((e) => e.browser.close()));
+      const entries = [...this.entries];
       this.entries.clear();
+      const closed = await Promise.allSettled(entries.map((e) => e.browser.close()));
+      const failed = closed.find((result) => result.status === 'rejected');
+      if (failed) throw failed.reason;
     });
   }
 }

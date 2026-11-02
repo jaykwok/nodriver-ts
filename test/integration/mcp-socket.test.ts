@@ -200,9 +200,11 @@ for (const version of ['2026-07-28'])
       await poll(async () => (updates > 0 ? true : undefined), { timeout: 2000 });
       await poll(async () => (progress.length === 3 ? true : undefined), { timeout: 2000 });
       expect(progress).toEqual([0, 1, 2]);
+      // Updates are coalesced: let the last one of this client's own call arrive.
+      await sleep(60);
       const before = updates;
       await call(other.client, 'browser_open');
-      await sleep(50);
+      await sleep(60);
       expect(updates).toBe(before);
       await subscription?.close();
     } finally {

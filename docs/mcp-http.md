@@ -25,7 +25,7 @@ The simplest setup configures only Authorization. A request without `Browser-Lea
 | Unknown or expired random ID         | 404                        |
 | Non-POST requests such as GET/DELETE | Look up only, never create |
 
-Every `/mcp` response carries a `Browser-Lease-Id` response header with the actual lease ID. When embedding, `requireLeaseHeader: true` makes the header mandatory.
+Every `/mcp` response for a resolved lease carries a `Browser-Lease-Id` response header with the actual lease ID. When embedding, `requireLeaseHeader: true` makes the request header mandatory; its value is a lease name or ID either way.
 
 You can also create a lease with a random ID explicitly, using the same Bearer token:
 
@@ -37,7 +37,7 @@ Content-Type: application/json
 {}
 ```
 
-The 201 response contains the random `id`, the verified principal, the creation time and the last-used time. The request body must be an empty object; it cannot choose a profile, an identity or browser launch options. The management API also has `GET /leases` (lists only this identity's leases) and `DELETE /leases/{id}` (releases the whole lease). These are application APIs, not MCP methods. With a random ID, configure the client's `/mcp` connection with:
+The 201 response contains the random `id`, the verified principal, the creation time and the last-used time. The request body must be an empty object; it cannot choose a profile, an identity or browser launch options. The management API also has `GET /leases` (lists only this identity's leases) and `DELETE /leases/{id}` (releases the whole lease: 204, 404 for an unknown or unauthorized lease, or 500 when closing its browser state fails, with the cause reported through `onError`). These are application APIs, not MCP methods. With a random ID, configure the client's `/mcp` connection with:
 
 ```text
 Authorization: Bearer <secret>
@@ -87,7 +87,7 @@ const service = await startBrowserMcpHttpServer({
 // On exit: await service.close();
 ```
 
-The mapping from tokens to principals comes from the host's trusted configuration; clients cannot choose it. `createBrowserMcpHttpService()` provides the same fetch/close interface for a host to mount, and the host must keep the loopback and exact-authority restrictions. When a manager is injected, `service.close()` closes that manager too, so it should be owned by a single application service.
+The mapping from tokens to principals comes from the host's trusted configuration; clients cannot choose it. `createBrowserMcpHttpService()` provides the same fetch/close interface for a host to mount, and the host must keep the loopback and exact-authority restrictions. When a manager is injected, `service.close()` closes that manager too, so it should be owned by a single application service; a `startBrowserMcpHttpServer()` call that fails to listen leaves an injected manager open.
 
 `BrowserSessionManager` is exported from `nodriver-ts/mcp` and can also be used with stdio or InMemory:
 
@@ -129,7 +129,7 @@ A dropped SSE stream cancels its request, but does not release the lease or affe
 
 ## Resources, progress and human interaction
 
-Two standard resources contain only the current lease's information. `browser://state` holds the tabs, frames, dialogs, owning context, queue and ref counts. `browser://events` keeps the most recent 64 ordered state events (navigation, tabs, dialogs, downloads and so on); it is not a full DOM or network event bus. Subscriptions select URIs through resourceSubscriptions in `subscriptions/listen`; the old `resources/subscribe` and GET SSE are not supported. Each lease has its own notification bus, and state changes are coalesced before notifying. After a disconnect, read the latest resources; evicted events are not guaranteed to be backfilled.
+Two standard resources contain only the current lease's information. `browser://state` holds the tabs, frames, dialogs, owning context, queue and ref counts. `browser://events` keeps the most recent 64 ordered state events (navigation, tabs, dialogs, downloads, the outcome of an action a dialog left pending and so on); it is not a full DOM or network event bus. Subscriptions select URIs through resourceSubscriptions in `subscriptions/listen`; the old `resources/subscribe` and GET SSE are not supported. Each lease has its own notification bus, and state changes are coalesced before notifying. After a disconnect, read the latest resources; evicted events are not guaranteed to be backfilled.
 
 When a request carries a progressToken, tools send three stages in order: Queued, Running and Completed. Auto mode upgrades to SSE when it needs to notify; forced JSON mode omits intermediate notifications, as the SDK defines. Progress only indicates the stage, not a completion percentage or response latency.
 

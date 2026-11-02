@@ -25,7 +25,7 @@ node dist/mcp/cli.js --mcp-transport http --port 3100 --browser-transport pipe
 | 未知或已过期的随机 ID     | 404            |
 | GET/DELETE 等非 POST 请求 | 只查找，不创建 |
 
-每个 `/mcp` 响应都带 `Browser-Lease-Id` 响应头，值为实际租约 ID。嵌入时设 `requireLeaseHeader: true` 可强制要求该 Header。
+已解析到租约的 `/mcp` 响应都带 `Browser-Lease-Id` 响应头，值为实际租约 ID。嵌入时设 `requireLeaseHeader: true` 可强制要求该请求头；无论是否强制，其值都是租约名称或 ID。
 
 也可以用同一 Bearer 令牌显式创建随机 ID 的租约：
 
@@ -37,7 +37,7 @@ Content-Type: application/json
 {}
 ```
 
-201 响应包含随机 `id`、已验证的 principal、创建时间与最后使用时间。请求体只接受空对象，不能指定 profile、身份或浏览器启动参数。管理接口还有 `GET /leases`（只列出该身份的租约）和 `DELETE /leases/{id}`（释放整个租约）；它们是应用 API，不是 MCP 方法。使用随机 ID 时，给客户端的 `/mcp` 连接配置：
+201 响应包含随机 `id`、已验证的 principal、创建时间与最后使用时间。请求体只接受空对象，不能指定 profile、身份或浏览器启动参数。管理接口还有 `GET /leases`（只列出该身份的租约）和 `DELETE /leases/{id}`（释放整个租约：返回 204；未知或越权的租约返回 404；关闭其浏览器状态失败时返回 500，原因通过 `onError` 报告）；它们是应用 API，不是 MCP 方法。使用随机 ID 时，给客户端的 `/mcp` 连接配置：
 
 ```text
 Authorization: Bearer <secret>
@@ -87,7 +87,7 @@ const service = await startBrowserMcpHttpServer({
 // 退出时：await service.close();
 ```
 
-令牌到 principal 的映射由宿主的可信配置提供，不接受客户端指定。`createBrowserMcpHttpService()` 提供同样的 fetch/close 接口供宿主挂载，宿主须保持 loopback 与精确 authority 约束。注入 manager 时，`service.close()` 也会关闭该 manager，因此它应由一个应用服务拥有。
+令牌到 principal 的映射由宿主的可信配置提供，不接受客户端指定。`createBrowserMcpHttpService()` 提供同样的 fetch/close 接口供宿主挂载，宿主须保持 loopback 与精确 authority 约束。注入 manager 时，`service.close()` 也会关闭该 manager，因此它应由一个应用服务拥有；`startBrowserMcpHttpServer()` 监听失败时不会关闭注入的 manager。
 
 `BrowserSessionManager` 从 `nodriver-ts/mcp` 导出，也可用于 stdio 或 InMemory：
 
@@ -129,7 +129,7 @@ SSE 断流会取消对应请求，但不释放租约，也不影响其他请求�
 
 ## 资源、进度与人工交互
 
-两个标准资源只包含当前租约的信息：`browser://state` 包含标签页、frame、对话框、所属 context、队列与引用数；`browser://events` 保留最近 64 条有序状态事件（导航、标签页、对话框、下载等），不是完整的 DOM 或网络事件总线。订阅使用 `subscriptions/listen` 的 resourceSubscriptions 选择 URI，不支持旧的 `resources/subscribe` 和 GET SSE。每个租约有独立的通知总线，状态变化合并后通知；断开后读取最新资源，不保证补齐已淘汰的事件。
+两个标准资源只包含当前租约的信息：`browser://state` 包含标签页、frame、对话框、所属 context、队列与引用数；`browser://events` 保留最近 64 条有序状态事件（导航、标签页、对话框、下载、被对话框挂起的动作的结果等），不是完整的 DOM 或网络事件总线。订阅使用 `subscriptions/listen` 的 resourceSubscriptions 选择 URI，不支持旧的 `resources/subscribe` 和 GET SSE。每个租约有独立的通知总线，状态变化合并后通知；断开后读取最新资源，不保证补齐已淘汰的事件。
 
 请求携带 progressToken 时，工具依次发送 Queued、Running、Completed 三个阶段。auto 模式在需要通知时升级为 SSE，强制 json 模式按 SDK 语义省略中间通知。进度只表示阶段，不代表完成百分比或响应时延。
 

@@ -60,22 +60,23 @@ function localPath(path: string) {
 async function line(socket: Socket, timeout: number): Promise<unknown> {
   return new Promise((done, reject) => {
     let buffer = Buffer.alloc(0);
-    const timer = setTimeout(() => fail(), timeout);
+    const timer = setTimeout(() => stop(), timeout);
     const cleanup = () => {
       clearTimeout(timer);
       socket.off('data', data);
       socket.off('error', fail);
-      socket.off('end', fail);
-      socket.off('close', fail);
+      socket.off('end', stop);
+      socket.off('close', stop);
     };
-    const fail = () => {
+    const fail = (cause?: Error) => {
       cleanup();
-      reject(new Error('Socket authentication failed or timed out'));
+      reject(new Error('Socket authentication failed or timed out', { cause }));
     };
+    const stop = () => fail();
     const data = (chunk: Buffer) => {
       const newline = chunk.indexOf(10);
       const part = newline < 0 ? chunk : chunk.subarray(0, newline);
-      if (buffer.length + part.length > 4096) return fail();
+      if (buffer.length + part.length > 4096) return stop();
       buffer = Buffer.concat([buffer, part]);
       if (newline < 0) return;
       socket.pause();
@@ -85,10 +86,11 @@ async function line(socket: Socket, timeout: number): Promise<unknown> {
         if (newline + 1 < chunk.length) socket.unshift(chunk.subarray(newline + 1));
         done(parsed);
       } catch {
-        fail();
+        // No cause: a parse error quotes the raw line, which may hold a credential.
+        stop();
       }
     };
-    socket.on('data', data).once('error', fail).once('end', fail).once('close', fail);
+    socket.on('data', data).once('error', fail).once('end', stop).once('close', stop);
     socket.resume();
   });
 }
@@ -215,35 +217,17 @@ export async function startBrowserMcpSocketServer(
     requests: positive(options.maxRequestsPerConnection ?? 16, 'maxRequestsPerConnection'),
     write: positive(options.writeTimeout ?? 60000, 'writeTimeout'),
   };
-  let directory: string | undefined;
-  const path =
+  // Everything that can be refused outright is, before a temporary directory or manager exists.
+  let path =
     options.path ??
-    (process.platform === 'win32'
-      ? `\\\\.\\pipe\\nodriver-${randomUUID()}`
-      : join(
-          // macOS resolves tmpdir() through the /var -> /private/var symlink.
-          (directory = await mkdtemp(join(await realpath(tmpdir()), 'nodriver-mcp-'))),
-          'mcp.sock',
-        ));
-  localPath(path);
-  if (process.platform !== 'win32') {
-    const parent = dirname(path),
-      info = await lstat(parent);
-    if (
-      !info.isDirectory() ||
-      info.uid !== process.getuid?.() ||
-      (info.mode & 0o077) !== 0 ||
-      (await realpath(parent)) !== resolve(parent)
-    )
-      throw new Error('Unix socket parent must be a real, owner-only directory (0700)');
-    try {
-      await lstat(path);
-      throw new Error('Socket path already exists; it will not be replaced');
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-    }
-  }
+    (process.platform === 'win32' ? `\\\\.\\pipe\\nodriver-${randomUUID()}` : undefined);
+  if (path) localPath(path);
+  // macOS resolves tmpdir() through the /var -> /private/var symlink.
+  const temporary = path ? undefined : await realpath(tmpdir());
+  // As long as what mkdtemp will create.
+  if (temporary) localPath(join(temporary, 'nodriver-mcp-000000', 'mcp.sock'));
   const manager = options.manager ?? new BrowserSessionManager(options.browser);
+  let directory: string | undefined;
   const connections = new Map<Socket, { leaseId?: string; handle?: StdioServerHandle }>();
   const cleanup = new Set<Promise<void>>();
   let closing: Promise<void> | undefined;
@@ -298,9 +282,9 @@ export async function startBrowserMcpSocketServer(
               onerror: report,
             },
           );
-        } catch {
-          // Never reflect a credential or raw client input into diagnostics.
-          report(new Error('Socket authentication failed or connection closed'));
+        } catch (cause) {
+          // Never reflect a credential or raw client input into diagnostics: no cause quotes them.
+          report(new Error('Socket authentication failed or connection closed', { cause }));
           socket.destroy();
         }
       })(),
@@ -315,6 +299,25 @@ export async function startBrowserMcpSocketServer(
   });
   server.on('error', report);
   try {
+    if (!path)
+      path = join((directory = await mkdtemp(join(temporary!, 'nodriver-mcp-'))), 'mcp.sock');
+    if (process.platform !== 'win32') {
+      const parent = dirname(path),
+        info = await lstat(parent);
+      if (
+        !info.isDirectory() ||
+        info.uid !== process.getuid?.() ||
+        (info.mode & 0o077) !== 0 ||
+        (await realpath(parent)) !== resolve(parent)
+      )
+        throw new Error('Unix socket parent must be a real, owner-only directory (0700)');
+      try {
+        await lstat(path);
+        throw new Error('Socket path already exists; it will not be replaced');
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
+    }
     const listening = once(server, 'listening');
     server.listen(path);
     await listening;
@@ -327,7 +330,7 @@ export async function startBrowserMcpSocketServer(
     throw error;
   }
   return {
-    path,
+    path: path!,
     manager,
     close() {
       return (closing ??= (async () => {
@@ -357,16 +360,18 @@ export class BrowserMcpSocketClientTransport implements Transport {
   private started = false;
   private closed = false;
   private options: BrowserMcpSocketClientOptions;
+  private handshakeTimeout: number;
   constructor(options: BrowserMcpSocketClientOptions) {
     this.options = options;
     localPath(options.path);
+    this.handshakeTimeout = positive(options.handshakeTimeout ?? 5000, 'handshakeTimeout');
   }
   async start() {
     if (this.started || this.closed) throw new Error('Socket client already started or closed');
     this.started = true;
     const socket = (this.socket = createConnection(this.options.path));
     socket.on('error', () => {});
-    const timeout = positive(this.options.handshakeTimeout ?? 5000, 'handshakeTimeout');
+    const timeout = this.handshakeTimeout;
     const timer = setTimeout(
       () => socket.destroy(new Error('Socket connect deadline exceeded')),
       timeout,

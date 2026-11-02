@@ -4,7 +4,7 @@ import type { WaitOptions } from '../utils.ts';
 
 export const MAX_SCRIPT_LENGTH = 32_768;
 export const MAX_ARGUMENT_LENGTH = 32_768;
-export const MAX_RESULT_LENGTH = 262_144;
+const MAX_RESULT_LENGTH = 262_144;
 
 /** Script compilation and execution occur in Chrome, never in the MCP host. */
 export async function evaluateScript(

@@ -8,7 +8,7 @@ import { createBrowserMcpServer } from './server.ts';
 import { BrowserSessionManager, type BrowserSessionManagerOptions } from './manager.ts';
 import { cancellableBody } from './body.ts';
 import { MCP_PROTOCOL_VERSION } from './protocol.ts';
-import { serveFetch } from './serve.ts';
+import { requestPort, serveFetch } from './serve.ts';
 import { LeaseError } from './manager.ts';
 import { createCompatibleBrowserMcpHttpEndpoint } from './compat.ts';
 
@@ -33,8 +33,8 @@ export interface BrowserMcpHttpOptions {
   streamTimeout?: number;
   /**
    * When false (default), /mcp requests without Browser-Lease-Id use the principal's "default"
-   * lease, and a lease name (letters, digits, ".", "_", "-"; up to 64) is created on first use.
-   * True requires a lease ID from POST /leases on every request.
+   * lease. True requires the header on every request. Either way its value is a lease ID from
+   * POST /leases or a lease name (letters, digits, ".", "_", "-"; up to 64) created on first use.
    */
   requireLeaseHeader?: boolean;
   responseMode?: 'auto' | 'json' | 'sse';
@@ -61,6 +61,13 @@ function integer(value: number, label: string): number {
 
 /** Loopback service. Lease REST endpoints are an application API, not MCP sessions. */
 export function createBrowserMcpHttpService(options: BrowserMcpHttpOptions): BrowserMcpHttpService {
+  return httpService(options).service;
+}
+/** `stop` ends the service alone, for a caller that decides the manager's fate itself. */
+function httpService(options: BrowserMcpHttpOptions): {
+  service: BrowserMcpHttpService;
+  stop(): Promise<void>;
+} {
   const credentials = Object.entries(options.tokens).map(([token, principal]) => {
     if (token.length < 32 || !principal || principal.length > 200)
       throw new TypeError('Provision tokens of at least 32 characters and a principal');
@@ -102,8 +109,11 @@ export function createBrowserMcpHttpService(options: BrowserMcpHttpOptions): Bro
     if (!endpoint) return;
     endpoints.delete(id);
     endpoint.off();
-    await endpoint.modern.close();
-    await endpoint.compatible?.close();
+    try {
+      await endpoint.modern.close();
+    } finally {
+      await endpoint.compatible?.close();
+    }
   };
   const offRetired = manager.retired.on((id) => {
     void remove(id).catch(report);
@@ -293,7 +303,10 @@ export function createBrowserMcpHttpService(options: BrowserMcpHttpOptions): Bro
           }
           if (read.tooLarge) return error(413, 'Request body too large');
           body = JSON.parse(read.text);
-        } catch {
+        } catch (cause) {
+          // A parse error quotes the client's bytes, which never reach diagnostics.
+          if (!(cause instanceof SyntaxError))
+            report(new Error('Reading a request body failed', { cause }));
           return error(400, 'Invalid JSON body');
         }
       }
@@ -312,11 +325,18 @@ export function createBrowserMcpHttpService(options: BrowserMcpHttpOptions): Bro
       }
       if (url.pathname.startsWith('/leases/')) {
         if (original.method !== 'DELETE') return error(405, 'Method not allowed');
+        let released: Promise<void>;
         try {
-          await manager.release(principal, url.pathname.slice(8));
-          return new Response(null, { status: 204 });
+          released = manager.release(principal, url.pathname.slice(8));
         } catch {
           return error(404, 'Unknown or unauthorized lease');
+        }
+        try {
+          await released;
+          return new Response(null, { status: 204 });
+        } catch (cause) {
+          report(new Error('Releasing a browser lease failed', { cause }));
+          return error(500, 'Lease release failed');
         }
       }
       const compatible = options.compatibility === true && url.pathname === '/mcp/compat';
@@ -429,15 +449,23 @@ export function createBrowserMcpHttpService(options: BrowserMcpHttpOptions): Bro
     },
     close() {
       return (closing ??= (async () => {
-        closed = true;
-        lifetime.abort(new Error('HTTP service stopping'));
-        offRetired();
-        await Promise.all([...endpoints.keys()].map(remove));
-        await manager.close();
+        try {
+          await stop();
+        } finally {
+          await manager.close();
+        }
       })());
     },
   };
-  return service;
+  async function stop(): Promise<void> {
+    closed = true;
+    lifetime.abort(new Error('HTTP service stopping'));
+    offRetired();
+    const removed = await Promise.allSettled([...endpoints.keys()].map(remove));
+    const failed = removed.find((result) => result.status === 'rejected');
+    if (failed) throw failed.reason;
+  }
+  return { service, stop };
 }
 
 /**
@@ -450,20 +478,21 @@ export async function startBrowserMcpHttpServer(
   const hostname = options.hostname ?? '127.0.0.1';
   if (!['127.0.0.1', '::1'].includes(hostname))
     throw new TypeError('Only loopback binding is supported');
-  const service = createBrowserMcpHttpService(options);
+  const { service, stop } = httpService(options);
   let server: Awaited<ReturnType<typeof serveFetch>>;
   try {
     server = await serveFetch({
       hostname,
       port: options.port ?? 3100,
       fetch: (request, port) => {
-        if (new URL(request.url).port !== String(port))
+        if (requestPort(request) !== String(port))
           return new Response('Host port rejected', { status: 403 });
         return service.fetch(request);
       },
     });
   } catch (error) {
-    await service.close();
+    // The caller keeps a manager it injected; nothing has used it through this service.
+    await (options.manager ? stop() : service.close());
     throw error;
   }
   let closing: Promise<void> | undefined;
@@ -473,8 +502,11 @@ export async function startBrowserMcpHttpServer(
     fetch: service.fetch,
     close: () =>
       (closing ??= (async () => {
-        await service.close();
-        await server.close();
+        try {
+          await service.close();
+        } finally {
+          await server.close();
+        }
       })()),
   };
 }

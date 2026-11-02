@@ -11,6 +11,10 @@ export interface FetchServer {
   readonly port: number;
   close(): Promise<void>;
 }
+/** The port a request addresses; an authority without one means HTTP's default. */
+export function requestPort(request: Request): string {
+  return new URL(request.url).port || '80';
+}
 /** Serves a fetch handler with node:http. */
 export async function serveFetch(options: FetchServerOptions): Promise<FetchServer> {
   const sockets = new Set<import('node:net').Socket>();

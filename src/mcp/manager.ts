@@ -85,7 +85,8 @@ export class BrowserSessionManager {
     if (!principal || principal.length > 200)
       throw new TypeError('Invalid authenticated principal');
     if (this.stopping) throw new Error('Session manager stopping');
-    if (this.leases.size >= this.limits.maxLeases)
+    // A closing lease stays listed until its browser state is gone, but no longer counts.
+    if ([...this.leases.values()].filter((l) => !l.closing).length >= this.limits.maxLeases)
       throw new LeaseError('capacity', 'Lease capacity reached');
     const id = randomUUID(),
       now = Date.now();
@@ -209,9 +210,11 @@ export class BrowserSessionManager {
     return (this.closing ??= (async () => {
       this.stopping = true;
       clearInterval(this.timer);
-      await Promise.all([...this.leases.values()].map((l) => this.retire(l)));
-      await this.pool.close();
+      const closed = await Promise.allSettled([...this.leases.values()].map((l) => this.retire(l)));
+      closed.push(...(await Promise.allSettled([this.pool.close()])));
       this.retired.clear();
+      const failed = closed.find((result) => result.status === 'rejected');
+      if (failed) throw failed.reason;
     })());
   }
 }

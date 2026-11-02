@@ -7,6 +7,7 @@ import {
 } from '@modelcontextprotocol/server';
 import { serveStdio, type StdioServerHandle } from '@modelcontextprotocol/server/stdio';
 import { createBrowserMcpServer, type BrowserMcpBinding } from './server.ts';
+import { MCP_COMPATIBLE_VERSIONS } from './protocol.ts';
 import type { BrowserSessionManagerOptions } from './manager.ts';
 
 /** Same tools and queues, SDK-owned era negotiation, one instance per stdio connection. */
@@ -75,9 +76,12 @@ export function createCompatibleBrowserMcpHttpEndpoint(
     void record.closing.finally(() => closing.delete(record.closing!)).catch(() => {});
     return record.closing;
   }
-  function tracked(response: Response, record: LegacySession): Response {
+  function tracked(response: Response, record: LegacySession, ended?: () => void): Response {
     record.lastUsed = Date.now();
-    if (!response.body) return response;
+    if (!response.body) {
+      ended?.();
+      return response;
+    }
     record.active++;
     const reader = response.body.getReader();
     let finished = false;
@@ -86,6 +90,7 @@ export function createCompatibleBrowserMcpHttpEndpoint(
         finished = true;
         record.active--;
         record.lastUsed = Date.now();
+        ended?.();
       }
     };
     return new Response(
@@ -137,10 +142,14 @@ export function createCompatibleBrowserMcpHttpEndpoint(
           keepAliveMs: 15000,
           // SSE preserves progress and related server requests; no resumable event store.
           enableJsonResponse: false,
+          supportedProtocolVersions: [...MCP_COMPATIBLE_VERSIONS],
           onsessioninitialized: (sessionId) => {
             sessions.set(sessionId, record!);
           },
         });
+        // Protocol.connect chains these with its own callbacks.
+        transport.onclose = () => void close(record!).catch(options.onerror);
+        transport.onerror = options.onerror;
         record = {
           server: createBrowserMcpServer({}, binding, '2025'),
           transport,
@@ -150,16 +159,6 @@ export function createCompatibleBrowserMcpHttpEndpoint(
         records.add(record);
         try {
           await record.server.connect(transport);
-          const onclose = transport.onclose;
-          transport.onclose = () => {
-            onclose?.();
-            void close(record!).catch(options.onerror);
-          };
-          const onerror = transport.onerror;
-          transport.onerror = (error) => {
-            onerror?.(error);
-            options.onerror(error);
-          };
         } catch (error) {
           await close(record);
           throw error;
@@ -172,8 +171,14 @@ export function createCompatibleBrowserMcpHttpEndpoint(
           parsedBody: body,
           authInfo,
         });
-        if (message?.method === 'initialize' && response.status >= 400) await close(record);
-        return tracked(response, record);
+        if (message?.method !== 'initialize') return tracked(response, record);
+        if (response.status >= 400) await close(record);
+        const opened = record;
+        // An error answer travels in a 200 stream; a session that never negotiated frees its slot.
+        return tracked(response, opened, () => {
+          if (!opened.server.server.getNegotiatedProtocolVersion())
+            void close(opened).catch(options.onerror);
+        });
       } catch (error) {
         await close(record);
         throw error;

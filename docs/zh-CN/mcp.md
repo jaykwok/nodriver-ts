@@ -45,23 +45,24 @@ HTTP 只监听 loopback，要求 Bearer 令牌。省略 `Browser-Lease-Id` 时�
 
 运行 `nodriver-mcp --help` 查看全部参数。
 
-| 参数                                                       | 作用                                                                  |
-| ---------------------------------------------------------- | --------------------------------------------------------------------- |
-| `--mcp-transport stdio\|http\|socket`                      | MCP 传输，默认 stdio                                                  |
-| `--port`、`--socket-path`、`--token-env NAME`              | HTTP 端口（默认 3100）、socket 路径、令牌所在的环境变量               |
-| `--headful` / `--headless`                                 | 窗口模式，默认有界面                                                  |
-| `--browser-transport pipe\|websocket`                      | CDP 传输，默认 pipe；`--transport` 是别名                             |
-| `--executable`、`--user-data-dir`                          | Chrome 路径；持久 profile（单浏览器，不按租约分 context）             |
-| `--endpoint URL`、`--expose-existing-tabs`                 | 连接已有 Chrome；默认只附加本服务打开的标签页                         |
-| `--proxy URL`                                              | 上游代理；带凭证时需要按租约分 context，不能与 `--user-data-dir` 合用 |
-| `--user-agent`、`--lang`、`--window-size WxH`              | 启动时设置                                                            |
-| `--preset agent\|default`                                  | 默认 agent：关闭首次运行界面、搜索引擎选择、崩溃恢复气泡和后台节流    |
-| `--input-policy instant\|human`                            | 新标签页的默认输入策略                                                |
-| `--read-only`、`--disable-tool NAME[,NAME]`                | 只保留观察与导航工具；逐个关闭工具                                    |
-| `--upload-dir`、`--download-dir`、`--state-dir`            | 启用对应的文件工具，路径限定在该目录内                                |
-| `--allow-handoff`                                          | 未显式 `--headful` 时也允许 `browser_handoff`                         |
-| `--max-browsers`、`--contexts-per-browser`、`--max-leases` | 资源上限                                                              |
-| `--lease-idle-ms`、`--queue-limit`、`--operation-timeout`  | 租约闲置期限、队列长度、操作期限                                      |
+| 参数                                                       | 作用                                                                                                                                                                                                                                                              |
+| ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--mcp-transport stdio\|http\|socket`                      | MCP 传输，默认 stdio                                                                                                                                                                                                                                              |
+| `--mcp-compat`                                             | 在 stdio 或 HTTP `/mcp/compat` 上支持标准 2025 时代客户端；`/mcp` 保持现代协议                                                                                                                                                                                    |
+| `--port`、`--socket-path`、`--token-env NAME`              | HTTP 端口（默认 3100）、socket 路径、令牌所在的环境变量                                                                                                                                                                                                           |
+| `--headful` / `--headless`                                 | 窗口模式，默认有界面                                                                                                                                                                                                                                              |
+| `--browser-transport pipe\|websocket`                      | CDP 传输，默认 pipe；`--transport` 是别名                                                                                                                                                                                                                         |
+| `--executable`、`--user-data-dir`                          | Chrome 路径；持久 profile（单浏览器，不按租约分 context）                                                                                                                                                                                                         |
+| `--endpoint URL`、`--expose-existing-tabs`                 | 连接已有 Chrome；默认只附加本服务打开的标签页                                                                                                                                                                                                                     |
+| `--proxy URL`                                              | 上游代理；带凭证时需要按租约分 context，不能与 `--user-data-dir` 合用                                                                                                                                                                                             |
+| `--user-agent`、`--lang`、`--window-size WxH`              | 启动时设置                                                                                                                                                                                                                                                        |
+| `--preset agent\|default`                                  | 默认 agent：关闭首次运行界面、搜索引擎选择页、崩溃恢复气泡和后台节流，并设置 `--password-store=basic`：在 Linux 上，Chrome 改用内置密钥而不是系统密钥环来加密已保存的密码和 cookie，因此不会弹出密钥环提示；通过密钥环加密过数据的持久 profile 将无法读取这些数据 |
+| `--input-policy instant\|human`                            | 新标签页的默认输入策略                                                                                                                                                                                                                                            |
+| `--read-only`、`--disable-tool NAME[,NAME]`                | 只保留观察、导航和标签页生命周期工具（[见下](#只读模式)）；逐个关闭工具                                                                                                                                                                                           |
+| `--upload-dir`、`--download-dir`、`--state-dir`            | 启用对应的文件工具，路径限定在该目录内                                                                                                                                                                                                                            |
+| `--allow-handoff`                                          | 未显式 `--headful` 时也允许 `browser_handoff`                                                                                                                                                                                                                     |
+| `--max-browsers`、`--contexts-per-browser`、`--max-leases` | 资源上限                                                                                                                                                                                                                                                          |
+| `--lease-idle-ms`、`--queue-limit`、`--operation-timeout`  | 租约闲置期限、队列长度、操作期限                                                                                                                                                                                                                                  |
 
 ## 工具
 
@@ -98,9 +99,13 @@ HTTP 只监听 loopback，要求 Bearer 令牌。省略 `Browser-Lease-Id` 时�
 
 宿主配置目录后出现的可选工具：
 
-- **`browser_upload`**（`--upload-dir`）：文件名必须解析到该目录内。
+- **`browser_upload`**（`--upload-dir`）：文件名必须解析到该目录内。离开该目录的文件名在访问文件系统之前就被拒绝，解析后离开该目录的链接同样被拒绝。错误信息只提及调用者给出的文件名，不包含宿主路径。
 - **`browser_downloads`**（`--download-dir`）：列出或等待最近 100 条下载记录，文件以 GUID 命名保存在该目录。每条记录带递增的 `sequence`，list 返回 `latestSequence`。wait 不占用操作队列，可在触发下载的点击之前或之后调用；它等待序号大于 `after` 的第一条记录完成或取消，`after` 默认为该标签页上次 wait 返回的序号（初始为 0）。超时会报错且不推进游标，再次 wait 继续等待同一个下载。
-- **`browser_storage_state`**（`--state-dir`）：按名称保存或加载 Cookie 与第一方 localStorage，范围是上下文中任一 frame 用过的 HTTP(S) origin（含已关闭标签页），空存储不导出，跨站 iframe 的分区 localStorage 不导出。读写在拦截文档请求的临时空白页中进行，不访问站点、不跟随重定向。状态文件拒绝已有的符号链接与硬链接，经临时文件原子替换保存，POSIX 权限 0600；内容不进入对话，只返回计数。
+- **`browser_storage_state`**（`--state-dir`）：按名称保存或加载 Cookie 与第一方 localStorage，范围是上下文中任一 frame 用过的 HTTP(S) origin（含已关闭标签页），空存储不导出，跨站 iframe 的分区 localStorage 不导出。读写在拦截文档请求的临时空白页中进行，不访问站点、不跟随重定向。状态文件拒绝已有的符号链接与硬链接，经临时文件原子替换保存，POSIX 权限 0600；内容不进入对话，只返回计数。文件位于 `<state-dir>/<principal>/<name>.json`，因此名称归已认证的 principal 私有。principal 符合 `[a-z0-9_-]{1,64}` 时目录名就是它本身，否则为 `p-` 加上 principal 的 SHA-256 十六进制值；没有 principal 的连接使用 `private`，CLI 的 HTTP 和 socket 服务使用 `local-operator`。principal 目录位置上的链接会被拒绝。加载未知名称时报告 `No saved state named <name>`，与其他 principal 是否保存过该名称无关。
+
+### 只读模式
+
+`--read-only`（嵌入时为 `readOnly`）注册 `browser_tabs`、`browser_open`、`browser_navigate`、`browser_history`、`browser_close_tab`、`browser_snapshot`、`browser_find`、`browser_wait`、`browser_screenshot`、`browser_network` 和 `browser_close`，不注册页面输入、脚本、输入策略、环境更改、上传、下载、存储状态、对话框和人工接管工具。该模式不保证浏览器状态不变：导航会加载页面，两个关闭工具会结束该租约的标签页和浏览器（使用 `--expose-existing-tabs` 时也包括暴露的标签页；外部浏览器只断开连接）。保留它们是为了让 agent 能够移动并自行清理。如需一并移除，再加 `--disable-tool browser_close_tab,browser_close`。
 
 ### 动作与等待
 
@@ -110,7 +115,14 @@ HTTP 只监听 loopback，要求 Bearer 令牌。省略 `Browser-Lease-Id` 时�
 - `load`：必须观察到导航完成，同文档导航与 BFCache 恢复也算。
 - `none`：其余动作的默认值。
 
-导航等待与动作共用 `timeout`；等待超时返回错误，已执行的动作不会回滚或重放。结果包含 tabId、url、navigated、loading、tabClosed、newTabs 和 dialog；`snapshot: true` 时附带一次 interactiveOnly 快照，省去一次往返。
+导航等待与动作共用 `timeout`；等待超时返回错误，已执行的动作不会回滚或重放；操作期限或取消结束等待时，错误信息同样以 `Action completed, but` 开头。结果包含 tabId、url、navigated、loading、tabClosed、newTabs 和 dialog；`snapshot: true` 时附带一次 interactiveOnly 快照，省去一次往返。该快照失败时，结果照常成功，并以 `snapshotError` 代替快照。
+
+标签页上打开 JS 对话框期间，Chrome 不会回复动作的输入命令。对话框打开时尚未结束的动作会立即返回：结果设置 `dialog` 并带 `pending: true`，不含完成时才报告的字段（如 `clicked`），也不附带快照。动作在该结果之后继续运行，最长到其 `timeout`：
+
+- 租约的操作队列和其浏览器进程的队列一直被占用，直到动作结束。其他工具在后面等待，各自保有操作期限和取消能力；`browser_dialog`、`browser_tabs` 与 `browser_downloads` 不进入队列。
+- `browser_dialog` 回答对话框后动作继续，下一个工具在动作结束后运行。
+- 结果写入 `browser://events`（`action-completed`，或带 `error` 信息的 `action-failed`）和该标签页的 `lastInput`。
+- 到达 `timeout` 时动作失败并释放队列，因此没有人回答对话框时可以用 `browser_close_tab` 或 `browser_close` 结束该标签页。此后该浏览器上的输入会等到对话框被回答或标签页关闭，各工具受自身期限约束。
 
 推荐流程：
 
@@ -123,15 +135,17 @@ HTTP 只监听 loopback，要求 Bearer 令牌。省略 `Browser-Lease-Id` 时�
 
 标签页和 frame 都通过返回的 ID 显式指定，不依赖“当前标签页”这类隐式状态。`browser_snapshot` 默认读取主 frame，同进程和跨进程 iframe 用返回的 `frameId` 选择。快照读取 `Accessibility.getFullAXTree`，只包含浏览器渲染出的语义信息，不是完整的 DOM 导出；AX 中没有暴露的目标可用 `browser_find`。输出去掉无名称的 generic/none/presentation 包装层和与父节点重复的静态文本，以缩进表示层级，同时返回结构化 nodes（depth、role、name、states、value、url）。
 
-引用是 `e1`、`e2` 这样的短 ID，保存在服务端，绑定实际元素、session 与文档代次，不向 DOM 写入标记；同一文档中的同一节点再次出现时复用原引用。导航、换进程、节点删除或标签页关闭后，旧引用会报错，不会被替换成相似的新元素。每个租约最多保留 2000 个引用，较旧的可能被淘汰，届时重新 snapshot 或 find。
+引用是 `e1`、`e2` 这样的短 ID，保存在服务端，绑定实际元素、session 与文档代次，不向 DOM 写入标记；同一文档中的同一节点再次出现时复用原引用。导航、换进程、节点删除或标签页关闭后，旧引用会报错，不会被替换成相似的新元素。每个租约最多保留 2000 个引用，淘汰最久未使用的引用，届时重新 snapshot 或 find。
 
-快照默认 200 个节点、最多 500，名称截断到 300 字符；响应包含 `truncated`、`totalNodes` 和 `nextOffset`，用 `offset` 继续读取。这只是输出限制，底层仍读取完整 AX 树。
+快照默认 200 个节点、最多 500，名称截断到 300 字符；响应包含 `truncated`、`totalNodes` 和 `nextOffset`，用 `offset` 继续读取。这只限制输出，底层读取完整 AX 树。一次快照最多覆盖 20,000 个节点：超过后停止遍历，每一页的 `capped` 和 `truncated` 都为 true，`totalNodes` 止于该上限，最后一页没有 `nextOffset`。其余部分通过 `root` 或 `frameId` 读取。
 
 文本结果同时提供 `structuredContent` 和 JSON 文本。截图直接返回 image，上限 5 MiB，不接受写文件路径。快照返回输入控件的当前值，但密码字段一律以掩码代替，`browser_find` 的文本摘要同样不回显密码。页面文字和对话框消息是不可信数据，不应被当作 agent 指令。
 
 ### 输入策略与环境
 
-默认策略为 instant；human 模式与取消后的 `partialInput` 见 [输入](input.md)。环境字段、覆盖核验和网络限制见 [环境](environment.md)；未配置外网探针时不会探测外网。诊断与对齐会创建临时资源或发送显式 Emulation 配置，因此 `browser_environment` 没有标为 readOnly。
+默认策略为 instant；human 模式见 [输入](input.md)。输入动作提前结束时，工具错误带有 `partialInput`，即该动作的报告：`action`、`status`、`completedSegments`、`events`、`phase`、`cleanup`、`cleanupErrors`、`trace`、`seed` 和 `randomState`。它表明输入进行到了哪一步，因为任何动作都不会重放；字段含义见 [输入](input.md)。`browser_tabs` 以 `lastInput` 显示每个标签页的最后一个动作，只含 `action`、`status`、`events`、`completedSegments` 和 `cleanup`。
+
+环境字段、覆盖核验和网络限制见 [环境](environment.md)；未配置外网探针时不会探测外网。诊断与对齐会创建临时资源或发送显式 Emulation 配置，因此 `browser_environment` 没有标为 readOnly。
 
 ## 页面 JavaScript
 
@@ -153,7 +167,7 @@ HTTP 只监听 loopback，要求 Bearer 令牌。省略 `Browser-Lease-Id` 时�
 - **结果**：`{ "type": "json", "value": ... }`；无 return 或返回 undefined 时为 `{ "type": "undefined" }`。对象遵循 `JSON.stringify` 语义（Date 变成字符串，嵌套 undefined 被省略，NaN 变成 null）；BigInt、循环引用、顶层 function/symbol 报错。DOM 节点须显式映射成所需字段，不返回远端句柄。
 - **大小**：脚本与参数（JSON 序列化后）各最多 32,768 个字符，结果 JSON 最多 262,144 个字符；超限报错，不截断。
 - **范围**：`frameId` 可选，省略为主 frame，必须属于当前租约的标签页，支持同进程 iframe 与 OOPIF。`world` 默认 main，可访问页面全局变量；isolated 与页面 JS 全局对象隔离，但共享 DOM，不是安全沙箱。脚本只在 Chrome 中运行，无法访问宿主的 Node、文件系统或进程；请求、Cookie、存储和同源限制遵循页面自身权限。该工具能读写页面敏感状态，因此标为可修改状态。
-- **期限**：timeout 默认 10 秒、最大 60 秒，同时受操作期限（默认 30 秒）约束。CDP 执行期限限制初始同步计算，宿主等待期限与取消信号同时生效；**不能保证停止已安排的定时器、网络请求或异步续体，也不回滚副作用**。超时或取消后不重放，后续操作可能与遗留的页面任务交错；需要中止整页任务时关闭该标签页。
+- **期限**：timeout 默认 10 秒，最大为操作期限（默认 30 秒）。CDP 执行期限限制初始同步计算，宿主等待期限与取消信号同时生效；**不能保证停止已安排的定时器、网络请求或异步续体，也不回滚副作用**。超时或取消后不重放，后续操作可能与遗留的页面任务交错；需要中止整页任务时关闭该标签页。
 - **输入行为**：`element.click()`、直接赋值 value 或 `dispatchEvent()` 不经过输入策略，也不产生可信输入事件；需要真实输入时使用 `browser_click`、`browser_fill`、`browser_type`、`browser_scroll`。跨页面导航请用 `browser_navigate`，避免执行期间文档被销毁。
 
 ## 嵌入
@@ -178,11 +192,11 @@ const handle = serveStdio(() => createBrowserMcpServer({ launch: { transport: 'p
 
 ## 并发、取消与边界
 
-- **串行**：同一租约的浏览器操作串行执行，避免输入、导航和引用观察相互干扰。`browser_tabs`、`browser_dialog` 与 `browser_downloads` 不进入操作队列：前两者用于在动作被 JS 对话框阻塞时发现并关闭它，下载等待则可与触发它的点击并行。
+- **串行**：同一租约的浏览器操作串行执行，避免输入、导航和引用观察相互干扰。`browser_tabs`、`browser_dialog` 与 `browser_downloads` 不进入操作队列：前两者用于在动作被 JS 对话框阻塞时发现并关闭它，下载等待则可与触发它的点击并行。`browser_handoff` 的应答轮次同样不进入队列；其第一轮在队列中排队，以便移动焦点。
 - **取消**：取消信号传递到导航、等待、查询、快照和支持取消的动作。已发出的 CDP 命令和输入不能撤销；队列不会因为客户端停止等待就提前放行下一个写操作。
-- **错误**：工具错误返回 `isError: true` 及错误名称与信息，不自动重放点击、提交或其他动作。输入 schema 拒绝多余字段；导航入口只接受 HTTP(S) 与 about:blank，这不是网络隔离，页面重定向、链接和浏览器自身请求仍按 Chrome 的行为进行。
+- **错误**：工具错误返回 `isError: true` 及错误名称与信息，不自动重放点击、提交或其他动作。输入 schema 拒绝多余字段，工具也会拒绝其参数本会被忽略的组合：`browser_environment` 的 inspect 模式搭配 `environment` 或 `geoip`，`browser_drag` 的 `to` 搭配 `toX` 或 `toY`，`browser_scroll` 的 `ref` 搭配非零增量或坐标，以及 `browser_screenshot` 的 `ref` 搭配 `fullPage`；导航入口只接受 HTTP(S) 与 about:blank，这不是网络隔离，页面重定向、链接和浏览器自身请求仍按 Chrome 的行为进行。
 - **范围**：不提供远程多租户、任意 CDP 或宿主脚本执行。文件工具只在宿主配置目录后出现并限定在目录内。工具描述与 annotations 供客户端展示，不是访问控制机制。
-- **痕迹**：AX 快照不启用 Runtime。其他仍可观测的信号见 [自动化痕迹审计](automation-audit.md)。
+- **痕迹**：AX 快照不启用 Runtime。`browser_network` 的 `start` 会启用 CDP Network 域，并在标签页剩余生命周期内保持启用；`stop` 只结束记录。其他可观测的信号见 [自动化痕迹审计](automation-audit.md)。
 
 ## 测试
 

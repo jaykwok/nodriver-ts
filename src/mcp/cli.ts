@@ -47,7 +47,7 @@ const FLAGS = [
   '--mcp-compat',
 ];
 
-export function parse(args: string[]): Parsed {
+function parse(args: string[]): Parsed {
   const launch: LaunchOptions = { transport: 'pipe', preset: 'agent' };
   const options: BrowserMcpOptions = { launch };
   const disabled: string[] = [];
@@ -155,10 +155,11 @@ Browser
   --proxy URL                         upstream proxy; credentials need per-lease contexts
   --user-agent UA | --lang LOCALE | --window-size WxH
   --preset agent|default              agent (default) suppresses first-run UI and throttling
+                                      and sets --password-store=basic (see docs/mcp.md)
 
 Tools
   --input-policy instant|human        default per-tab input policy
-  --read-only                         observation and navigation tools only
+  --read-only                         observation, navigation and tab lifecycle tools only
   --disable-tool NAME[,NAME]          repeatable
   --upload-dir DIR | --download-dir DIR | --state-dir DIR   enable file tools within DIR
   --allow-handoff                     allow browser_handoff without an explicit --headful
