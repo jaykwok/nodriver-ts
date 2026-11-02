@@ -14,7 +14,7 @@ The task runs in the foreground, one cycle every 15 s by default, using two inde
 - Create a second, isolated lease, load four frames, and verify cookie isolation, handle invalidation after navigation and context closing.
 - Wait for tabs, contexts, sessions, listeners and pending requests to return to their baseline.
 
-The main lease and browser stay alive for the whole run; processes are not restarted each cycle to hide resource growth. By default `Runtime.enable/disable/addBinding`, `Console.enable`, `Debugger.enable` and automatic init scripts are forbidden, and real CDP command counts are recorded.
+The main lease and browser stay alive for the whole run; processes are not restarted each cycle to hide resource growth. By default `Runtime.enable/disable/addBinding`, `Console.enable`, `Debugger.enable` and automatic init scripts are forbidden: such a command is refused before it reaches Chrome and fails the run. Real CDP command counts are recorded.
 
 Every minute the test samples controller RSS/heap/CPU, Chrome process RSS/CPU, Windows handles or Linux fds, the target page's JS heap/DOM, ref counts and internal resource counts. RSS counts shared pages more than once; judging a leak needs the curve over time and the resource baselines, and no single sample says anything on its own.
 
@@ -22,7 +22,7 @@ Every minute the test samples controller RSS/heap/CPU, Chrome process RSS/CPU, W
 
 The output directory must not already contain `status.json`, so earlier results are never overwritten. The directory contains:
 
-- `status.json`: state, PID, start and expected end times (ISO UTC), cycle count, heartbeat interval, source hash and resource ownership.
+- `status.json`: state, PID, start and expected end times (ISO UTC), cycle count, heartbeat interval, source hash and resource ownership. Each update replaces the file atomically, so a reader never sees a partial file.
 - `samples.jsonl`: per-minute memory, CPU and resource samples.
 - `stdout.log`: per-cycle progress, saved when started in the background.
 - `STOP`: once this file is created, the task stops at the end of the current cycle, closes every owned browser and lease, and verifies that the temporary profiles were deleted.
@@ -35,7 +35,7 @@ New-Item -ItemType File -Path '<output directory>\STOP'   # Windows
 touch <output directory>/STOP                            # Linux / WSL
 ```
 
-`status` is one of starting, running, completed, completed-cycles, stopped or failed. Only a run that reaches the planned duration and passes the cleanup checks is marked completed. `--cycles 5 --interval-ms 50` is for a quick self-check; its result is completed-cycles, which does not count as a soak pass. The task relies on the host staying awake: a heartbeat gap longer than two minutes or three intervals is recorded as a failure and cleaned up, so time spent asleep is never counted as run time. A browser disconnect or an operation error also fails the run; there is no automatic restart or input replay.
+`status` is one of starting, running, completed, completed-cycles, stopped or failed. Only a run that reaches the planned duration, sends no forbidden command and passes the cleanup checks is marked completed. `--cycles 5 --interval-ms 50` is for a quick self-check; its result is completed-cycles, which does not count as a soak pass. The task relies on the host staying awake: a heartbeat gap longer than two minutes or three intervals is recorded as a failure and cleaned up, so time spent asleep is never counted as run time. A browser disconnect or an operation error also fails the run; there is no automatic restart or input replay.
 
 ## Results
 

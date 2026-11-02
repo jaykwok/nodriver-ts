@@ -27,7 +27,7 @@ Endpoint sampling only describes the state under a limited workload; it cannot p
 
 `npm run bench:compare` runs `benchmarks/compare.ts`: the same machine, the same Chrome, headless, WebSocket, a fresh temporary profile and the same local fixture, with both sides running the same workload. The Python side runs nodriver 0.50.6 in isolated mode through `uv` (Python 3.12, websockets 17.2); its script is `benchmarks/compare/nodriver_bench.py`. TypeScript runs first by default, and Python first with `BENCH_PYTHON_FIRST=1`. `BENCH_SAMPLES` adjusts the number of round-trip samples (200 by default).
 
-- **Cold launch**: launch the browser and open a blank page, 5 times each.
+- **Cold launch**: launch the browser and open a blank page, 5 times each. nodriver-ts also reports `coldStartMasked`, the same launch with `maskHeadless: true`, which adds a `chrome://version` probe tab; the table uses the default launch.
 - **Round trips**: after 20 warm-up runs, 200 `Browser.getVersion` and 200 `evaluate("1+1")` calls.
 - **Query**: 100 lookups of `#b500` on a page with 1000 buttons (`tab.select` in nodriver, `tab.query` in this project).
 - **Navigation**: 20 same-origin navigations to new URLs. This project's `goto` waits for the load event; nodriver's `get` returns before load, so the script polls `document.readyState` every 5 ms until it is complete.

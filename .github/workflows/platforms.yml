@@ -21,9 +21,10 @@ jobs:
           - name: windows-edge
             os: windows-latest
             edge: true
-          - name: linux-chrome-154
+          # Resolved below to the major version before the current stable Chrome for Testing.
+          - name: linux-chrome-previous
             os: ubuntu-latest
-            chrome: '154.0.8037.92'
+            chrome: previous
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
@@ -40,12 +41,23 @@ jobs:
       - name: Disable piped core dumps
         if: runner.os == 'Linux'
         run: sudo sysctl -w kernel.core_pattern=core
+      - name: Resolve the previous Chrome major
+        if: matrix.chrome == 'previous'
+        id: previous
+        shell: bash
+        run: |
+          stable=$(curl -fsSL --retry 3 https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions.json |
+            node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).channels.Stable.version")
+          major=${stable%%.*}
+          case "$major" in '' | *[!0-9]*) echo "::error::Unexpected stable version: $stable"; exit 1 ;; esac
+          echo "Stable Chrome for Testing is $stable; installing milestone $((major - 1))"
+          echo "milestone=$((major - 1))" >> "$GITHUB_OUTPUT"
       - name: Chrome for Testing
         if: matrix.chrome
         id: chrome
         uses: browser-actions/setup-chrome@v2
         with:
-          chrome-version: ${{ matrix.chrome }}
+          chrome-version: ${{ steps.previous.outputs.milestone || matrix.chrome }}
           install-dependencies: true
       # Ubuntu restricts unprivileged user namespaces through AppArmor, which leaves an unpackaged
       # Chrome without a usable sandbox. Lift the restriction instead of passing --no-sandbox.
@@ -77,14 +89,21 @@ jobs:
         if: success() || failure()
         shell: bash
         run: npm run test:compat 2>&1 | tee test-results/node-compat.log
+      # Setup can fail before any log exists; a log that cannot be read is named, and the code
+      # block is always closed.
       - name: Failure summary
         if: failure()
         shell: bash
         run: |
           { echo '### Failed tests'; echo '```'
+            found=0
             for log in test-results/*.log; do
-              node test/ci-failures.ts "$log" | sed "s|^|$(basename "$log" .log): |"
+              [ -f "$log" ] || continue
+              found=1
+              name=$(basename "$log" .log)
+              node test/ci-failures.ts "$log" | sed "s|^|$name: |" || echo "$name: failed tests could not be read"
             done
+            [ "$found" = 1 ] || echo 'No test log: the job failed before the suites ran. See the step logs.'
             echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload test logs
         if: always()

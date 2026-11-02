@@ -3,11 +3,28 @@ name: Chromium preview warning
 # retains its logs; no continue-on-error or retry hides a preview regression.
 on:
   pull_request:
+    # The core modules under test and every script, test file and fixture this workflow runs.
     paths:
       - '.github/workflows/chromium-preview.yml'
+      - 'package.json'
+      - 'package-lock.json'
       - 'src/browser/**'
+      - 'src/page/environment.ts'
       - 'src/page/execution-context.ts'
+      - 'src/page/frames.ts'
+      - 'src/page/navigation.ts'
+      - 'src/protocol/**'
       - 'src/transport/**'
+      - 'test/ci-*.ts'
+      - 'test/unit/execution-context.test.ts'
+      - 'test/integration/runtime.test.ts'
+      - 'test/integration/environment.test.ts'
+      - 'test/integration/churn.test.ts'
+      - 'test/fixtures/detection.ts'
+      - 'test/fixtures/expect.ts'
+      - 'test/fixtures/serve.ts'
+      - 'test/fixtures/server.ts'
+      - 'test/fixtures/wire.ts'
       - 'benchmarks/audit*'
       - 'benchmarks/audit/**'
       - 'benchmarks/worker-environment*'
@@ -80,7 +97,8 @@ jobs:
           { echo '### Chromium preview: ${{ matrix.channel }}'; echo 'Result: ${{ job.status }}'
             echo '```'; cat test-results/channel.txt test-results/browser.txt test-results/versions.txt 2>/dev/null || true
             for log in test-results/*.log; do
-              if [ -f "$log" ]; then node test/ci-failures.ts "$log"; fi
+              [ -f "$log" ] || continue
+              node test/ci-failures.ts "$log" || echo "$(basename "$log"): failed tests could not be read"
             done
             echo '```'
             echo 'Preview warnings are independent of stable release checks. See logs for setup failures and complete diagnostics.'

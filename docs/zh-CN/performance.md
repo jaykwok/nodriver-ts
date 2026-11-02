@@ -27,7 +27,7 @@ AX 快照与操作队列的分阶段数据见 [AX 与队列测量](performance-p
 
 `npm run bench:compare` 运行 `benchmarks/compare.ts`：同一台机器、同一个 Chrome、headless、WebSocket、全新临时 profile 和同一个本地 fixture，两侧执行相同的工作负载。Python 侧通过 `uv` 以隔离模式运行 nodriver 0.50.6（Python 3.12，websockets 17.2），脚本位于 `benchmarks/compare/nodriver_bench.py`。默认先运行 TypeScript，`BENCH_PYTHON_FIRST=1` 时先运行 Python；`BENCH_SAMPLES` 调整往返样本数（默认 200）。
 
-- **冷启动**：启动浏览器并打开空白页，各 5 次。
+- **冷启动**：启动浏览器并打开空白页，各 5 次。nodriver-ts 另外报告 `coldStartMasked`，即以 `maskHeadless: true` 进行同样的启动，会多打开一个 `chrome://version` 探测标签页；表中数据使用默认启动。
 - **往返**：预热 20 次后测 200 次 `Browser.getVersion` 与 200 次 `evaluate("1+1")`。
 - **查询**：1000 个按钮的页面上 100 次 `#b500`（nodriver 为 `tab.select`，本项目为 `tab.query`）。
 - **导航**：20 次同源导航到新 URL。本项目 `goto` 等待 load 事件；nodriver 的 `get` 在 load 前返回，脚本以 5 ms 间隔轮询 `document.readyState` 至 complete。

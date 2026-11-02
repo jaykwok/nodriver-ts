@@ -47,13 +47,14 @@ const chrome = await findExecutable();
 async function typescript() {
   const launch = (maskHeadless?: boolean) =>
     Browser.launch({ headless: true, transport: 'websocket', maskHeadless });
-  // Headless launches mask the UA by default with a probe page; Python nodriver does not, so the
-  // unmasked series is the like-for-like comparison.
+  // The default launch keeps the native headless UA, like Python nodriver, so coldStart is the
+  // like-for-like series. coldStartMasked opts into maskHeadless, which adds a chrome://version
+  // probe tab and per-tab overrides to startup.
   const coldStart: number[] = [],
-    coldStartUnmasked: number[] = [];
+    coldStartMasked: number[] = [];
   for (const [series, mask] of [
     [coldStart, undefined],
-    [coldStartUnmasked, false],
+    [coldStartMasked, true],
   ] as const)
     for (let i = 0; i < 5; i++) {
       const start = performance.now();
@@ -72,7 +73,7 @@ async function typescript() {
     for (let i = 0; i < 20; i++) await tab.evaluate('1+1');
     const evaluate = await timed(samples, () => tab.evaluate('1+1'));
     for (let i = 0; i < 5; i++) await tab.query('#b500');
-    const query = await timed(samples / 2, () => tab.query('#b500'));
+    const query = await timed(Math.floor(samples / 2), () => tab.query('#b500'));
     let index = 0;
     await tab.goto(`${base}/empty?n=${++index}`);
     const navigation = await timed(20, () => tab.goto(`${base}/empty?n=${++index}`));
@@ -86,7 +87,7 @@ async function typescript() {
       runtime: `Node.js ${process.versions.node}`,
       library: 'nodriver-ts (this commit)',
       coldStart,
-      coldStartUnmasked,
+      coldStartMasked,
       rtt,
       evaluate,
       query,
@@ -138,7 +139,7 @@ try {
   }
   const metrics = [
     'coldStart',
-    'coldStartUnmasked',
+    'coldStartMasked',
     'rtt',
     'evaluate',
     'query',

@@ -1,18 +1,23 @@
 name: Release
-# Publishes to npm when a v<version> tag is pushed. Authentication is npm trusted publishing (OIDC)
-# configured for this workflow; no token is stored. The package carries a provenance statement
-# linking it to this repository and commit.
+# Publishes to npm when a v<version> tag is pushed, in two jobs. `verify` checks the tag, waits for
+# the required workflows on this commit, repeats the fast and built-package checks and packs the
+# tarball; it holds no publishing credential. Only `publish` may request an OIDC token, which npm
+# trusted publishing (configured for this workflow) exchanges for a short-lived publish token; no
+# token is stored. `publish` installs no project dependencies and runs no package scripts: it
+# publishes the tarball from `verify` with a provenance statement linking it to this repository
+# and commit.
 on:
   push:
     tags: ['v*']
 permissions:
   contents: read
-  actions: read
-  id-token: write
 jobs:
-  publish:
+  verify:
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    permissions:
+      contents: read
+      actions: read
     env:
       NODRIVER_HEADFUL: '0'
     steps:
@@ -20,12 +25,13 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: '^24.22.0'
-          registry-url: 'https://registry.npmjs.org'
       - name: Tag matches package version
         run: test "${GITHUB_REF_NAME}" = "v$(node -p "require('./package.json').version")"
-      # Both stable workflows must pass on this commit. The latest run of each workflow counts;
-      # publication waits for every other run on the commit, including tag-triggered regression.
-      - name: All CI passed on this commit
+      # The newest run of test.yml and of platforms.yml on this commit must succeed; publication
+      # waits while either is missing or unfinished, including the tag-triggered regression.
+      # Pull-request runs test a merge commit and do not count. No other workflow, such as the
+      # Chromium preview, affects a release.
+      - name: Required workflows passed on this commit
         timeout-minutes: 65
         env:
           GH_TOKEN: ${{ github.token }}
@@ -37,7 +43,7 @@ jobs:
             if [ "$state" = fail ]; then break; fi
             sleep 60
           done
-          echo "::error::All CI must complete successfully on $GITHUB_SHA, including browser regression and the platform matrix. platforms.yml only runs on manual dispatch: run it for this commit before tagging."
+          echo "::error::The newest push or manual run of test.yml and of platforms.yml must succeed on $GITHUB_SHA; pull-request runs and other workflows do not count. platforms.yml only runs on manual dispatch: run it for this commit before tagging."
           exit 1
       - run: npm ci
       - name: Disable piped core dumps for crash acceptance
@@ -46,4 +52,34 @@ jobs:
       # the built package that is about to be published.
       - run: npm test
       - run: npm run test:dist
-      - run: npm publish --provenance --access public
+      # prepack type-checks and rebuilds dist before packing.
+      - name: Pack
+        run: |
+          mkdir -p "$RUNNER_TEMP/package"
+          npm pack --pack-destination "$RUNNER_TEMP/package"
+          test -f "$RUNNER_TEMP/package/nodriver-ts-${GITHUB_REF_NAME#v}.tgz"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: npm-package
+          path: ${{ runner.temp }}/package/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '^24.22.0'
+          registry-url: 'https://registry.npmjs.org'
+      - uses: actions/download-artifact@v8
+        with:
+          name: npm-package
+          path: ${{ runner.temp }}/package
+      - name: Publish the verified tarball
+        run: npm publish "$RUNNER_TEMP/package/nodriver-ts-${GITHUB_REF_NAME#v}.tgz" --provenance --access public --ignore-scripts

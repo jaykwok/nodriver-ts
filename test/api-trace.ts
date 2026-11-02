@@ -1,12 +1,11 @@
-// Test preload for `npm run test:map` (node --import): wraps the public classes and records, per
-// member, the test source locations that call it directly. Calls made from library code are not
-// recorded. Each test-file process writes its own trace into the NODRIVER_API_TRACE directory.
+// Test preload for `npm run test:map` (node --import): wraps every class exported by the package
+// entry points and records, per member, the test source locations that call it directly. Calls
+// made from library code are not recorded. Each test-file process writes its own trace into the
+// NODRIVER_API_TRACE directory. test/api-map.ts decides which members are public.
 import { randomUUID } from 'node:crypto';
-import { writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import * as api from '../src/index.ts';
-import { BrowserSessionManager } from '../src/mcp/manager.ts';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const output = process.env.NODRIVER_API_TRACE;
 if (!output) throw new Error('NODRIVER_API_TRACE must name the trace output directory');
@@ -56,31 +55,21 @@ function wrap(target: object, name: string, prefix: string): void {
     Object.defineProperty(target, key, descriptor);
   }
 }
-const classes: Record<string, { prototype: object }> = {
-  Browser: api.Browser,
-  BrowserContext: api.BrowserContext,
-  Download: api.Download,
-  Tab: api.Tab,
-  PresentationLease: api.PresentationLease,
-  Frame: api.Frame,
-  JSHandle: api.JSHandle,
-  Element: api.Element,
-  Network: api.Network,
-  Route: api.Route,
-  Mouse: api.Mouse,
-  Keyboard: api.Keyboard,
-  Connection: api.Connection,
-  Session: api.Session,
-  TargetSession: api.TargetSession,
-  WebSocketTransport: api.WebSocketTransport,
-  PipeTransport: api.PipeTransport,
-  PipeDecoder: api.PipeDecoder,
-  ProxyForwarder: api.ProxyForwarder,
-  BrowserSessionManager,
+// The source module of each package entry point: package.json "exports" mapped from dist to src.
+const { exports } = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as {
+  exports: Record<string, { import: string }>;
 };
-for (const [name, cls] of Object.entries(classes)) {
-  wrap(cls.prototype, name, '');
-  wrap(cls, name, 'static ');
+const classes = new Set<Function>();
+for (const target of Object.values(exports)) {
+  const source = target.import.replace(/^\.\/dist\//, 'src/').replace(/\.js$/, '.ts');
+  const module = (await import(pathToFileURL(join(root, source)).href)) as Record<string, unknown>;
+  for (const value of Object.values(module))
+    if (typeof value === 'function' && /^class\b/.test(Function.prototype.toString.call(value)))
+      classes.add(value);
+}
+for (const cls of classes) {
+  wrap(cls.prototype, cls.name, '');
+  wrap(cls, cls.name, 'static ');
 }
 process.on('exit', () => {
   const data = Object.fromEntries([...calls].map(([k, v]) => [k, [...v]]));

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { appendFile, mkdir, readFile, readdir, access, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, readdir, access, rename, writeFile } from 'node:fs/promises';
 import { createHash, randomBytes } from 'node:crypto';
 import { resolve, join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -57,6 +57,8 @@ process.on('SIGTERM', () => {
 });
 const token = randomBytes(32).toString('hex'); // Never written to a report or command line.
 const fixture = await fixtureServer({ hostname: '127.0.0.1' });
+// A forbidden command is refused before it reaches Chrome. The Connection reports the refusal as
+// one rejected command, which a caller may handle, so every recorded violation fails the run.
 const counts = { pipe: 0, websocket: 0 },
   violations: string[] = [];
 const originals = [PipeTransport.prototype.send, WebSocketTransport.prototype.send];
@@ -140,11 +142,23 @@ async function writeStatus(extra: Record<string, unknown> = {}) {
     })),
     ...extra,
   };
-  const temporary = join(output, 'status-next.json');
+  // Replace status.json atomically so a reader or an interrupted run never sees a partial file.
+  const temporary = join(output, 'status.json.tmp');
   await writeFile(temporary, JSON.stringify(state, null, 2) + '\n');
-  // Readers may inspect status during a write; retaining the previous sample in
-  // JSONL makes an interrupted write diagnosable without pretending completion.
-  await writeFile(join(output, 'status.json'), JSON.stringify(state, null, 2) + '\n');
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await rename(temporary, join(output, 'status.json'));
+      return;
+    } catch (error) {
+      // Windows refuses to replace a file that a reader holds open without delete sharing.
+      const code = (error as NodeJS.ErrnoException).code ?? '';
+      if (attempt >= 50 || !['EPERM', 'EACCES', 'EBUSY'].includes(code)) throw error;
+      await sleep(100);
+    }
+  }
+}
+function assertNoViolations() {
+  assert.equal(violations.length, 0, `Forbidden default commands: ${violations.join(', ')}`);
 }
 function resources(browser: Browser) {
   return {
@@ -407,6 +421,7 @@ try {
     lastCycle = Date.now();
     cycle++;
     for (const r of runtimes) await round(r);
+    assertNoViolations();
     if (Date.now() - lastSample >= 60000 || cycle === 1 || (cyclesLimit && cycle >= cyclesLimit)) {
       await sample();
       lastSample = Date.now();
@@ -425,6 +440,7 @@ try {
     while (Date.now() < next && !stopping && !(await exists(join(output, 'STOP'))))
       await sleep(Math.max(1, Math.min(1000, next - Date.now())));
   }
+  assertNoViolations();
   status =
     stopping || (await exists(join(output, 'STOP')))
       ? 'stopped'
@@ -463,6 +479,12 @@ try {
   await fixture.server.stop();
   PipeTransport.prototype.send = originals[0]!;
   WebSocketTransport.prototype.send = originals[1]!;
+  // Includes commands sent while closing the services and browsers.
+  if (violations.length) {
+    status = 'failed';
+    failure ??= `Forbidden default commands: ${violations.join(', ')}`;
+    process.exitCode = 1;
+  }
   const cleaned = await Promise.all(
     runtimes.map(async (r) => ({
       mode: r.mode,
