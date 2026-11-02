@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { access, mkdtemp } from 'node:fs/promises';
+import { access, mkdtemp, readdir, utimes } from 'node:fs/promises';
 import { fork } from 'node:child_process';
 import { once } from 'node:events';
 import { tmpdir } from 'node:os';
@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Browser, getStartupDiagnostics } from '../../src/index.ts';
 import { bounded, poll, removeTree } from '../../src/utils.ts';
+import { sweepHelperDirectories } from '../../src/browser/guardian.ts';
 
 test('supervised Chrome release keeps profile and reconnects after helper control closes', async () => {
   const browser = await Browser.launch({
@@ -43,6 +44,31 @@ test('supervised Chrome release keeps profile and reconnects after helper contro
     } else await browser.close();
   }
 });
+
+test(
+  'the helper sweep keeps the directory of a running helper, and close removes it',
+  { skip: process.platform !== 'win32' && 'Only the Windows helper is compiled into a directory' },
+  async () => {
+    const helpers = async () =>
+      new Set((await readdir(tmpdir())).filter((name) => name.startsWith('nodriver-guardian-')));
+    const before = await helpers();
+    const browser = await Browser.launch({ headless: true, detached: true, supervised: true });
+    try {
+      const [name] = [...(await helpers())].filter((name) => !before.has(name));
+      assert.ok(name);
+      const directory = join(tmpdir(), name);
+      const old = new Date(Date.now() - 2 * 60 * 60 * 1000);
+      await utimes(directory, old, old);
+      await sweepHelperDirectories();
+      await access(join(directory, 'guardian.exe'));
+      assert.ok((await browser.cdp.send('Browser.getVersion')).product);
+      await browser.close();
+      await assert.rejects(access(directory), { code: 'ENOENT' });
+    } finally {
+      await browser.close();
+    }
+  },
+);
 
 test('supervised launch cancellation during handshake cleans the owned process', async () => {
   const controller = new AbortController();

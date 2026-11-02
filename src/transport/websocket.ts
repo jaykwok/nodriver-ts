@@ -1,4 +1,4 @@
-import { WebSocket } from './ws-runtime.ts';
+import WebSocket from 'ws';
 import type { RawData } from 'ws';
 import type { Transport } from './transport.ts';
 import { DisconnectedError, TimeoutError } from '../errors.ts';
@@ -27,7 +27,9 @@ export class WebSocketTransport implements Transport {
       this.onclose?.(new DisconnectedError(`WebSocket closed (${code}): ${reason.toString()}`)),
     );
     socket.on('error', (error) => {
-      this.onclose?.(new DisconnectedError(`WebSocket transport error: ${error.message}`));
+      this.onclose?.(
+        new DisconnectedError(`WebSocket transport error: ${error.message}`, { cause: error }),
+      );
       socket.terminate();
     });
   }
@@ -63,7 +65,11 @@ export class WebSocketTransport implements Transport {
       options.signal?.addEventListener('abort', abort, { once: true });
       // Retain through aborted handshakes to consume late EventEmitter errors.
       socket.on('error', (e) =>
-        fail(new DisconnectedError(`Could not connect to browser WebSocket: ${e.message}`)),
+        fail(
+          new DisconnectedError(`Could not connect to browser WebSocket: ${e.message}`, {
+            cause: e,
+          }),
+        ),
       );
       socket.once('close', () =>
         fail(new DisconnectedError('Browser WebSocket closed before opening')),

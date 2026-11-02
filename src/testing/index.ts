@@ -1,13 +1,21 @@
 import type { AddressInfo } from 'node:net';
-import type { WebSocketServer as Server } from 'ws';
 import type { Protocol } from 'devtools-protocol';
 import { Browser, type ConnectOptions } from '../browser/browser.ts';
 import type { Command, Event, EventParams, Params, Result } from '../protocol/connection.ts';
 import { ProtocolError } from '../errors.ts';
-import { WebSocket, WebSocketServer } from '../transport/ws-runtime.ts';
+import WebSocket, { WebSocketServer } from 'ws';
 
 /** Return this from a handler to leave a command pending for timeout/abort/disconnect tests. */
 export const NO_REPLY = Symbol('NO_REPLY');
+const UNKNOWN_SESSION = Symbol('UNKNOWN_SESSION');
+/** The error object of a reply. A ProtocolError's message wraps Chrome's with method and data. */
+function wireError(error: unknown): { code: number; message: string; data?: string } {
+  if (!(error instanceof ProtocolError))
+    return { code: -32000, message: error instanceof Error ? error.message : String(error) };
+  let message = error.message.slice(error.method.length + 2);
+  if (error.data) message = message.slice(0, -(error.data.length + 3));
+  return { code: error.code, message, data: error.data };
+}
 
 export interface RecordedCommand<M extends Command = Command> {
   id: number;
@@ -34,7 +42,7 @@ export class ScriptedChrome {
   readonly commands: RecordedCommand[] = [];
   readonly unexpectedCommands: RecordedCommand[] = [];
   readonly endpoint: string;
-  private readonly server: Server;
+  private readonly server: WebSocketServer;
   private socket?: WebSocket;
   private closing?: Promise<void>;
   private readonly handlers = new Map<Command, Handler>();
@@ -47,7 +55,7 @@ export class ScriptedChrome {
   /** Delay modeled attach replies (not attachment creation) to exercise cancelled late replies. */
   attachReplyDelayMs = 0;
 
-  private constructor(server: Server, options: ScriptedChromeOptions) {
+  private constructor(server: WebSocketServer, options: ScriptedChromeOptions) {
     this.server = server;
     this.endpoint = `ws://127.0.0.1:${(server.address() as AddressInfo).port}/devtools/browser/scripted`;
     for (const page of options.pages ?? [{}]) this.addPage(page);
@@ -217,15 +225,15 @@ export class ScriptedChrome {
     } catch (error) {
       if (socket.readyState === WebSocket.OPEN)
         socket.send(
-          JSON.stringify({
-            id: command.id,
-            sessionId: command.sessionId,
-            error: {
-              code: error instanceof ProtocolError ? error.code : -32000,
-              message: error instanceof Error ? error.message : String(error),
-              data: error instanceof ProtocolError ? error.data : undefined,
-            },
-          }),
+          JSON.stringify(
+            error === UNKNOWN_SESSION
+              ? // Chrome answers for an unknown session itself, without the session's ID.
+                {
+                  id: command.id,
+                  error: { code: -32001, message: 'Session with given id not found.' },
+                }
+              : { id: command.id, sessionId: command.sessionId, error: wireError(error) },
+          ),
         );
     }
   }
@@ -233,7 +241,7 @@ export class ScriptedChrome {
   private defaultReply(command: RecordedCommand): unknown {
     const p = (command.params ?? {}) as Record<string, unknown>;
     const targetId = command.sessionId ? this.sessions.get(command.sessionId) : undefined;
-    if (command.sessionId && !targetId) throw new Error(`Unknown session ${command.sessionId}`);
+    if (command.sessionId && !targetId) throw UNKNOWN_SESSION;
     switch (command.method) {
       case 'Browser.getVersion':
         return {
@@ -252,12 +260,12 @@ export class ScriptedChrome {
         return { targetInfos: [...this.pages.values()] };
       case 'Target.getTargetInfo': {
         const info = this.pages.get(String(p.targetId ?? targetId));
-        if (!info) throw new Error(`Unknown target ${p.targetId}`);
+        if (!info) throw new ProtocolError(command.method, -32602, 'No target with given id found');
         return { targetInfo: info };
       }
       case 'Target.attachToTarget': {
         const info = this.pages.get(String(p.targetId));
-        if (!info) throw new Error(`Unknown target ${p.targetId}`);
+        if (!info) throw new ProtocolError(command.method, -32602, 'No target with given id found');
         const sessionId = `session-${++this.sequence}`;
         this.sessions.set(sessionId, info.targetId);
         info.attached = true;

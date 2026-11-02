@@ -3,6 +3,8 @@ import { test } from 'node:test';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { ScriptedChrome, NO_REPLY } from '../../src/testing/index.ts';
 import {
+  Connection,
+  createInputScope,
   Mouse,
   Keyboard,
   Element,
@@ -11,7 +13,24 @@ import {
   TimeoutError,
   type InputReport,
   type ScopedInput,
+  type Transport,
 } from '../../src/index.ts';
+class ManualTransport implements Transport {
+  onmessage?: (message: string) => void;
+  onclose?: (reason: Error) => void;
+  commands: Array<{ id: number; method: string; sessionId?: string }> = [];
+  send(message: string): void {
+    this.commands.push(JSON.parse(message));
+  }
+  close(): void {}
+  reply(index: number, result: unknown = {}): void {
+    const { id, sessionId } = this.commands[index]!;
+    this.onmessage?.(JSON.stringify({ id, sessionId, result }));
+  }
+}
+async function checkpoint(): Promise<void> {
+  await new Promise<void>((resolve) => setImmediate(resolve));
+}
 function gate() {
   let resolve!: () => void;
   const promise = new Promise<void>((r) => {
@@ -229,22 +248,75 @@ test('release failures preserve the action cause and block later input', async (
     (await interrupted(new Keyboard(session).insertText('no'))).cause instanceof InputBlockedError,
   );
 });
-test('target closure and connection loss are not successful cleanup', async () => {
-  await using chrome = await ScriptedChrome.start();
+test('a closed page ends the input state it held; connection loss is not successful cleanup', async () => {
+  await using chrome = await ScriptedChrome.start({ pages: [{}, {}] });
   await using browser = await chrome.connect({ attach: 'none' });
-  const session = await browser.attachSession([...browser.targetInfo.values()][0]!.targetId),
-    sent = gate();
+  const [first, second] = [...browser.targetInfo.values()];
+  const closing = await browser.attachSession(first!.targetId),
+    other = await browser.attachSession(second!.targetId);
+  let sent = gate();
   chrome.handle('Input.insertText', () => {
     sent.resolve();
     return NO_REPLY;
   });
-  const failure = interrupted(new Keyboard(session).insertText('once', { cleanupTimeout: 100 }));
+  const closed = interrupted(new Keyboard(closing).insertText('once', { cleanupTimeout: 100 }));
   await sent.promise;
-  chrome.destroyTarget(session.targetId);
-  const error = await failure;
+  chrome.destroyTarget(closing.targetId);
+  const error = await closed;
   assert.match(String(error.cause), /Target session ended/);
+  // The unanswered request died with its page; managed input on the connection continues.
+  assert.equal((await error.cleanup).status, 'completed');
+  assert.equal(browser.input.blocked, undefined);
+  sent = gate();
+  const lost = interrupted(new Keyboard(other).insertText('twice', { cleanupTimeout: 100 }));
+  await sent.promise;
   chrome.disconnect();
-  assert.equal((await error.cleanup).status, 'disconnected');
+  assert.equal((await (await lost).cleanup).status, 'disconnected');
+});
+
+test('a JavaScript dialog pauses the cleanup budget until it closes', async () => {
+  await using chrome = await ScriptedChrome.start();
+  await using browser = await chrome.connect({ attach: 'none' });
+  const session = await browser.attachSession([...browser.targetInfo.values()][0]!.targetId);
+  const sent = gate(),
+    reply = gate();
+  // Chrome holds the reply to input a page was handling until its dialog closes.
+  chrome.handle('Input.insertText', async () => {
+    sent.resolve();
+    await reply.promise;
+  });
+  const failure = interrupted(
+    new Keyboard(session).insertText('confirm', { timeout: 50, cleanupTimeout: 100 }),
+  );
+  await sent.promise;
+  chrome.emit(
+    'Page.javascriptDialogOpening',
+    {
+      url: 'about:blank',
+      frameId: session.targetId,
+      message: '?',
+      type: 'confirm',
+      hasBrowserHandler: false,
+    },
+    session.id,
+  );
+  const error = await failure;
+  let settled = false;
+  void error.cleanup.then(() => {
+    settled = true;
+  });
+  await sleep(300);
+  assert.equal(settled, false);
+  chrome.emit(
+    'Page.javascriptDialogClosed',
+    { frameId: session.targetId, result: true, userInput: '' },
+    session.id,
+  );
+  reply.resolve();
+  const { status, report } = await error.cleanup;
+  assert.equal(status, 'completed');
+  assert.ok(report.trace.some((entry) => entry.type === 'dialogWait'));
+  assert.equal(browser.input.blocked, undefined);
 });
 
 for (const method of [
@@ -259,7 +331,7 @@ for (const method of [
     chrome.handle('Page.createIsolatedWorld', () => ({ executionContextId: 1 }));
     chrome.handle('DOM.resolveNode', () => ({ object: { type: 'object', objectId: 'node' } }));
     chrome.handle('Runtime.callFunctionOn', () => ({ result: { type: 'boolean', value: true } }));
-    chrome.handle('Runtime.releaseObject', () => {});
+    chrome.handle('Runtime.releaseObjectGroup', () => {});
     chrome.handle('Input.insertText', () => {});
     await using browser = await chrome.connect();
     const tab = browser.tabs[0]!,
@@ -523,4 +595,134 @@ test('a cancelled scope callback cannot resume input after its cleanup and next 
     chrome.commands.filter((c) => c.method === 'Input.insertText').map((c) => c.params),
     [{ text: 'next' }],
   );
+});
+test('input cleanup waits for its own late replies, not unrelated pending raw commands', async () => {
+  await using chrome = await ScriptedChrome.start();
+  await using browser = await chrome.connect({ attach: 'none' });
+  const session = await browser.attachSession([...browser.targetInfo.values()][0]!.targetId);
+  const keyboard = new Keyboard(session);
+  chrome.handle('Input.insertText', () => {});
+  // A long raw command, such as an awaited evaluation, stays outstanding throughout.
+  const evaluated = gate();
+  chrome.handle('Runtime.evaluate', async () => {
+    await evaluated.promise;
+    return { result: { type: 'undefined' } };
+  });
+  const raw = session.send('Runtime.evaluate', { expression: 'long work', awaitPromise: true });
+  const report = await keyboard.insertText('unrelated', { cleanupTimeout: 100 });
+  assert.equal(report.cleanup, 'completed');
+  assert.equal(browser.connection.pendingCount, 1);
+  // The action's own unanswered command still holds cleanup until its reply.
+  const reply = gate(),
+    sent = gate();
+  chrome.replyOnce('Input.insertText', async () => {
+    sent.resolve();
+    await reply.promise;
+  });
+  const error = await interrupted(
+    keyboard.insertText('late', { timeout: 50, cleanupTimeout: 1000 }),
+  );
+  await sent.promise;
+  let cleaned = false;
+  const cleanup = error.cleanup.then((result) => {
+    cleaned = true;
+    return result;
+  });
+  await sleep(20);
+  assert.equal(cleaned, false);
+  reply.resolve();
+  assert.equal((await cleanup).status, 'completed');
+  await keyboard.insertText('after');
+  evaluated.resolve();
+  await raw;
+});
+test('input cleanup waits for the detach that a late attach reply causes', async () => {
+  const transport = new ManualTransport(),
+    connection = new Connection(transport);
+  try {
+    let report: InputReport | undefined;
+    const running = createInputScope(connection.session('page'), { pageEvents: false })
+      .run(
+        async () => {
+          await connection.attachSession('target', { timeout: 15 }).catch(() => {});
+        },
+        { cleanupTimeout: 1000 },
+      )
+      .then((value) => {
+        report = value;
+      });
+    while (!transport.commands.length) await checkpoint();
+    await sleep(30);
+    assert.equal(report, undefined);
+    // The attachment arrives after its caller stopped waiting; the library detaches it.
+    transport.reply(0, { sessionId: 'late-attachment' });
+    await checkpoint();
+    const detach = transport.commands.findIndex((c) => c.method === 'Target.detachFromTarget');
+    assert.ok(detach > 0);
+    await sleep(20);
+    assert.equal(report, undefined);
+    transport.reply(detach);
+    await running;
+    assert.equal(report!.cleanup, 'completed');
+    assert.equal(connection.unansweredCount, 0);
+  } finally {
+    await connection.close();
+  }
+});
+test('input cleanup covers raw commands the action sends on another connection', async () => {
+  const input = new ManualTransport(),
+    other = new ManualTransport();
+  const inputConnection = new Connection(input),
+    otherConnection = new Connection(other);
+  try {
+    const scope = createInputScope(inputConnection.session('page'), { pageEvents: false });
+    const work = async () => {
+      await otherConnection.root
+        .sendWith('Runtime.evaluate', { timeout: 15 }, { expression: 'action-owned work' })
+        .catch(() => {});
+    };
+    let report: InputReport | undefined;
+    const running = scope.run(work, { cleanupTimeout: 1000 }).then((value) => {
+      report = value;
+    });
+    while (!other.commands.length) await checkpoint();
+    await sleep(30);
+    assert.equal(report, undefined);
+    assert.equal(otherConnection.unansweredCount, 1);
+    other.reply(0);
+    await running;
+    assert.equal(report!.cleanup, 'completed');
+    // Without a reply, cleanup fails instead of reporting completion.
+    const error = await interrupted(scope.run(work, { cleanupTimeout: 40 }));
+    assert.equal((await error.cleanup).status, 'failed');
+    assert.equal(otherConnection.unansweredCount, 1);
+    assert.equal(input.commands.length, 0);
+  } finally {
+    await inputConnection.close();
+    await otherConnection.close();
+  }
+});
+
+test('another connection that closes with every reply in is not a cleanup failure', async () => {
+  const input = new ManualTransport(),
+    other = new ManualTransport();
+  const inputConnection = new Connection(input),
+    otherConnection = new Connection(other);
+  try {
+    const scope = createInputScope(inputConnection.session('page'), { pageEvents: false });
+    const report = await scope.run(async () => {
+      const answered = otherConnection.root.send('Runtime.evaluate', { expression: 'read' });
+      while (!other.commands.length) await checkpoint();
+      other.reply(0);
+      await answered;
+      await otherConnection.close();
+    });
+    assert.equal(report.status, 'completed');
+    assert.equal(report.cleanup, 'completed');
+    // Input on the action's own connection is not blocked.
+    await scope.run(async () => {});
+  } finally {
+    await inputConnection.close();
+    await otherConnection.close();
+  }
 });

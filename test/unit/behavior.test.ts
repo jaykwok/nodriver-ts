@@ -4,6 +4,7 @@ import { expect } from '../fixtures/expect.ts';
 import { InputBehavior, InputCoordinator, InputActionError } from '../../src/input/behavior.ts';
 import { Mouse, Keyboard } from '../../src/input/input.ts';
 import type { Session } from '../../src/protocol/connection.ts';
+import { EventHub } from '../../src/utils.ts';
 
 test('input seed is generated once per behavior and configure preserves its stream unless explicit', async () => {
   let draws = 0;
@@ -111,7 +112,14 @@ test('seeded paths and scroll conserve coordinates and deltas; timeout prevents 
   const messages: any[] = [];
   const session = {
     closed: false,
-    connection: { closed: false, drain: async () => {} },
+    connection: {
+      closed: false,
+      events: new EventHub(),
+      disconnected: new EventHub(),
+      drain: async () => {},
+      outstanding: () => false,
+      drainRequests: async () => {},
+    },
     sendWith: async (method: string, _options: unknown, params: any) => {
       messages.push({ method, ...params });
       return {};
@@ -145,7 +153,14 @@ test('button and modifier release are attempted even when a press protocol respo
   const events: any[] = [];
   const session = {
     closed: false,
-    connection: { closed: false, drain: async () => {} },
+    connection: {
+      closed: false,
+      events: new EventHub(),
+      disconnected: new EventHub(),
+      drain: async () => {},
+      outstanding: () => false,
+      drainRequests: async () => {},
+    },
     disconnected: { on: () => () => {} },
     on: () => () => {},
     sendWith: async (method: string, _options: unknown, params: any) => {

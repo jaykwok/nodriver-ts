@@ -29,6 +29,8 @@ function model(chrome: ScriptedChrome) {
       return { result: { type: 'boolean', value: !blurred.has(command.sessionId!) } };
     return { result: { type: 'object', objectId: 'editor' } };
   });
+  // The explicit execution context's global object, through which focus probes run.
+  chrome.handle('Runtime.evaluate', () => ({ result: { type: 'object', objectId: 'global' } }));
   chrome.handle('Runtime.releaseObjectGroup', () => {});
   chrome.handle('Input.imeSetComposition', () => {});
   chrome.handle('Input.insertText', () => {});
@@ -235,7 +237,10 @@ for (const destroy of [false, true]) {
     const blur = model(chrome),
       reply = gate(),
       sent = gate();
-    chrome.handle('Runtime.evaluate', async () => {
+    chrome.handle('Runtime.evaluate', async (params) => {
+      // The composition's focus probes run through the explicit context's global object.
+      if (params.expression === 'globalThis')
+        return { result: { type: 'object', objectId: 'global' } };
       sent.resolve();
       await reply.promise;
       return { result: { type: 'undefined' } };
@@ -244,9 +249,13 @@ for (const destroy of [false, true]) {
     const [a, b] = await Promise.all(
       browser.pageTargets.map((p) => browser.attachSession(p.targetId)),
     );
-    const late = b!.send('Runtime.evaluate', { expression: 'late raw reply' });
+    // A raw command issued inside the action belongs to it; its caller stops waiting early.
+    const error = await loseFocus(browser, a!, blur, async () => {
+      await a!
+        .sendWith('Runtime.evaluate', { timeout: 10 }, { expression: 'late raw reply' })
+        .catch(() => {});
+    });
     await sent.promise;
-    const error = await loseFocus(browser, a!, blur);
     let finished = false;
     const next = new Keyboard(b!).insertText('next').then(() => {
       finished = true;
@@ -260,7 +269,6 @@ for (const destroy of [false, true]) {
       await destroyed;
     }
     reply.resolve();
-    await late;
     assert.equal((await error.cleanup).status, 'failed');
     await next;
     if (!destroy) await blocked(new Keyboard(a!));
@@ -290,13 +298,12 @@ for (const otherFailure of [
       chrome.handle('Input.dispatchKeyEvent', (p) => {
         if (p.type === 'keyUp') throw new Error('key remains held');
       });
-    if (otherFailure === 'unanswered') chrome.handle('Runtime.evaluate', () => NO_REPLY);
-    const pending =
-      otherFailure === 'unanswered'
-        ? b!
-            .sendWith('Runtime.evaluate', { timeout: 10 }, { expression: 'no reply' })
-            .catch(() => {})
-        : undefined;
+    if (otherFailure === 'unanswered')
+      chrome.handle('Runtime.evaluate', (params) =>
+        params.expression === 'globalThis'
+          ? { result: { type: 'object', objectId: 'global' } }
+          : NO_REPLY,
+      );
     const owner = otherFailure === 'unknown-owner' ? browser.connection.session('unmapped') : a!;
     const error = await loseFocus(
       browser,
@@ -306,12 +313,19 @@ for (const otherFailure of [
         ? async (input) => {
             await input.keyboard.down('Shift');
           }
-        : undefined,
+        : otherFailure === 'unanswered'
+          ? async () => {
+              // The action's own command that never gets a reply.
+              await a!
+                .sendWith('Runtime.evaluate', { timeout: 10 }, { expression: 'no reply' })
+                .catch(() => {});
+            }
+          : undefined,
       50,
     );
-    await pending;
     assert.equal((await error.cleanup).status, 'failed');
     assert.match(String(await blocked(new Keyboard(b!))), /new connection/);
+    await assert.rejects(browser.inputScope(a!).recoverComposition(), InputBlockedError);
     const destroyed = browser.cdp.waitFor('Target.targetDestroyed');
     chrome.destroyTarget(a!.targetId);
     await destroyed;
@@ -319,3 +333,118 @@ for (const otherFailure of [
     chrome.assertDone();
   });
 }
+
+test('explicit recovery clears only the inspected page, including its attachments and child frames', async () => {
+  await using chrome = await ScriptedChrome.start({ pages: [{}, {}] });
+  const blur = model(chrome);
+  await using browser = await chrome.connect();
+  const [a, b] = browser.tabs;
+  const raw = await browser.attachSession(a!.id);
+  const error = await loseFocus(browser, raw, blur);
+  assert.equal((await error.cleanup).status, 'failed');
+  assert.equal((await (await loseFocus(browser, b!.session, blur)).cleanup).status, 'failed');
+  chrome.emit(
+    'Target.attachedToTarget',
+    {
+      sessionId: 'child-session',
+      targetInfo: {
+        targetId: 'child',
+        type: 'iframe',
+        title: '',
+        url: 'https://child.test',
+        attached: true,
+        canAccessOpener: false,
+      },
+      waitingForDebugger: false,
+    },
+    raw.id,
+  );
+  await browser.cdp.send('Browser.getVersion');
+  const child = browser.connection.session('child-session');
+  await blocked(new Keyboard(child));
+  // Caller inspection/repair is external to recovery. The acknowledgement sends no CDP.
+  const before = chrome.commands.length;
+  assert.equal(await browser.inputScope(raw).recoverComposition(), true);
+  assert.equal(chrome.commands.length, before);
+  assert.equal(await browser.inputScope(child).recoverComposition(), false);
+  await a!.keyboard.insertText('tab');
+  await new Keyboard(child).insertText('child');
+  await new Keyboard(await browser.attachSession(a!.id)).insertText('new attachment');
+  await blocked(b!.keyboard);
+  assert.equal((await error.cleanup).status, 'failed');
+  await assert.rejects(
+    browser.inputScope(browser.connection.session('unmapped')).recoverComposition(),
+    /known live page/,
+  );
+  await raw.detach();
+  await assert.rejects(browser.inputScope(raw).recoverComposition(), /closed session/);
+  chrome.assertDone();
+});
+
+test('recovery is not stopped by holds or pending replies on other pages', async () => {
+  await using chrome = await ScriptedChrome.start({ pages: [{}, {}] });
+  const blur = model(chrome);
+  await using browser = await chrome.connect({ attach: 'none' });
+  const [a, b] = await Promise.all(
+    browser.pageTargets.map((p) => browser.attachSession(p.targetId)),
+  );
+  const error = await loseFocus(browser, a!, blur);
+  assert.equal((await error.cleanup).status, 'failed');
+  const scope = browser.inputScope(a!);
+  const keyboard = new Keyboard(b!),
+    mouse = new Mouse(b!),
+    sent = gate(),
+    reply = gate();
+  await keyboard.down('Shift');
+  await mouse.down();
+  chrome.handle('Runtime.evaluate', async () => {
+    sent.resolve();
+    await reply.promise;
+    return { result: { type: 'undefined' } };
+  });
+  const pending = b!.send('Runtime.evaluate', { expression: 'other page work' });
+  await sent.promise;
+  await blocked(new Keyboard(a!));
+  assert.equal(await scope.recoverComposition(), true);
+  // Input cleanup waits for its own replies, not for the other page's pending command.
+  await new Keyboard(a!).insertText('recovered');
+  reply.resolve();
+  await pending;
+  await mouse.up();
+  await keyboard.up('Shift');
+  chrome.assertDone();
+});
+
+test('recovery queued before cleanup cannot clear a failure the caller has not inspected', async () => {
+  await using chrome = await ScriptedChrome.start();
+  const blur = model(chrome),
+    sent = gate(),
+    reply = gate();
+  chrome.handle('Runtime.releaseObjectGroup', async () => {
+    sent.resolve();
+    await reply.promise;
+  });
+  await using browser = await chrome.connect({ attach: 'none' });
+  const session = await browser.attachSession(browser.pageTargets[0]!.targetId);
+  const error = await loseFocus(browser, session, blur);
+  await sent.promise;
+  const scope = browser.inputScope(session);
+  let settled = false;
+  const recovery = scope
+    .recoverComposition()
+    .catch((e) => e)
+    .finally(() => {
+      settled = true;
+    });
+  await sleep(20);
+  assert.equal(settled, false);
+  reply.resolve();
+  assert.equal((await error.cleanup).status, 'failed');
+  const rejected = await recovery;
+  assert.ok(rejected instanceof InputBlockedError);
+  assert.match(rejected.message, /failure changed/);
+  await blocked(new Keyboard(session));
+  assert.equal(await scope.recoverComposition(), true);
+  await new Keyboard(session).insertText('recovered');
+  chrome.assertDone();
+});

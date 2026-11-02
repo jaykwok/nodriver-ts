@@ -1,8 +1,13 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomInt } from 'node:crypto';
 import { abortReason, type WaitOptions } from '../utils.ts';
-import { TimeoutError } from '../errors.ts';
-import type { Command, Connection, Session } from '../protocol/connection.ts';
+import { NodriverError, TimeoutError } from '../errors.ts';
+import {
+  requestLedger,
+  type Command,
+  type Connection,
+  type Session,
+} from '../protocol/connection.ts';
 import type { Protocol } from 'devtools-protocol';
 import { InputTargets, type InputPage } from './targets.ts';
 import { InputAction } from './action.ts';
@@ -44,7 +49,7 @@ export interface InputCleanupReport {
   status: Exclude<InputReport['cleanup'], 'pending'>;
   report: InputReport;
 }
-export class InputActionError extends Error {
+export class InputActionError extends NodriverError {
   override name = 'InputActionError';
   readonly report: InputReport;
   readonly cleanup: Promise<InputCleanupReport>;
@@ -57,7 +62,7 @@ export class InputActionError extends Error {
     this.cleanup = cleanup ?? Promise.resolve({ status: 'completed', report });
   }
 }
-export class InputBlockedError extends Error {
+export class InputBlockedError extends NodriverError {
   override name = 'InputBlockedError';
 }
 /** A connection-wide, reentrant input lock. Calls from distinct async tasks serialize. */
@@ -85,6 +90,14 @@ export class InputCoordinator {
   pageFor(session: Session): InputPage | undefined {
     return this.targets?.pageFor(session);
   }
+  /** @internal Whether a JavaScript dialog is open on the page, by default the session's page. */
+  dialogOpen(session: Session, page?: InputPage): boolean {
+    return this.targets?.dialogOpen(session, page) ?? false;
+  }
+  /** @internal Calls `listener` after a page closes, a dialog opens or closes, or the connection closes. */
+  onPages(listener: () => void): () => void {
+    return this.targets?.changes.on(listener) ?? (() => {});
+  }
   assertSessionReady(session: Session): void {
     this.assertReady();
     const page = this.pageFor(session);
@@ -104,9 +117,35 @@ export class InputCoordinator {
     }
     if (!page.destroyed)
       page.failure ??= new InputBlockedError(
-        `Composition cleanup was not confirmed for page ${page.id}; close this page or use another page`,
+        `Composition cleanup was not confirmed for page ${page.id}; inspect and restore its state, then call inputScope.recoverComposition(), or close this page`,
         { cause },
       );
+  }
+  /** @internal Explicit acknowledgement after the caller inspected/restored the page. */
+  recoverComposition(session: Session): Promise<boolean> {
+    // Capture the failure the caller inspected; never clear a newer failure queued ahead of us.
+    const page = this.pageFor(session),
+      failure = page?.failure;
+    return this.run(async () => {
+      if (session.closed)
+        throw new InputBlockedError('Cannot recover input on a closed session', {
+          cause: session.closeReason,
+        });
+      if (!page || page.destroyed || this.pageFor(session) !== page)
+        throw new InputBlockedError('Composition recovery requires a known live page');
+      if (!page.failure) return false;
+      if (page.failure !== failure)
+        throw new InputBlockedError('Composition failure changed; inspect the page again');
+      // The failed action drained its replies before blocking, and managed input on this page has
+      // been refused since; other pages' work and holds do not affect its composition.
+      for (const [key, owner] of this.held) if (owner?.destroyed) this.held.delete(key);
+      if ([...this.held.values()].some((owner) => !owner || owner === page))
+        throw new InputBlockedError(
+          'Release managed keys and buttons of this page before composition recovery',
+        );
+      page.failure = undefined;
+      return true;
+    });
   }
   /**
    * Track managed holds before dispatch; only an acknowledged release clears a hold. Attachments
@@ -135,6 +174,10 @@ export class InputCoordinator {
     return () => {
       if (release) this.held.delete(key);
     };
+  }
+  /** The connection-wide block, once cleanup could not be confirmed; managed input then fails. */
+  get blocked(): InputBlockedError | undefined {
+    return this.failure;
   }
   assertReady(): void {
     if (this.failure) throw this.failure;
@@ -336,9 +379,15 @@ export class InputBehavior {
         try {
           this.coordinator?.assertReady();
           await context.check();
-          await context.waitFor(this.context.run(context, () => this.prepare(context)));
+          await context.waitFor(
+            this.context.run(context, () =>
+              requestLedger.run(context.recordRequest, () => this.prepare(context)),
+            ),
+          );
           await context.check();
-          const running = this.context.run(context, () => task(context));
+          const running = this.context.run(context, () =>
+            requestLedger.run(context.recordRequest, () => task(context)),
+          );
           context.track(running);
           await context.waitFor(running);
           await context.flush();
@@ -353,7 +402,10 @@ export class InputBehavior {
           this.lastReport = structuredClone(context.report);
           if (!settled) {
             if (context.report.status === 'interrupted')
-              fail(context.reason ?? new InputBlockedError('Input cleanup failed'));
+              fail(
+                context.reason ??
+                  new InputBlockedError('Input cleanup failed', { cause: context.cleanupError }),
+              );
             else {
               settled = true;
               resolve(structuredClone(context.report));

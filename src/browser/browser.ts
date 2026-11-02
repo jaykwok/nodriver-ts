@@ -22,7 +22,7 @@ import {
   timeoutValue,
   type WaitOptions,
 } from '../utils.ts';
-import { DisconnectedError, NodriverError, TimeoutError } from '../errors.ts';
+import { DisconnectedError, NodriverError, ProtocolError, TimeoutError } from '../errors.ts';
 import { inputCoordinator, type InputCoordinator } from '../input/behavior.ts';
 import { InputScope, type InputScopeOptions } from '../input/scope.ts';
 import { PresentationLease, type PresentationLeaseOptions } from '../page/presentation.ts';
@@ -41,10 +41,17 @@ export class Browser {
   inputScope(session: Session, options: InputScopeOptions = {}): InputScope {
     if (session.connection !== this.connection)
       throw new TypeError('Input session belongs to another connection');
-    return new InputScope(session, {
-      mac: this.version.userAgent.includes('Macintosh'),
-      ...options,
-    });
+    return new InputScope(session, { mac: this.mac, ...options });
+  }
+  /**
+   * @internal Whether Chrome runs on macOS, which selects its editing key bindings: the local
+   * platform for a launched browser, as a user agent override can name another platform; for a
+   * connected browser, its user agent.
+   */
+  get mac(): boolean {
+    return this.process
+      ? process.platform === 'darwin'
+      : this.version.userAgent.includes('Macintosh');
   }
   /** Create a bounded background screencast lease for a raw target session. */
   presentationLease(session: Session, options: PresentationLeaseOptions = {}): PresentationLease {
@@ -70,6 +77,7 @@ export class Browser {
   private attaching = new Map<string, Promise<Tab>>();
   private downloads = new Map<string, Download>();
   private closing?: Promise<void>;
+  private closeStarted = false;
   private releasing?: Promise<string>;
   private disconnected = false;
   readonly connection: Connection;
@@ -157,7 +165,7 @@ export class Browser {
         step();
         return browser;
       } catch (e) {
-        await launched.process.captureDiagnostics?.();
+        await launched.process.captureDiagnostics();
         startup.fail(e);
         // Cleanup failures must not replace the startup error and its diagnostics.
         await connection.close().catch(() => {});
@@ -265,8 +273,7 @@ export class Browser {
       if (e.targetInfo.type === 'page') this.frontTab = undefined;
       if (e.targetInfo.type === 'page' && this.shouldAttach(e.targetInfo))
         void this.attach(e.targetInfo, initializing ? step : undefined).catch((error) => {
-          // A page that closes while it is being set up (short-lived popups) is not an error.
-          if (!this.closed && !(error instanceof DisconnectedError)) this.reportError(error);
+          if (!this.closed && !targetGone(error)) this.reportError(error);
         });
     });
     this.cdp.on('Target.targetInfoChanged', (e) => {
@@ -303,11 +310,14 @@ export class Browser {
       this.targetInfo.set(info.targetId, info);
       this.input.registerTarget(info);
     }
-    await Promise.all(
+    const attached = await Promise.allSettled(
       targetInfos
         .filter((t) => t.type === 'page' && this.shouldAttach(t))
         .map((t) => this.attach(t, step)),
     );
+    for (const result of attached)
+      if (result.status === 'rejected' && (this.closed || !targetGone(result.reason)))
+        throw result.reason;
     initializing = false;
   }
   private shouldAttach(info: Protocol.Target.TargetInfo): boolean {
@@ -361,10 +371,12 @@ export class Browser {
         // Chrome reports an internal ID even for the default context, although
         // getBrowserContexts intentionally lists only non-default contexts.
         const { browserContextIds } = await this.cdp.sendWith('Target.getBrowserContexts', step());
+        // Another attach can have added the context meanwhile.
         context =
-          info.browserContextId && browserContextIds.includes(info.browserContextId)
+          this.contextMap.get(contextKey) ??
+          (info.browserContextId && browserContextIds.includes(info.browserContextId)
             ? new BrowserContext(this, info.browserContextId)
-            : this.defaultContext;
+            : this.defaultContext);
         this.contextMap.set(contextKey, context);
       }
       const tab = new Tab(this, context, info.targetId, this.connection.session(sessionId));
@@ -410,6 +422,8 @@ export class Browser {
         proxyServer: proxy?.url ?? options.proxyServer,
         proxyBypassList: options.proxyBypassList,
         originsWithUniversalNetworkAccess: options.originsWithUniversalNetworkAccess,
+        // The forwarder runs in this process, so the context ends with this client's connection.
+        disposeOnDetach: proxy ? true : undefined,
       });
       const context = new BrowserContext(
         this,
@@ -437,7 +451,8 @@ export class Browser {
     label: string,
     session = this.cdp,
   ): Promise<T> {
-    if (session.closed) return Promise.reject(new DisconnectedError('Session closed'));
+    if (session.closed)
+      return Promise.reject(session.closeReason ?? new DisconnectedError('Session closed'));
     if (options.signal?.aborted) return Promise.reject(abortReason(options.signal));
     const timeout = timeoutValue(options.timeout ?? this.connection.timeout);
     return new Promise((resolve, reject) => {
@@ -485,7 +500,7 @@ export class Browser {
    */
   release(): Promise<string> {
     if (this.releasing) return this.releasing;
-    if (this.closing) return Promise.reject(new NodriverError('Browser is already closing'));
+    if (this.closeStarted) return Promise.reject(new NodriverError('Browser is already closing'));
     if (!this.endpoint)
       return Promise.reject(
         new NodriverError(
@@ -509,8 +524,13 @@ export class Browser {
     }
     return this.endpoint!;
   }
+  /** A failed close is not cached, so a later close() can retry the shutdown. */
   close(): Promise<void> {
-    return (this.closing ??= this.closeInternal());
+    this.closeStarted = true;
+    return (this.closing ??= this.closeInternal().catch((error: unknown) => {
+      this.closing = undefined;
+      throw error;
+    }));
   }
   private async closeInternal(): Promise<void> {
     await this.releasing?.catch(() => {});
@@ -534,6 +554,13 @@ export class Browser {
   }
 }
 
+/** The target closed before or while it was attached, as short-lived popups do. */
+function targetGone(error: unknown): boolean {
+  return (
+    error instanceof DisconnectedError ||
+    (error instanceof ProtocolError && /no target with given id/i.test(error.message))
+  );
+}
 /** A single deadline covers discovery and initialization, not each command separately. */
 async function initializeWithin<T>(
   options: WaitOptions,

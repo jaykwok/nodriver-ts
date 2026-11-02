@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createServer } from 'node:http';
-import { Browser, InputActionError } from '../../src/index.ts';
+import { Browser, InputActionError, InputBlockedError, Keyboard } from '../../src/index.ts';
 async function editor(browser: Browser) {
   const tab = await browser.newTab(
     'data:text/html,<textarea id=editor></textarea><input id=other>',
@@ -115,6 +115,66 @@ for (const transport of ['websocket', 'pipe'] as const) {
     await error.cleanup;
     assert.equal(await tab.evaluate('document.querySelector("#other").value'), '');
   });
+  for (const forceCancel of [false, true]) {
+    test(`${transport}: focus stolen during compositionstart; forceCancel=${forceCancel}`, async () => {
+      await using browser = await Browser.launch({ headless: true, transport });
+      const tab = await editor(browser);
+      await tab.evaluate(() => {
+        document
+          .querySelector('#editor')!
+          .addEventListener(
+            'compositionstart',
+            () => document.querySelector<HTMLInputElement>('#other')!.focus(),
+            { once: true },
+          );
+      });
+      const session = await browser.attachSession(tab.id);
+      const scope = browser.inputScope(session, { pageEvents: false });
+      const error = await new Keyboard(session)
+        .compose(
+          async (ime) => {
+            await ime.update('中');
+            await ime.commit('不得写入');
+          },
+          { pageEvents: false, forceCancel },
+        )
+        .catch((e) => e);
+      assert.ok(error instanceof InputActionError);
+      assert.match(String(error.cause), /lost focus/);
+      assert.equal((await error.cleanup).status, forceCancel ? 'completed' : 'failed');
+      assert.equal(await tab.evaluate('document.querySelector("#editor").value'), '');
+      assert.equal(
+        await tab.evaluate('document.querySelector("#other").value'),
+        forceCancel ? '' : '中',
+      );
+      if (!forceCancel) {
+        const blocked = await tab.keyboard.insertText('不得写入').catch((e) => e);
+        assert.ok(blocked instanceof InputActionError);
+        assert.ok(blocked.cause instanceof InputBlockedError);
+        await blocked.cleanup;
+        // The caller restores and verifies the browser state before acknowledging recovery.
+        await session.send('Input.imeSetComposition', {
+          text: '',
+          selectionStart: 0,
+          selectionEnd: 0,
+        });
+        assert.equal(await tab.evaluate('document.querySelector("#other").value'), '');
+        assert.equal(await scope.recoverComposition(), true);
+        assert.equal((await error.cleanup).status, 'failed');
+      }
+      const events = await tab.evaluate<Array<{ type: string; id: string }>>('window.inputEvents');
+      assert.ok(events.some((event) => event.type === 'compositionend' && event.id === 'other'));
+      assert.equal(await scope.recoverComposition(), false);
+      await tab.evaluate('document.querySelector("#editor").focus()');
+      await scope.run(async (input) => {
+        await input.composition.update('继续中文');
+        await input.composition.commit();
+      });
+      assert.equal(await tab.evaluate('document.querySelector("#editor").value'), '继续中文');
+      await tab.keyboard.insertText('!');
+      assert.equal(await tab.evaluate('document.querySelector("#editor").value'), '继续中文!');
+    });
+  }
   test(
     transport + ': navigation interrupts a raw scope and never commits into the new document',
     async () => {
@@ -174,6 +234,86 @@ for (const transport of ['websocket', 'pipe'] as const) {
   );
 }
 
+for (const forceCancel of [false, true])
+  test(`a composition that ended by itself is not cancelled over a range selection (forceCancel: ${forceCancel})`, async () => {
+    await using browser = await Browser.launch({ headless: true });
+    const tab = await editor(browser);
+    await tab.evaluate(() => {
+      const editor = document.querySelector<HTMLTextAreaElement>('#editor')!;
+      editor.value = 'keep ';
+      editor.setSelectionRange(5, 5);
+    });
+    const error = await tab.keyboard
+      .compose(
+        async (ime) => {
+          await ime.update('this');
+          // Chrome finishes the composition on blur; focus comes back with the text selected.
+          await tab.evaluate(() => {
+            const editor = document.querySelector<HTMLTextAreaElement>('#editor')!;
+            editor.blur();
+            editor.focus();
+            editor.select();
+          });
+          throw new Error('stop without committing');
+        },
+        { forceCancel },
+      )
+      .catch((e: unknown) => e);
+    assert.ok(error instanceof InputActionError);
+    const cleanup = await error.cleanup;
+    assert.equal(cleanup.status, 'failed');
+    assert.match(cleanup.report.cleanupErrors.join(), /Composition cancel refused/);
+    assert.equal(
+      await tab.evaluate(() => document.querySelector<HTMLTextAreaElement>('#editor')!.value),
+      'keep this',
+    );
+  });
+test('a composition that ended by itself is cancelled harmlessly over a collapsed selection', async () => {
+  await using browser = await Browser.launch({ headless: true });
+  const tab = await editor(browser);
+  const report = await tab.keyboard.compose(async (ime) => {
+    await ime.update('text');
+    await tab.evaluate(() => {
+      const editor = document.querySelector<HTMLTextAreaElement>('#editor')!;
+      editor.blur();
+      editor.focus();
+    });
+    await ime.cancel();
+  });
+  assert.equal(report.status, 'completed');
+  assert.equal(
+    await tab.evaluate(() => document.querySelector<HTMLTextAreaElement>('#editor')!.value),
+    'text',
+  );
+});
+test('watching for the end of a composition is invisible to main-world scripts', async () => {
+  await using browser = await Browser.launch({ headless: true });
+  const tab = await editor(browser);
+  const session = await browser.attachSession(tab.id);
+  await tab.evaluate(() => {
+    (window as any).added = [];
+    const add = EventTarget.prototype.addEventListener;
+    EventTarget.prototype.addEventListener = function (this: EventTarget, ...args: any[]) {
+      (window as any).added.push(args[0]);
+      return (add as any).apply(this, args);
+    };
+  });
+  await browser.inputScope(session).run(async (input) => {
+    await input.composition.update('中');
+    await input.composition.cancel();
+  });
+  assert.deepEqual(await tab.evaluate('window.added'), []);
+  // A later, independent composition starts over.
+  const report = await tab.keyboard.compose(async (ime) => {
+    await ime.update('文');
+    await ime.commit();
+  });
+  assert.equal(report.status, 'completed');
+  assert.equal(
+    await tab.evaluate(() => document.querySelector<HTMLTextAreaElement>('#editor')!.value),
+    '文',
+  );
+});
 test('raw composition with pageEvents false sends no enable and never probes in the main world', async () => {
   const sent: string[] = [];
   await using browser = await Browser.launch({
@@ -441,4 +581,50 @@ test('focus in a cross-origin frame has unknown editability, is composed and is 
   });
   assert.equal(await child.evaluate('document.getElementById("child").value'), '跨');
   assert.ok(report.trace.some((entry) => entry.type === 'compositionFocusUnknown'));
+  // Through the frame's own target session, focus is checked inside the frame.
+  await browser.inputScope(child.session).run(async (input) => {
+    await input.composition.update('域');
+    await input.composition.commit();
+  });
+  assert.equal(await child.evaluate('document.getElementById("child").value'), '跨域');
 });
+
+for (const selection of ['range', 'caret'] as const) {
+  test(`forceCancel after a later focus move to an editor with a ${selection} keeps its text`, async () => {
+    await using browser = await Browser.launch({ headless: true });
+    const tab = await browser.newTab('data:text/html,<input id=a><input id=b value=abc>');
+    await tab.evaluate("document.getElementById('a').focus()");
+    const session = await browser.attachSession(tab.id);
+    const scope = browser.inputScope(session, { pageEvents: false });
+    const error = await scope
+      .run(
+        async (input) => {
+          await input.composition.update('文');
+          // Moving focus after the composition exists makes Chrome finish it into a.
+          await session.send('Runtime.evaluate', {
+            expression: `const b = document.getElementById('b'); b.focus(); ${
+              selection === 'range' ? 'b.select()' : 'b.setSelectionRange(3, 3)'
+            }`,
+          });
+          await input.composition.commit();
+        },
+        { forceCancel: true },
+      )
+      .catch((e) => e);
+    assert.ok(error instanceof InputActionError);
+    const cleanup = await error.cleanup;
+    const values = () =>
+      tab.evaluate("[document.getElementById('a').value, document.getElementById('b').value]");
+    // Without a composition an empty cancel deletes a selection, so it is sent only at a caret.
+    assert.deepEqual(await values(), ['文', 'abc']);
+    assert.equal(cleanup.status, selection === 'range' ? 'failed' : 'completed');
+    if (selection === 'range') {
+      const blocked = await tab.keyboard.insertText('x').catch((e) => e);
+      assert.ok(blocked.cause instanceof InputBlockedError);
+      await blocked.cleanup;
+      assert.equal(await scope.recoverComposition(), true);
+    }
+    await tab.keyboard.insertText('!');
+    assert.deepEqual(await values(), ['文', selection === 'range' ? '!' : 'abc!']);
+  });
+}

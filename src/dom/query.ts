@@ -11,15 +11,21 @@ export type Selector =
 export interface QueryOptions extends WaitOptions {
   pierce?: boolean;
   visible?: boolean;
+  /** At most this many matches; 10,000 by default. */
   limit?: number;
 }
 let queryId = 0;
 /** How long a "no closed shadow roots" DOM scan is trusted for the same document generation. */
-export const CLOSED_SHADOW_SCAN_TTL = 1000;
-const scans = new WeakMap<
-  Frame,
-  { session: Session; generation: number; revision: number; at: number; closed: boolean }
->();
+const CLOSED_SHADOW_SCAN_TTL = 1000;
+interface Scan {
+  session: Session;
+  generation: number;
+  revision: number;
+  at: number;
+  /** The document and its shadow roots, when some of them are closed. */
+  roots?: Protocol.DOM.BackendNodeId[];
+}
+const scans = new WeakMap<Frame, Scan>();
 const revisions = new WeakMap<Session, { value: number }>();
 const STRUCTURAL_EVENTS = new Set([
   'DOM.documentUpdated',
@@ -55,11 +61,35 @@ function documentFor(node: Protocol.DOM.Node, frameId: string): Protocol.DOM.Nod
   }
   return undefined;
 }
+/** The frame's document in a tree from DOM.getDocument of the frame's session. */
+function frameDocument(
+  root: Protocol.DOM.Node,
+  frame: Frame,
+  session: Session,
+): Protocol.DOM.Node | undefined {
+  return (
+    documentFor(root, frame.id) ??
+    (frame === frame.manager.mainFrame || frame.parent?.session !== session ? root : undefined)
+  );
+}
 function hasClosedShadow(node: Protocol.DOM.Node): boolean {
   // contentDocument belongs to a separate Frame API, even when in the same process.
   for (const shadow of node.shadowRoots ?? [])
     if (shadow.shadowRootType === 'closed' || hasClosedShadow(shadow)) return true;
   return (node.children ?? []).some(hasClosedShadow);
+}
+/** `node` and every open or closed shadow root below it, in document order. */
+function shadowRoots(node: Protocol.DOM.Node): Protocol.DOM.BackendNodeId[] {
+  const roots = [node.backendNodeId];
+  const visit = (node: Protocol.DOM.Node) => {
+    for (const shadow of node.shadowRoots ?? []) {
+      if (shadow.shadowRootType !== 'user-agent') roots.push(shadow.backendNodeId);
+      visit(shadow);
+    }
+    for (const child of node.children ?? []) visit(child);
+  };
+  visit(node);
+  return roots;
 }
 // Runs in the isolated world. `roots` are searched in order; with `walk`, open shadow roots below
 // them are added too (the isolated world never sees closed roots).
@@ -93,14 +123,15 @@ const SEARCH = `function(spec, visible, limit, walk, useDocument, ...extra) {
   return selected;
 }`;
 /**
- * True when the frame document may contain closed shadow roots, which only a CDP DOM scan can
- * reach. DOM.getDocument is costly on large pages, so a negative result is cached briefly.
+ * The frame document and its shadow roots when some of them are closed, which only a CDP DOM scan
+ * can reach; undefined when there are none. DOM.getDocument is costly on large pages: a negative
+ * result is reused briefly, a positive one until the DOM structure changes.
  */
-async function closedShadows(
+async function closedShadowRoots(
   frame: Frame,
   session: Session,
   step: () => WaitOptions,
-): Promise<boolean> {
+): Promise<Protocol.DOM.BackendNodeId[] | undefined> {
   const revision = domRevision(session).value;
   const cached = scans.get(frame);
   if (
@@ -108,18 +139,16 @@ async function closedShadows(
     cached.session === session &&
     cached.revision === revision &&
     cached.generation === frame.generation &&
-    (cached.closed || performance.now() - cached.at < CLOSED_SHADOW_SCAN_TTL)
+    (cached.roots || performance.now() - cached.at < CLOSED_SHADOW_SCAN_TTL)
   )
-    return cached.closed;
+    return cached.roots;
   const generation = frame.generation;
   const { root } = await session.sendWith('DOM.getDocument', step(), { depth: -1, pierce: true });
-  const document =
-    documentFor(root, frame.id) ??
-    (frame === frame.manager.mainFrame || frame.parent?.session !== session ? root : undefined);
-  const closed = !!document && hasClosedShadow(document);
+  const document = frameDocument(root, frame, session);
+  const roots = document && hasClosedShadow(document) ? shadowRoots(document) : undefined;
   if (generation === frame.generation && revision === domRevision(session).value)
-    scans.set(frame, { session, generation, revision, at: performance.now(), closed });
-  return closed;
+    scans.set(frame, { session, generation, revision, at: performance.now(), roots });
+  return roots;
 }
 export async function query(
   frame: Frame,
@@ -146,7 +175,8 @@ export async function query(
   ];
   try {
     let result: Protocol.Runtime.CallFunctionOnResponse;
-    if (!pierce || !(await closedShadows(frame, session, step))) {
+    const closed = pierce ? await closedShadowRoots(frame, session, step) : undefined;
+    if (!closed) {
       // Fast path: one call in the isolated world over the document and its open shadow roots.
       let objectId: string | undefined;
       if (scope)
@@ -165,37 +195,23 @@ export async function query(
       });
     } else {
       // Closed shadow roots exist: resolve every root CDP reports and search them in one call.
-      const root = scope
-        ? (
-            await session.sendWith('DOM.describeNode', step(), {
-              backendNodeId: scope,
-              depth: -1,
-              pierce: true,
-            })
-          ).node
-        : (await session.sendWith('DOM.getDocument', step(), { depth: -1, pierce: true })).root;
-      const document = scope
-        ? root
-        : (documentFor(root, frame.id) ??
-          (frame === frame.manager.mainFrame || frame.parent?.session !== session
-            ? root
-            : undefined));
-      if (!document) throw new StaleElementError('Frame document is unavailable in its session');
-      const roots: Protocol.DOM.Node[] = [document];
-      const shadows = (node: Protocol.DOM.Node) => {
-        for (const shadow of node.shadowRoots ?? []) {
-          if (shadow.shadowRootType !== 'user-agent') roots.push(shadow);
-          shadows(shadow);
-        }
-        for (const child of node.children ?? []) shadows(child);
-      };
-      shadows(document);
+      const roots = scope
+        ? shadowRoots(
+            (
+              await session.sendWith('DOM.describeNode', step(), {
+                backendNodeId: scope,
+                depth: -1,
+                pierce: true,
+              })
+            ).node,
+          )
+        : closed;
       const objects = await Promise.all(
         roots.map(
-          async (node) =>
+          async (backendNodeId) =>
             (
               await session.sendWith('DOM.resolveNode', step(), {
-                backendNodeId: node.backendNodeId,
+                backendNodeId,
                 executionContextId: context,
                 objectGroup: group,
               })

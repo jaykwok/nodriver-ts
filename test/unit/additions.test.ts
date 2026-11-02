@@ -10,7 +10,7 @@ import type { Transport } from '../../src/transport/transport.ts';
 import { InputBehavior } from '../../src/input/behavior.ts';
 import { Keyboard, keyDefinition, parseChord } from '../../src/input/input.ts';
 import { acquireProfileLock } from '../../src/browser/launcher.ts';
-import { MAX_TIMEOUT, timeoutValue } from '../../src/utils.ts';
+import { EventHub, MAX_TIMEOUT, timeoutValue } from '../../src/utils.ts';
 import { BrowserSessionManager, LeaseError } from '../../src/mcp/manager.ts';
 import { BrowserMcpSession } from '../../src/mcp/session.ts';
 import { removeTree } from '../../src/utils.ts';
@@ -19,7 +19,14 @@ function fakeSession() {
   const messages: any[] = [];
   const session = {
     closed: false,
-    connection: { closed: false, drain: async () => {} },
+    connection: {
+      closed: false,
+      events: new EventHub(),
+      disconnected: new EventHub(),
+      drain: async () => {},
+      outstanding: () => false,
+      drainRequests: async () => {},
+    },
     disconnected: { on: () => () => {} },
     on: () => () => {},
     sendWith: async (method: string, _options: unknown, params: any) => {

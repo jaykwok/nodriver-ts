@@ -76,6 +76,6 @@ export type { Transport } from './transport/transport.ts';
 export { WebSocketTransport } from './transport/websocket.ts';
 export { PipeTransport, PipeDecoder } from './transport/pipe.ts';
 export { ProxyForwarder } from './optional/proxy.ts';
-export type { WaitOptions } from './utils.ts';
+export type { EventHub, Listener, WaitOptions } from './utils.ts';
 export * from './errors.ts';
 export type { Protocol } from 'devtools-protocol';

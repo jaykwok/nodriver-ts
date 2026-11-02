@@ -45,6 +45,14 @@ export interface Environment {
   userAgentMetadata?: Protocol.Emulation.UserAgentMetadata;
   geolocation?: { latitude: number; longitude: number; accuracy?: number };
 }
+/** An init script and its registration on each session. */
+interface InitScript {
+  source: string;
+  worldName?: string;
+  /** Each session's registration, settling with the identifier Chrome returned. */
+  sessions: Map<Session, Promise<string>>;
+  removed: boolean;
+}
 export class Tab {
   readonly framesManager: FrameManager;
   readonly network: Network;
@@ -61,11 +69,7 @@ export class Tab {
     status: 'applied' | 'failed';
     error?: string;
   }> = [];
-  private scripts: Array<{
-    source: string;
-    worldName?: string;
-    identifiers: Map<Session, string>;
-  }> = [];
+  private scripts: InitScript[] = [];
   /** Per-tab world for isolated init scripts, distinct from the internal helper world. */
   private readonly scriptWorld = randomUUID();
   private closing?: Promise<void>;
@@ -83,7 +87,10 @@ export class Tab {
     this.environment = structuredClone(browser.baseEnvironment);
     this.framesManager = new FrameManager(this, session);
     this.framesManager.changes.on(({ frame, sameDocument }) => {
-      if (!sameDocument) context.noteOrigin(frame.url);
+      if (sameDocument) return;
+      context.noteOrigin(frame.url);
+      // A new document in the main frame replaces a crashed renderer.
+      if (frame === this.mainFrame) this.crashed = false;
     });
     this.network = new Network(this);
     this.inputBehavior = new InputBehavior(
@@ -109,9 +116,7 @@ export class Tab {
     );
     this.inputBehavior.coordinator = this.browser.input;
     this.mouse = new Mouse(session, this.inputBehavior);
-    // The browser's own UA, not an override: key bindings follow the platform Chrome runs on.
-    const mac = browser.version.userAgent.includes('Macintosh');
-    this.keyboard = new Keyboard(session, this.inputBehavior, mac);
+    this.keyboard = new Keyboard(session, this.inputBehavior, browser.mac);
   }
   get cdp(): Session {
     return this.session;
@@ -134,15 +139,49 @@ export class Tab {
   async initialize(): Promise<void> {
     await this.framesManager.initialize();
   }
+  /** Attempts every step, so that a refused one costs the session no other part of its setup. */
   async configureSession(session: Session): Promise<void> {
     await this.network.configure(session);
-    await this.applyEnvironment(session, this.environment);
-    for (const script of this.scripts) {
-      const { identifier } = await session.send('Page.addScriptToEvaluateOnNewDocument', {
-        source: script.source,
-        worldName: script.worldName,
-      });
-      script.identifiers.set(session, identifier);
+    const failures: unknown[] = [];
+    await this.applyEnvironment(session, this.environment).catch((e: unknown) => failures.push(e));
+    for (const script of this.scripts)
+      await this.registerScript(script, session).catch((e: unknown) => failures.push(e));
+    if (failures.length) throw failures[0];
+  }
+  /** Registers an init script on a session once. A script removed meanwhile is unregistered. */
+  private async registerScript(script: InitScript, session: Session): Promise<void> {
+    for (const s of script.sessions.keys()) if (s.closed) script.sessions.delete(s);
+    let registration = script.sessions.get(session);
+    if (!registration) {
+      registration = session
+        .send('Page.addScriptToEvaluateOnNewDocument', {
+          source: script.source,
+          worldName: script.worldName,
+        })
+        .then(({ identifier }) => identifier);
+      script.sessions.set(session, registration);
+    }
+    try {
+      await registration;
+    } catch (error) {
+      if (script.sessions.get(session) === registration) script.sessions.delete(session);
+      throw error;
+    }
+    if (script.removed) await this.unregisterScript(script, session);
+  }
+  private async unregisterScript(script: InitScript, session: Session): Promise<void> {
+    const registration = script.sessions.get(session);
+    if (!registration) return;
+    script.sessions.delete(session);
+    const identifier = await registration.catch(() => undefined);
+    if (identifier === undefined || session.closed) return;
+    try {
+      await session.send('Page.removeScriptToEvaluateOnNewDocument', { identifier });
+    } catch (error) {
+      if (session.closed) return;
+      // Keep the registration so that removing the script again can retry.
+      script.sessions.set(session, registration);
+      throw error;
     }
   }
   async withInput<T>(fn: () => Promise<T>): Promise<T> {
@@ -177,9 +216,9 @@ export class Tab {
     return new NavigationWatcher(this, options).promise;
   }
   async reload(options: NavigationOptions = {}): Promise<string> {
-    const watcher = new NavigationWatcher(this, options);
+    // Only the new document completes a reload.
+    const watcher = new NavigationWatcher(this, options, true, () => false);
     try {
-      this.crashed = false;
       await this.session.sendWith('Page.reload', options, {});
       return await watcher.promise;
     } catch (e) {
@@ -188,12 +227,27 @@ export class Tab {
     }
   }
   async go(delta: number, options: NavigationOptions = {}): Promise<string | undefined> {
-    const history = await this.session.send('Page.getNavigationHistory');
+    const started = performance.now();
+    const history = await this.session.sendWith('Page.getNavigationHistory', options);
     const entry = history.entries[history.currentIndex + delta];
     if (!entry) return undefined;
-    const watcher = new NavigationWatcher(this, options);
+    const timeout =
+      options.timeout === undefined
+        ? undefined
+        : Math.max(0, options.timeout - (performance.now() - started));
+    // A same-document change elsewhere, such as the old document's replaceState(), does not count.
+    const watcher = new NavigationWatcher(
+      this,
+      { ...options, timeout },
+      true,
+      (url) => url === entry.url,
+    );
     try {
-      await this.session.sendWith('Page.navigateToHistoryEntry', options, { entryId: entry.id });
+      await this.session.sendWith(
+        'Page.navigateToHistoryEntry',
+        { ...options, timeout },
+        { entryId: entry.id },
+      );
       return await watcher.promise;
     } catch (e) {
       watcher.cancel(e as Error);
@@ -404,26 +458,25 @@ export class Tab {
     source: string,
     options: { world?: 'main' | 'isolated' } = {},
   ): Promise<() => Promise<void>> {
-    const script = {
+    const script: InitScript = {
       source,
       worldName: options.world === 'isolated' ? this.scriptWorld : undefined,
-      identifiers: new Map<Session, string>(),
+      sessions: new Map(),
+      removed: false,
     };
     this.scripts.push(script);
     const remove = async () => {
+      script.removed = true;
       this.scripts = this.scripts.filter((item) => item !== script);
-      for (const [s, identifier] of script.identifiers)
-        if (!s.closed) await s.send('Page.removeScriptToEvaluateOnNewDocument', { identifier });
-      script.identifiers.clear();
+      const failures: unknown[] = [];
+      for (const s of [...script.sessions.keys()])
+        await this.unregisterScript(script, s).catch((error: unknown) => failures.push(error));
+      if (failures.length) throw failures[0];
     };
-    for (const s of this.framesManager.sessions)
+    for (const s of [...this.framesManager.sessions])
       if (!s.closed) {
         try {
-          const { identifier } = await s.send('Page.addScriptToEvaluateOnNewDocument', {
-            source,
-            worldName: script.worldName,
-          });
-          script.identifiers.set(s, identifier);
+          await this.registerScript(script, s);
         } catch (e) {
           // A session that closed mid-registration needs no script; any other failure
           // must not leave a script that future sessions keep receiving.
@@ -454,7 +507,13 @@ export class Tab {
   }
   close(): Promise<void> {
     return (this.closing ??= (async () => {
-      if (!this.closed) await this.browser.cdp.send('Target.closeTarget', { targetId: this.id });
+      try {
+        if (!this.closed) await this.browser.cdp.send('Target.closeTarget', { targetId: this.id });
+      } catch (error) {
+        // Closing can be retried.
+        this.closing = undefined;
+        throw error;
+      }
       this.dispose();
     })());
   }

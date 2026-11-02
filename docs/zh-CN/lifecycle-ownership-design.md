@@ -46,6 +46,9 @@ Windows 以关闭 job 的 kill-on-close 标志为提交点，POSIX 以 helper �
 提交后才回复确认。宿主先移除 profile 控制锁再请求提交，确认后关闭控制流。
 重复 release 共用一个 Promise，并发 close 等待交接。
 
+helper 拒绝请求或请求未送达时，release 以该错误拒绝，所有权不变：`owned` 仍为 true，`close()` 仍会结束浏览器。
+两种情况下 CDP 连接都会关闭。
+
 确认丢失时抛 `ReleaseUncertainError`。helper 可能已提交，因此原宿主不会再终止浏览器或重试操作。
 控制通道关闭使未提交的浏览器退出；已提交的浏览器继续存活。
 即使结果不确定，本地也已放弃终止权（owned 为 false）。
@@ -59,6 +62,8 @@ helper 在内存最多保留 stderr 尾部 16,384 **字节**，发送有界快�
 release 清空日志后，helper 继续排走并丢弃 stderr，直到浏览器生命周期结束。
 交接后仍有独立 helper，但不再依赖原宿主 stderr 管道或控制连接。
 
-正常 owned close 清理临时 profile 和 Windows helper 可执行文件；release 保留 profile。
-宿主硬退出可能留下临时 profile、编译目录和陈旧控制锁。
+正常 owned close 清理临时 profile 和 Windows helper 可执行文件；release 保留 profile，
+在 Windows 上还保留运行中 helper 位于系统临时目录的 `nodriver-guardian-*` 目录。
+之后在 Windows 上的监管启动会删除 helper 已退出且超过一小时的此类目录，包括宿主硬退出留下的目录。
+宿主硬退出还可能留下临时 profile 和陈旧控制锁。
 持久 profile 陈旧锁在确认所有者已退出后回收。确认进程退出后再删除遗留目录。

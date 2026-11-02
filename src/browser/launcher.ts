@@ -19,7 +19,7 @@ import type { Transport } from '../transport/transport.ts';
 import type { ConnectionOptions } from '../protocol/connection.ts';
 import type { AttachPolicy } from './browser.ts';
 import { StartupTracker, type StartupProcessDiagnostics } from './startup.ts';
-import { Guardian } from './guardian.ts';
+import { Guardian, ReleaseUncertainError } from './guardian.ts';
 import { DisconnectedError, NodriverError, ProfileInUseError } from '../errors.ts';
 import {
   abortReason,
@@ -75,10 +75,17 @@ export interface LaunchOptions extends WaitOptions, ConnectionOptions {
    * keep their native UA, creating observable cross-context differences. Dedicated Workers inherit it.
    */
   maskHeadless?: boolean;
-  /** "agent" adds flags that remove first-run UI and background throttling; see AGENT_ARGS. */
+  /**
+   * "agent" adds flags that remove first-run UI, background throttling and, on Linux, keyring
+   * prompts; see AGENT_ARGS.
+   */
   preset?: 'default' | 'agent';
 }
-/** Flags added by preset "agent": no first-run dialogs or bubbles, no background throttling. */
+/**
+ * Flags added by preset "agent": no first-run dialogs or bubbles, no background throttling, and
+ * `--password-store=basic`, with which Chrome on Linux encrypts saved passwords and cookies with
+ * its built-in key instead of the system keyring.
+ */
 export const AGENT_ARGS = [
   '--disable-search-engine-choice-screen',
   '--password-store=basic',
@@ -107,6 +114,46 @@ async function executableOnPath(names: string[]): Promise<string | undefined> {
 function groupGone(error: unknown): boolean {
   const code = (error as NodeJS.ErrnoException).code;
   return code === 'ESRCH' || (code === 'EPERM' && process.platform === 'darwin');
+}
+const SIGNALS = ['SIGINT', 'SIGTERM'] as const;
+/** For each signal, the launched processes that close Chrome on it, with their error handlers. */
+const signalOwners = new Map<NodeJS.Signals, Map<BrowserProcess, (error: unknown) => void>>();
+const signalListeners = new Map<NodeJS.Signals, () => void>();
+/**
+ * Closes Chrome when the host receives SIGINT or SIGTERM. One listener per signal serves every
+ * launched process: the host is terminated only once all of them have closed, and only if no
+ * other handler of the host takes the signal.
+ */
+function watchSignals(owner: BrowserProcess, onError: (error: unknown) => void): void {
+  for (const signal of SIGNALS) {
+    let owners = signalOwners.get(signal);
+    if (!owners) {
+      signalOwners.set(signal, (owners = new Map()));
+      const listener = () => {
+        // Decided before the host's handlers run: one registered with once() is gone afterwards.
+        const hosted = process.listenerCount(signal) > 1;
+        const closing = [...(signalOwners.get(signal) ?? [])].map(([owner, onError]) =>
+          owner.close().catch((error: unknown) => onError(error)),
+        );
+        void Promise.allSettled(closing).then(() => {
+          // Restore default termination once Chrome is gone, unless the host handles the signal.
+          if (!hosted && process.listenerCount(signal) === 0) process.kill(process.pid, signal);
+        });
+      };
+      signalListeners.set(signal, listener);
+      process.prependListener(signal, listener);
+    }
+    owners.set(owner, onError);
+  }
+}
+function unwatchSignals(owner: BrowserProcess): void {
+  for (const [signal, owners] of signalOwners) {
+    owners.delete(owner);
+    if (owners.size) continue;
+    process.off(signal, signalListeners.get(signal)!);
+    signalOwners.delete(signal);
+    signalListeners.delete(signal);
+  }
 }
 export async function findExecutable(explicit?: string): Promise<string> {
   if (explicit) {
@@ -162,14 +209,25 @@ export async function findExecutable(explicit?: string): Promise<string> {
   throw new NodriverError('Chrome not found; set executablePath or CHROME_PATH');
 }
 export class BrowserProcess {
+  /**
+   * Owned Chrome launched without `detached` on macOS and Linux, where Chrome runs in a process
+   * group of its own that would outlive the host. On Windows, Node ends such a child with the host.
+   */
+  private static bound = new Set<BrowserProcess>();
+  private static readonly endBound = (): void => {
+    for (const owner of BrowserProcess.bound)
+      try {
+        process.kill(-owner.child.pid!, 'SIGTERM');
+      } catch {}
+  };
   private closing?: Promise<void>;
+  private closeStarted = false;
   private releasing?: Promise<void>;
   private handedOff = false;
   private exited = false;
   private exitCode: number | null = null;
   private exitSignal: NodeJS.Signals | null = null;
   private stderr = '';
-  private signalListeners: Array<[NodeJS.Signals, () => void]> = [];
   readonly child: ChildProcess;
   readonly profile: string;
   readonly temporary: boolean;
@@ -191,18 +249,35 @@ export class BrowserProcess {
     this.lock = lock;
     this.guardian = guardian;
     if (guardian) return;
-    child.stderr?.on('data', (b: Buffer) => {
-      this.stderr = (this.stderr + b.toString()).slice(-16_384);
+    child.stderr?.setEncoding('utf8');
+    child.stderr?.on('data', (text: string) => {
+      this.stderr = (this.stderr + text).slice(-16_384);
     });
     child.on('exit', (code, signal) => {
       this.exited = true;
       this.exitCode = code;
       this.exitSignal = signal;
+      this.bind(false);
+      // Chrome's helpers can outlive their leader, and once the group is empty its ID can be
+      // reused: the group is signalled now, never after.
+      if (process.platform !== 'win32' && !this.handedOff)
+        try {
+          process.kill(-child.pid!, 'SIGKILL');
+        } catch {}
     });
     child.on('error', (e) => {
       this.stderr = (this.stderr + e.message).slice(-16_384);
       this.exited = true;
+      this.bind(false);
     });
+    if (process.platform !== 'win32' && !detached) this.bind(true);
+  }
+  private bind(bound: boolean): void {
+    const owners = BrowserProcess.bound;
+    if (bound) {
+      if (!owners.size) process.on('exit', BrowserProcess.endBound);
+      owners.add(this);
+    } else if (owners.delete(this) && !owners.size) process.off('exit', BrowserProcess.endBound);
   }
   get pid(): number | undefined {
     return this.guardian ? this.guardian.diagnostics.pid : this.child.pid;
@@ -371,21 +446,7 @@ export class BrowserProcess {
           child.once('spawn', spawned);
           child.once('error', failed);
         });
-      if (options.handleSignals)
-        for (const signal of ['SIGINT', 'SIGTERM'] as const) {
-          const listener = () => {
-            void processHandle!
-              .close()
-              .catch(options.onError ?? (() => {}))
-              .finally(() => {
-                // Restore default termination once Chrome is gone, unless the host
-                // installed its own handler.
-                if (process.listenerCount(signal) === 0) process.kill(process.pid, signal);
-              });
-          };
-          process.on(signal, listener);
-          processHandle.signalListeners.push([signal, listener]);
-        }
+      if (options.handleSignals) watchSignals(processHandle, options.onError ?? (() => {}));
       if (pipe) {
         const transport = new PipeTransport(child.stdio[4] as Readable, child.stdio[3] as Writable);
         return { process: processHandle, transport };
@@ -424,7 +485,7 @@ export class BrowserProcess {
       else {
         if (lock) {
           await lock.close().catch(() => {});
-          await rm(join(profile, '.nodriver.lock'), { force: true }).catch(() => {});
+          await rm(join(profile, LOCK), { force: true }).catch(() => {});
         }
         if (temporary) await removeTree(profile).catch(() => {});
       }
@@ -432,8 +493,8 @@ export class BrowserProcess {
     }
   }
   async waitForExit(ms: number): Promise<boolean> {
-    const end = Date.now() + ms;
-    while (!this.diagnostics.exited && Date.now() < end) await delay(25);
+    const end = performance.now() + ms;
+    while (!this.diagnostics.exited && performance.now() < end) await delay(25);
     return this.diagnostics.exited;
   }
   close(): Promise<void> {
@@ -447,6 +508,7 @@ export class BrowserProcess {
   }
   /** A failed close is not cached, so a later close() can retry the shutdown. */
   private closeOnce(): Promise<void> {
+    this.closeStarted = true;
     return (this.closing ??= this.closeOwned().catch((e: unknown) => {
       this.closing = undefined;
       throw e;
@@ -458,27 +520,43 @@ export class BrowserProcess {
   /** Relinquish process/profile ownership without terminating Chrome or deleting its profile. */
   release(): Promise<void> {
     if (this.releasing) return this.releasing;
-    if (this.closing) return Promise.reject(new NodriverError('Chrome is already closing'));
+    if (this.closeStarted) return Promise.reject(new NodriverError('Chrome is already closing'));
     if (!this.detached)
       return Promise.reject(new NodriverError('release() requires launch({ detached: true })'));
+    if (this.diagnostics.exited)
+      return Promise.reject(new NodriverError('Chrome has exited; there is nothing to release'));
+    if (this.guardian) return (this.releasing = this.releaseGuardian(this.guardian));
     // Commit before any await: signal cleanup and close() must never kill a handed-off child.
-    if (!this.guardian) this.handedOff = true;
-    for (const [signal, listener] of this.signalListeners) process.off(signal, listener);
-    this.signalListeners = [];
-    if (!this.guardian) this.child.unref();
-    return (this.releasing = (async () => {
-      if (this.lock) {
-        await this.lock.close();
-        this.lock = undefined;
-        await rm(join(this.profile, '.nodriver.lock'), { force: true });
+    this.handedOff = true;
+    unwatchSignals(this);
+    this.child.unref();
+    return (this.releasing = this.unlock());
+  }
+  private async releaseGuardian(guardian: Guardian): Promise<void> {
+    // From here a lost reply is ambiguous. The helper decides whether EOF kills or leaves
+    // Chrome; the former owner must never issue a kill after a possibly committed release.
+    this.handedOff = true;
+    try {
+      await guardian.release();
+    } catch (error) {
+      if (!(error instanceof ReleaseUncertainError)) {
+        // The helper did not release Chrome, which stays owned.
+        this.handedOff = false;
+        this.releasing = undefined;
+        throw error;
       }
-      if (this.guardian) {
-        // From here a lost reply is ambiguous. The helper decides whether EOF kills or leaves
-        // Chrome; the former owner must never issue a kill after a possibly committed release.
-        this.handedOff = true;
-        await this.guardian.release();
-      }
-    })());
+      unwatchSignals(this);
+      await this.unlock();
+      throw error;
+    }
+    unwatchSignals(this);
+    await this.unlock();
+  }
+  private async unlock(): Promise<void> {
+    if (!this.lock) return;
+    await this.lock.close();
+    this.lock = undefined;
+    await rm(join(this.profile, LOCK), { force: true });
   }
   private signalGroup(signal: NodeJS.Signals): void {
     try {
@@ -519,15 +597,15 @@ export class BrowserProcess {
     return active.some(Boolean);
   }
   private async waitForGroupExit(ms: number): Promise<boolean> {
-    const end = Date.now() + ms;
+    const end = performance.now() + ms;
     do {
       if (!(await this.groupRunning())) return true;
       await delay(25);
-    } while (Date.now() < end);
+    } while (performance.now() < end);
     return !(await this.groupRunning());
   }
   private async closeOwned(): Promise<void> {
-    for (const [signal, listener] of this.signalListeners) process.off(signal, listener);
+    unwatchSignals(this);
     if (this.guardian) await this.guardian.close();
     else if (this.pid) {
       if (process.platform === 'win32' && !this.exited) {
@@ -541,18 +619,16 @@ export class BrowserProcess {
           killer.once('close', () => resolve());
         });
       } else if (process.platform !== 'win32') {
-        this.signalGroup('SIGTERM');
-        if (!(await this.waitForGroupExit(1500))) this.signalGroup('SIGKILL');
+        // Once the leader has exited, its exit handler has signalled the group.
+        if (!this.exited) this.signalGroup('SIGTERM');
+        if (!(await this.waitForGroupExit(1500)) && !this.exited) this.signalGroup('SIGKILL');
         if (!(await this.waitForGroupExit(5000)))
           throw new DisconnectedError(`Owned Chrome process group ${this.pid} did not exit`);
       }
       if (!(await this.waitForExit(5000)))
         throw new DisconnectedError(`Owned Chrome PID ${this.pid} did not exit`);
     }
-    if (this.lock) {
-      await this.lock.close();
-      await rm(join(this.profile, '.nodriver.lock'), { force: true });
-    }
+    await this.unlock();
     if (this.temporary) await removeTree(this.profile);
     else await rm(join(this.profile, 'DevToolsActivePort'), { force: true });
   }
@@ -575,13 +651,15 @@ async function removeStaleActivePort(profile: string): Promise<void> {
   const [port, browserPath = ''] = contents.trim().split(/\r?\n/);
   const live = await fetch(`http://127.0.0.1:${Number(port)}/json/version`, {
     signal: AbortSignal.timeout(1000),
-  }).then(
-    async (response) =>
-      ((await response.json()) as { webSocketDebuggerUrl?: string }).webSocketDebuggerUrl?.endsWith(
-        browserPath,
-      ) === true,
-    () => false,
-  );
+  })
+    .then(
+      async (response) =>
+        (
+          (await response.json()) as { webSocketDebuggerUrl?: string }
+        ).webSocketDebuggerUrl?.endsWith(browserPath) === true,
+    )
+    // Nothing answering there, or something other than Chrome's DevTools endpoint.
+    .catch(() => false);
   if (live)
     throw new ProfileInUseError(
       profile,
@@ -644,6 +722,15 @@ export async function acquireProfileLock(profile: string): Promise<FileHandle> {
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
   }
+  // A contender that needed no recovery can still create the lock first.
+  const claim = async () => {
+    try {
+      return await create();
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
+      throw new ProfileInUseError(profile, 'Another process acquired the profile lock first');
+    }
+  };
   // Serialize stale-lock deletion. Checking a PID and then unlinking without this guard lets
   // two contenders both read the stale owner and one delete the other's newly acquired lock.
   const recoveryPath = `${path}.reclaim`;
@@ -663,7 +750,7 @@ export async function acquireProfileLock(profile: string): Promise<FileHandle> {
       contents = await readFile(path, 'utf8');
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
-      return await create();
+      return await claim();
     }
     const [pid, host] = contents.split('\n');
     const owner = Number(pid);
@@ -674,7 +761,7 @@ export async function acquireProfileLock(profile: string): Promise<FileHandle> {
       throw new NodriverError(message);
     }
     await rm(path, { force: true });
-    return await create();
+    return await claim();
   } finally {
     await recovery.close();
     await rm(recoveryPath, { force: true });

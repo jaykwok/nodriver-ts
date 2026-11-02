@@ -52,7 +52,7 @@ for (const kind of ['navigate', 'detach'] as const) {
       chrome.handle('Page.createIsolatedWorld', () => ({ executionContextId: 1 }));
       chrome.handle('DOM.resolveNode', () => ({ object: { type: 'object', objectId: 'node' } }));
       chrome.handle('Runtime.callFunctionOn', () => ({ result: { type: 'boolean', value: true } }));
-      chrome.handle('Runtime.releaseObject', () => {});
+      chrome.handle('Runtime.releaseObjectGroup', () => {});
       const sent = gate(),
         reply = gate();
       chrome.handle('Input.insertText', async () => {

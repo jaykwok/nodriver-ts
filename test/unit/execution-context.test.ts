@@ -87,7 +87,7 @@ test('wrong context/document fails closed and always releases temporary objects'
     transport.backendNodeId = 99;
     const connection = new Connection(transport);
     try {
-      await expect(resolveMainContext(connection.session('frame'), 8, {})).rejects.toBeInstanceOf(
+      await expect(resolveMainContext(connection.session('frame'), 8)).rejects.toBeInstanceOf(
         UnsupportedError,
       );
       expect(transport.messages.at(-1)?.method).toBe('Runtime.releaseObjectGroup');

@@ -47,6 +47,16 @@ export class InputScope {
     this.behavior.coordinator = coordinator;
     if (options.policy) this.behavior.configure(options.policy);
   }
+  /**
+   * Acknowledge that you inspected/restored this page after failed composition cleanup.
+   * Await the failed action's cleanup and verify the page before calling. Sends no commands
+   * and does not cancel composition itself. Clears only a page-level composition block,
+   * across all its attachments/frames; connection-wide failures remain blocked.
+   * Returns false if the page has no block. Uses the connection's input queue.
+   */
+  recoverComposition(): Promise<boolean> {
+    return inputCoordinator(this.session.connection).recoverComposition(this.session);
+  }
   run(
     task: (input: ScopedInput) => Promise<void>,
     options: InputScopeRunOptions = {},

@@ -118,6 +118,7 @@ test('frozen caller cancellation keeps identity; process snapshot precedes failu
           stderrStatus: 'captured',
         };
       },
+      async captureDiagnostics() {},
       async close() {
         closed = true;
       },

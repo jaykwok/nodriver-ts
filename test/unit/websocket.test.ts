@@ -1,8 +1,20 @@
 import { test } from 'node:test';
 import { expect } from '../fixtures/expect.ts';
-import { WebSocketServer } from '../../src/transport/ws-runtime.ts';
-import { Connection, WebSocketTransport } from '../../src/index.ts';
+import { WebSocketServer } from 'ws';
+import { Connection, DisconnectedError, WebSocketTransport } from '../../src/index.ts';
 import { once } from 'node:events';
+import { createServer } from 'node:net';
+import type { AddressInfo } from 'node:net';
+test('a failed WebSocket connection keeps the error that caused it', async () => {
+  const server = createServer();
+  await once(server.listen(0, '127.0.0.1'), 'listening');
+  const { port } = server.address() as AddressInfo;
+  await new Promise((resolve) => server.close(resolve));
+  const error = await WebSocketTransport.connect(`ws://127.0.0.1:${port}`).catch((e: unknown) => e);
+  expect(error).toBeInstanceOf(DisconnectedError);
+  expect((error as Error).cause).toBeInstanceOf(Error);
+  expect(((error as Error).cause as NodeJS.ErrnoException).code).toBe('ECONNREFUSED');
+});
 test('WebSocket reassembles fragmented Unicode text and enforces payload size', async () => {
   const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
   await once(server, 'listening');

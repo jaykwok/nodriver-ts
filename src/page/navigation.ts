@@ -22,7 +22,16 @@ export class NavigationWatcher {
   private armed = false;
   private settled = false;
   private options: NavigationOptions;
-  constructor(tab: Tab, options: NavigationOptions = {}, autoArm = true) {
+  /**
+   * Cross-document commits of the main frame always count. `sameDocument` decides which
+   * same-document navigations count before one; after one, they only update its URL.
+   */
+  constructor(
+    tab: Tab,
+    options: NavigationOptions = {},
+    autoArm = true,
+    sameDocument: (url: string) => boolean = () => true,
+  ) {
     this.options = options;
     this.promise = new Promise((resolve, reject) => {
       this.resolve = resolve;
@@ -30,22 +39,20 @@ export class NavigationWatcher {
     });
     void this.promise.catch(() => {});
     const timeout = timeoutValue(options.timeout ?? tab.session.connection.timeout);
-    const timer = setTimeout(
-      () =>
-        this.cancel(
-          new TimeoutError(
-            `Navigation timed out after ${timeout}ms (${options.waitUntil ?? 'load'})`,
-          ),
-        ),
-      timeout,
-    );
-    this.cleanups.push(() => clearTimeout(timer));
+    if (tab.session.closed) {
+      this.cancel(tab.session.closeReason ?? new DisconnectedError('Session closed'));
+      return;
+    }
     this.cleanups.push(
-      tab.framesManager.changes.on(({ frame, sameDocument, restored }) => {
-        if (frame === tab.mainFrame) {
-          this.committed = { loader: frame.loaderId, url: frame.url, same: sameDocument, restored };
-          this.check();
-        }
+      tab.framesManager.changes.on(({ frame, sameDocument: same, restored }) => {
+        if (frame !== tab.mainFrame) return;
+        if (!same) this.committed = { loader: frame.loaderId, url: frame.url, same, restored };
+        // For example history.replaceState() while the new document loads.
+        else if (this.committed && !this.committed.same) this.committed.url = frame.url;
+        else if (sameDocument(frame.url))
+          this.committed = { loader: frame.loaderId, url: frame.url, same };
+        else return;
+        this.check();
       }),
     );
     this.cleanups.push(
@@ -66,6 +73,16 @@ export class NavigationWatcher {
       ),
     );
     this.cleanups.push(tab.session.disconnected.on((e) => this.cancel(e)));
+    const timer = setTimeout(
+      () =>
+        this.cancel(
+          new TimeoutError(
+            `Navigation timed out after ${timeout}ms (${options.waitUntil ?? 'load'})`,
+          ),
+        ),
+      timeout,
+    );
+    this.cleanups.push(() => clearTimeout(timer));
     if (options.signal) {
       const abort = () => this.cancel(abortReason(options.signal!));
       this.cleanups.push(() => options.signal!.removeEventListener('abort', abort));

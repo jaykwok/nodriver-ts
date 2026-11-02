@@ -1,7 +1,14 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { Guardian, ReleaseUncertainError } from '../../src/browser/guardian.ts';
-import { bounded, poll } from '../../src/utils.ts';
+import { mkdir, mkdtemp, readdir, utimes, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import {
+  Guardian,
+  ReleaseUncertainError,
+  sweepHelperDirectories,
+} from '../../src/browser/guardian.ts';
+import { bounded, poll, removeTree } from '../../src/utils.ts';
 
 test('guardian captures bounded UTF-8 stderr, preserves arguments/env and confirms owned cleanup', async () => {
   const marker = '尾部-"quoted"-\\-🙂';
@@ -98,4 +105,46 @@ test('cancelled guardian creation preserves the original reason before browser s
     Guardian.create(process.execPath, [], process.env, { signal: AbortSignal.abort(reason) }),
     (error) => error === reason,
   );
+});
+
+test('a release after the browser exited is refused, not uncertain, and close still confirms exit', async () => {
+  const guardian = await Guardian.create(process.execPath, ['-e', 'process.exit(0)'], process.env);
+  try {
+    await guardian.waitReady({ timeout: 15000 });
+    await poll(async () => guardian.diagnostics.exited || undefined, { timeout: 5000 });
+    await assert.rejects(guardian.release(), (error) => !(error instanceof ReleaseUncertainError));
+  } finally {
+    await guardian.close();
+  }
+  assert.equal(guardian.diagnostics.exited, true);
+});
+
+test('the sweep removes only stale helper directories', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'nodriver-sweep-'));
+  try {
+    const now = Date.now();
+    const old = new Date(now - 2 * 60 * 60 * 1000);
+    const entry = async (name: string, files: string[], stale: boolean) => {
+      await mkdir(join(root, name));
+      for (const file of files) await writeFile(join(root, name, file), '');
+      if (stale) await utimes(join(root, name), old, old);
+    };
+    await entry('nodriver-guardian-exited', ['guardian.exe'], true);
+    await entry('nodriver-guardian-failed', [], true);
+    // A launch may still be compiling into a recent directory.
+    await entry('nodriver-guardian-recent', ['guardian.exe'], false);
+    await entry('nodriver-other', ['guardian.exe'], true);
+    await writeFile(join(root, 'nodriver-guardian-file'), '');
+    await utimes(join(root, 'nodriver-guardian-file'), old, old);
+    await sweepHelperDirectories(root, now);
+    assert.deepEqual((await readdir(root)).sort(), [
+      'nodriver-guardian-file',
+      'nodriver-guardian-recent',
+      'nodriver-other',
+    ]);
+    // A missing root is not an error.
+    await sweepHelperDirectories(join(root, 'missing'), now);
+  } finally {
+    await removeTree(root);
+  }
 });

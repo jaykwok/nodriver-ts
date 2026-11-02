@@ -35,9 +35,9 @@ import { Browser } from 'nodriver-ts';
 }
 ```
 
-`detached` 默认为 `false`，Chrome 与宿主进程绑定。设为 `true` 且未启用 `supervised` 时，所有平台都以分离模式 spawn Chrome，stdin/stdout/stderr 都不绑定宿主管道；Chrome 的 stderr 不会进入启动诊断。监管模式则通过独立 helper 采集有界 stderr。CDP 仍使用 WebSocket，调试端口须在浏览器存活期间保持可用。
+`detached` 默认为 `false`：宿主退出时 Chrome 随之结束，包括正常退出、`process.exit()` 和未捕获异常。SIGINT 和 SIGTERM 终止宿主时不经过退出流程，因此只有设置 `handleSignals: true` 才会关闭 Chrome。宿主被直接杀死时，pipe Chrome 在管道断开时退出，Windows 也会随宿主结束 Chrome，但 macOS 或 Linux 上的 WebSocket Chrome 会继续运行。设为 `true` 且未启用 `supervised` 时，所有平台都以分离模式 spawn Chrome，stdin/stdout/stderr 都不绑定宿主管道；Chrome 的 stderr 不会进入启动诊断。监管模式则通过独立 helper 采集有界 stderr。CDP 仍使用 WebSocket，调试端口须在浏览器存活期间保持可用。
 
-`release()` 幂等，返回浏览器的 WebSocket endpoint。它不发送 `Browser.close`、不终止进程、不关闭标签页或删除 profile，而是解除信号清理、取消子进程对 Node 事件循环的引用并断开 CDP。之后 `browser.owned === false`，`browser.closed === true`（指本连接），`close()`、`Symbol.asyncDispose` 和原 `browser.process.close()` 都不会终止 Chrome。旧 Tab/Session 不可继续使用，重连后获取新对象。已开始的 `close()` 会使后续 `release()` 拒绝；已开始的 `release()` 则使并发 `close()` 等待交接后仅断开。
+`release()` 幂等，返回浏览器的 WebSocket endpoint。它不发送 `Browser.close`、不终止进程、不关闭标签页或删除 profile，而是解除信号清理、取消子进程对 Node 事件循环的引用并断开 CDP。之后 `browser.owned === false`，`browser.closed === true`（指本连接），`close()`、`Symbol.asyncDispose` 和原 `browser.process.close()` 都不会终止 Chrome。旧 Tab/Session 不可继续使用，重连后获取新对象。已开始的 `close()` 会使后续 `release()` 拒绝；Chrome 已退出时同样拒绝，因为没有可交接的进程，`close()` 仍会确认其退出。已开始的 `release()` 则使并发 `close()` 等待交接后仅断开。
 
 自有浏览器只有显式以 `detached: true` 启动才能交接。`Browser.connect()` 得到的实例也可调用 `release()`，仅断开并返回 endpoint。普通 `disconnect()` 保留自有进程的所有权，之后 `close()` 仍清理它；满足独立启动条件时，可在断开后再 `release()`。
 

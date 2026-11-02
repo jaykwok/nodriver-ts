@@ -2,7 +2,7 @@ import type { Protocol } from 'devtools-protocol';
 import { randomUUID } from 'node:crypto';
 import type { Session, CdpEvent } from '../protocol/connection.ts';
 import { EvaluationError, StaleElementError, DisconnectedError } from '../errors.ts';
-import { bounded, EventHub, poll, type WaitOptions } from '../utils.ts';
+import { bounded, budget, EventHub, poll, type WaitOptions } from '../utils.ts';
 import { query, type Selector, type QueryOptions } from '../dom/query.ts';
 import type { Element } from '../dom/element.ts';
 import type { Tab } from './tab.ts';
@@ -42,13 +42,25 @@ export function valueOf(object: Protocol.Runtime.RemoteObject): unknown {
   }
   return object.value;
 }
-export function checkException(result: {
-  exceptionDetails?: Protocol.Runtime.ExceptionDetails;
-}): void {
-  if (result.exceptionDetails)
-    throw new EvaluationError(
-      result.exceptionDetails.exception?.description ?? result.exceptionDetails.text,
-    );
+/**
+ * Throws the page exception of an evaluation as an EvaluationError. With `session`, the exception
+ * object is released; otherwise it must belong to an object group that the caller releases.
+ */
+export function checkException(
+  result: { exceptionDetails?: Protocol.Runtime.ExceptionDetails },
+  session?: Session,
+): void {
+  const details = result.exceptionDetails;
+  if (!details) return;
+  const exception = details.exception;
+  if (exception?.objectId && session && !session.closed)
+    void session.send('Runtime.releaseObject', { objectId: exception.objectId }).catch(() => {});
+  throw new EvaluationError(
+    exception?.description ??
+      (exception && 'value' in exception
+        ? `${details.text} ${String(exception.value)}`
+        : details.text),
+  );
 }
 export class JSHandle<T = unknown> {
   private disposed = false;
@@ -81,7 +93,7 @@ export class JSHandle<T = unknown> {
       returnByValue: true,
       awaitPromise: true,
     });
-    checkException(result);
+    checkException(result, this.session);
     this.assertValid();
     return valueOf(result.result) as T;
   }
@@ -147,7 +159,7 @@ export class Frame {
         const promise = this.sharedContext('isolated')
           .then((id) => {
             this.assertDocument(generation, session);
-            return resolveMainContext(session, id, {});
+            return resolveMainContext(session, id);
           })
           .then((id) => {
             this.assertDocument(generation, session);
@@ -205,7 +217,8 @@ export class Frame {
     }
     const generation = this.generation;
     const session = this.session;
-    const contextId = await this.context(options.world ?? 'main', options);
+    const step = budget(options, 'evaluation');
+    const contextId = await this.context(options.world ?? 'main', step());
     this.assertDocument(generation, session);
     if (arg instanceof JSHandle && (arg.session !== session || arg.frame !== this))
       throw new TypeError('Handle arguments must belong to this frame');
@@ -213,14 +226,14 @@ export class Frame {
     try {
       result =
         typeof fn === 'string'
-          ? await session.sendWith('Runtime.evaluate', options, {
+          ? await session.sendWith('Runtime.evaluate', step(), {
               expression: fn,
               contextId,
               awaitPromise: true,
               returnByValue: !handle,
               timeout: options.executionTimeout,
             })
-          : await session.sendWith('Runtime.callFunctionOn', options, {
+          : await session.sendWith('Runtime.callFunctionOn', step(), {
               functionDeclaration: `function(arg){return (${fn.toString()})(arg)}`,
               executionContextId: contextId,
               arguments: [argument(arg)],
@@ -233,7 +246,7 @@ export class Frame {
         this.invalidate();
       throw error;
     }
-    checkException(result);
+    checkException(result, session);
     if (
       this.detached ||
       session.closed ||
@@ -277,13 +290,17 @@ export class Frame {
         try {
           return await this.query(selector, { ...options, ...step });
         } catch (e) {
-          if (e instanceof StaleElementError && !this.detached) return undefined;
+          if (this.pending(e)) return undefined;
           throw e;
         }
       },
       options,
       `selector ${JSON.stringify(selector)}`,
     );
+  }
+  /** A document that is being replaced: a wait polls the next one while the frame lives. */
+  private pending(error: unknown): boolean {
+    return (error instanceof StaleElementError || isContextGone(error)) && !this.detached;
   }
   async waitForFunction<T, A = unknown>(
     fn: string | ((arg: EvaluationInput<A>) => T | Promise<T>),
@@ -292,15 +309,20 @@ export class Frame {
   ): Promise<T> {
     return poll(
       async (step) => {
-        const result = await this.evaluate(fn, arg, { ...options, ...step });
-        return result ? result : undefined;
+        try {
+          const result = await this.evaluate(fn, arg, { ...options, ...step });
+          return result ? result : undefined;
+        } catch (e) {
+          if (this.pending(e)) return undefined;
+          throw e;
+        }
       },
       options,
       'page function',
     );
   }
   async content(): Promise<string> {
-    return this.evaluate('document.documentElement.outerHTML');
+    return this.evaluate('document.documentElement.outerHTML', undefined, { world: 'isolated' });
   }
   /** With `origin`, throws instead of reading when the document belongs to another origin. */
   async storage(
@@ -509,18 +531,6 @@ export class FrameManager {
         .finally(() => {
           this.setup.delete(e.sessionId);
         });
-    } else if (event.method === 'Target.detachedFromTarget') {
-      const e = p as Protocol.Target.DetachedFromTargetEvent;
-      for (const s of this.sessions)
-        if (s.id === e.sessionId) {
-          this.untrack(s);
-          for (const f of this.frames.values())
-            if (f.session === s) {
-              f.invalidate();
-              f.detached = true;
-              this.frames.delete(f.id);
-            }
-        }
     } else if (event.method === 'Page.frameAttached') {
       const e = p as Protocol.Page.FrameAttachedEvent;
       const f = this.frames.get(e.frameId);
@@ -570,7 +580,8 @@ export class FrameManager {
         }
       }
     } else if (event.method === 'Inspector.targetCrashed') {
-      this.tab.crashed = true;
+      // An out-of-process frame can crash on its own; the page stays usable.
+      if (session === this.session) this.tab.crashed = true;
       for (const f of this.frames.values()) if (f.session === session) f.invalidate();
     }
   }

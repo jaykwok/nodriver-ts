@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { Browser, ProtocolError, TimeoutError } from '../../src/index.ts';
+import { Browser, DisconnectedError, ProtocolError, TimeoutError } from '../../src/index.ts';
 import { NO_REPLY, ScriptedChrome } from '../../src/testing/index.ts';
 
 test('scripted Chrome builds real Browser, Tab and Session objects with a strict handshake', async () => {
@@ -50,9 +50,24 @@ test('queued and persistent typed handlers see params, route by session, and pre
   await assert.rejects(
     a!.cdp.send('Runtime.evaluate', { expression: 'fail' }),
     (error: unknown) =>
-      error instanceof ProtocolError && error.code === -32001 && error.data === 'details',
+      error instanceof ProtocolError &&
+      error.code === -32001 &&
+      error.data === 'details' &&
+      error.message === 'Runtime.evaluate: scripted failure (details)',
   );
   chrome.assertDone();
+});
+
+test('an unscripted command for an unknown session is answered as Chrome does', async () => {
+  await using chrome = await ScriptedChrome.start();
+  await using browser = await chrome.connect({ attach: 'none' });
+  // Chrome replies without the session's ID, which fails only that command.
+  await assert.rejects(
+    browser.connection.session('gone').send('Page.enable'),
+    (error: unknown) =>
+      error instanceof DisconnectedError && /Session with given id not found/.test(error.message),
+  );
+  assert.equal(browser.closed, false);
 });
 
 test('unexpected methods fail explicitly and unused scripts are detectable', async () => {

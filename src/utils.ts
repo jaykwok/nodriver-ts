@@ -43,13 +43,14 @@ export function delay(ms: number, signal?: AbortSignal): Promise<void> {
  */
 export function budget(options: WaitOptions = {}, label = 'operation'): () => WaitOptions {
   const end =
-    options.timeout === undefined ? undefined : Date.now() + timeoutValue(options.timeout);
+    options.timeout === undefined ? undefined : performance.now() + timeoutValue(options.timeout);
   return () => {
     if (options.signal?.aborted) throw abortReason(options.signal);
     if (end === undefined) return { signal: options.signal };
-    const timeout = end - Date.now();
+    const timeout = end - performance.now();
     if (timeout <= 0) throw new TimeoutError(`${label} timed out`);
-    return { timeout, signal: options.signal };
+    // Whole milliseconds, as some APIs such as child_process accept no fractions.
+    return { timeout: Math.ceil(timeout), signal: options.signal };
   };
 }
 /** Settles with `promise`, or rejects on the caller's timeout/abort while `promise` continues. */
@@ -94,7 +95,7 @@ export async function poll<T>(
   label = 'condition',
 ): Promise<T> {
   const timeout = timeoutValue(options.timeout ?? 10_000);
-  const end = Date.now() + timeout;
+  const end = performance.now() + timeout;
   const step = budget({ ...options, timeout }, label);
   do {
     let value: T | undefined;
@@ -102,13 +103,13 @@ export async function poll<T>(
       value = await fn(step());
     } catch (error) {
       // A step that ran out of the shared budget is this wait timing out.
-      if (error instanceof TimeoutError && Date.now() >= end)
+      if (error instanceof TimeoutError && performance.now() >= end)
         throw new TimeoutError(`Timed out waiting for ${label}`);
       throw error;
     }
     if (value !== undefined) return value;
-    if (Date.now() >= end) throw new TimeoutError(`Timed out waiting for ${label}`);
-    await delay(Math.min(50, Math.max(0, end - Date.now())), options.signal);
+    if (performance.now() >= end) throw new TimeoutError(`Timed out waiting for ${label}`);
+    await delay(Math.min(50, Math.max(0, end - performance.now())), options.signal);
   } while (true);
 }
 export type Listener<T> = (event: T) => void | Promise<void>;
@@ -153,13 +154,14 @@ const BUSY = new Set(['EBUSY', 'EPERM', 'EACCES', 'ENOTEMPTY', 'EMFILE', 'ENFILE
  * helper processes can outlive the browser process briefly).
  */
 export async function removeTree(path: string, timeout = 10_000): Promise<void> {
-  const end = Date.now() + timeout;
+  const end = performance.now() + timeout;
   for (let wait = 50; ; wait = Math.min(wait * 2, 500)) {
     try {
       await rm(path, { recursive: true, force: true });
       return;
     } catch (e) {
-      if (!BUSY.has((e as NodeJS.ErrnoException).code ?? '') || Date.now() + wait > end) throw e;
+      if (!BUSY.has((e as NodeJS.ErrnoException).code ?? '') || performance.now() + wait > end)
+        throw e;
       await delay(wait);
     }
   }

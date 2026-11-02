@@ -17,9 +17,15 @@ function gate() {
   return { resolve, promise };
 }
 type Focus = { kind: 'editable' | 'none' | 'unknown'; host: boolean };
+const declared = (chrome: ScriptedChrome, text: string) =>
+  chrome.commands.filter(
+    (c) =>
+      c.method === 'Runtime.callFunctionOn' &&
+      (c.params as { functionDeclaration: string }).functionDeclaration.includes(text),
+  );
 /**
  * `classify` answers the editability probe for each element, `inner` the probe that continues in
- * a closed shadow root.
+ * a closed shadow root, `collapsed` the selection probe before a forced cancel.
  */
 function model(
   chrome: ScriptedChrome,
@@ -29,6 +35,7 @@ function model(
     subtype: 'null',
     value: null,
   }),
+  collapsed: () => boolean = () => true,
 ) {
   let focused = true,
     worlds = 0;
@@ -41,6 +48,8 @@ function model(
     if (params.functionDeclaration.includes(':read-write'))
       return { result: { type: 'object', value: classify(params.objectId!) } };
     if (params.functionDeclaration.includes("'mismatch'")) return { result: inner() };
+    if (params.functionDeclaration.includes('isCollapsed'))
+      return { result: { type: 'boolean', value: collapsed() } };
     if (params.functionDeclaration.includes('isConnected'))
       return { result: { type: 'boolean', value: focused } };
     return { result: { type: 'object', objectId: 'focus' } };
@@ -102,6 +111,39 @@ test('unfinished and explicit-cancel composition both cancel once, invalid range
   assert.deepEqual(texts, ['你好', '', '😀', '']);
   assert.equal(chrome.commands.filter((c) => c.method === 'Input.insertText').length, 0);
 });
+test('the end of a composition is watched until cleanup, except where its events cannot be seen', async () => {
+  for (const kind of ['editable', 'unknown'] as const) {
+    await using chrome = await ScriptedChrome.start();
+    model(chrome, () => ({ kind, host: false }));
+    await using browser = await chrome.connect({ attach: 'none' });
+    const session = await browser.attachSession([...browser.targetInfo.keys()][0]!);
+    await new Keyboard(session).compose(async (ime) => {
+      await ime.update('中');
+    });
+    const at = (command: unknown) => chrome.commands.indexOf(command as never);
+    const cancel = chrome.commands.find(
+      (c) => c.method === 'Input.imeSetComposition' && (c.params as { text: string }).text === '',
+    );
+    const [added, read, removed] = [
+      "addEventListener('compositionend'",
+      'return this.ended',
+      "removeEventListener('compositionend'",
+    ].map((text) => declared(chrome, text));
+    if (kind === 'unknown') {
+      assert.deepEqual([added!.length, read!.length, removed!.length], [0, 0, 0]);
+      assert.ok(cancel);
+      continue;
+    }
+    assert.deepEqual([added!.length, read!.length, removed!.length], [1, 1, 1]);
+    assert.ok(at(added![0]) < at(read![0]));
+    assert.ok(at(read![0]) < at(cancel));
+    assert.ok(at(cancel) < at(removed![0]));
+    assert.ok(
+      at(removed![0]) <
+        at(chrome.commands.findLast((c) => c.method === 'Runtime.releaseObjectGroup')),
+    );
+  }
+});
 test('focus loss blocks commit and does not cancel a different editor', async () => {
   await using chrome = await ScriptedChrome.start();
   const blur = model(chrome);
@@ -120,6 +162,124 @@ test('focus loss blocks commit and does not cancel a different editor', async ()
   assert.equal((await error.cleanup).status, 'failed');
   assert.equal(chrome.commands.filter((c) => c.method === 'Input.insertText').length, 0);
   assert.equal(chrome.commands.filter((c) => c.method === 'Input.imeSetComposition').length, 1);
+});
+
+for (const ending of ['update', 'commit', 'cancel', 'return', 'abort'] as const) {
+  test(`forceCancel cleans the current focus after ${ending}, without allowing input after focus loss`, async () => {
+    await using chrome = await ScriptedChrome.start();
+    const blur = model(chrome);
+    await using browser = await chrome.connect({ attach: 'none' });
+    const session = await browser.attachSession([...browser.targetInfo.keys()][0]!);
+    const controller = new AbortController(),
+      reason = new Error('stop');
+    const result = await browser
+      .inputScope(session, { pageEvents: false })
+      .run(
+        async (input) => {
+          await input.composition.update('中');
+          blur();
+          if (ending === 'update') await input.composition.update('不得写入');
+          if (ending === 'commit') await input.composition.commit('不得写入');
+          if (ending === 'cancel') {
+            await input.composition.cancel();
+            await input.composition.cancel();
+          }
+          if (ending === 'abort') controller.abort(reason);
+        },
+        { forceCancel: true, signal: controller.signal },
+      )
+      .catch((e) => e);
+    if (ending === 'update' || ending === 'commit' || ending === 'abort') {
+      assert.ok(result instanceof InputActionError);
+      if (ending === 'abort') assert.equal(result.cause, reason);
+      else assert.ok(result.cause instanceof ActionabilityError);
+      assert.equal((await result.cleanup).status, 'completed');
+    } else assert.equal(result.cleanup, 'completed');
+    assert.deepEqual(
+      chrome.commands.filter((c) => c.method === 'Input.imeSetComposition').map((c) => c.params),
+      [
+        { text: '中', selectionStart: 1, selectionEnd: 1 },
+        { text: '', selectionStart: 0, selectionEnd: 0 },
+      ],
+    );
+    assert.equal(chrome.commands.filter((c) => c.method === 'Input.insertText').length, 0);
+    await new Keyboard(session).insertText('后续');
+  });
+}
+
+for (const current of ['selection', 'not editable', 'cross-origin']) {
+  test(`forceCancel refuses an empty cancel at a current focus with ${current}`, async () => {
+    await using chrome = await ScriptedChrome.start();
+    let moved = false;
+    const blur = model(
+      chrome,
+      () =>
+        !moved
+          ? { kind: 'editable', host: false }
+          : {
+              kind:
+                current === 'not editable'
+                  ? 'none'
+                  : current === 'cross-origin'
+                    ? 'unknown'
+                    : 'editable',
+              host: false,
+            },
+      undefined,
+      () => current !== 'selection',
+    );
+    await using browser = await chrome.connect({ attach: 'none' });
+    const session = await browser.attachSession([...browser.targetInfo.keys()][0]!);
+    const error = await browser
+      .inputScope(session, { pageEvents: false })
+      .run(
+        async (input) => {
+          await input.composition.update('中');
+          blur();
+          moved = true;
+          await input.composition.commit();
+        },
+        { forceCancel: true },
+      )
+      .catch((e) => e);
+    assert.ok(error instanceof InputActionError);
+    const cleanup = await error.cleanup;
+    assert.equal(cleanup.status, 'failed');
+    assert.match(cleanup.report.cleanupErrors.join(), /Composition cancel refused/);
+    // Without a composition, Chrome's empty update would delete the selected text.
+    assert.equal(chrome.commands.filter((c) => c.method === 'Input.imeSetComposition').length, 1);
+    const probes = chrome.commands.filter(
+      (c) =>
+        c.method === 'Runtime.callFunctionOn' &&
+        (c.params as { functionDeclaration: string }).functionDeclaration.includes('isCollapsed'),
+    );
+    assert.equal(probes.length, current === 'selection' ? 1 : 0);
+    await assert.rejects(new Keyboard(session).insertText('后续'), InputActionError);
+  });
+}
+
+test('forceCancel sends no cancellation if focus was lost before the first update', async () => {
+  await using chrome = await ScriptedChrome.start();
+  const blur = model(chrome, () => {
+    blur();
+    return { kind: 'editable', host: false };
+  });
+  await using browser = await chrome.connect({ attach: 'none' });
+  const session = await browser.attachSession([...browser.targetInfo.keys()][0]!);
+  const keyboard = new Keyboard(session);
+  const error = await keyboard
+    .compose(
+      async (ime) => {
+        await ime.update('中');
+      },
+      { forceCancel: true },
+    )
+    .catch((e) => e);
+  assert.ok(error instanceof InputActionError);
+  assert.ok(error.cause instanceof ActionabilityError);
+  assert.equal((await error.cleanup).status, 'completed');
+  assert.equal(chrome.commands.filter((c) => c.method === 'Input.imeSetComposition').length, 0);
+  await keyboard.insertText('后续');
 });
 test('abort cancels composition, preserves reason and never repeats a commit', async () => {
   await using chrome = await ScriptedChrome.start();
@@ -228,32 +388,34 @@ test('late composition update holds the queue through cancellation and its ACK',
   );
 });
 
-test('unacknowledged composition cancellation fails cleanup without retries or later input', async () => {
-  await using chrome = await ScriptedChrome.start();
-  model(chrome);
-  chrome.handle('Input.imeSetComposition', (params) => (params.text ? undefined : NO_REPLY));
-  await using browser = await chrome.connect({ attach: 'none' });
-  const session = await browser.attachSession([...browser.targetInfo.keys()][0]!);
-  const keyboard = new Keyboard(session);
-  const error = await keyboard
-    .compose(
-      async (ime) => {
-        await ime.update('取消');
-      },
-      { cleanupTimeout: 40 },
-    )
-    .catch((e) => e);
-  assert.ok(error instanceof InputActionError);
-  assert.equal((await error.cleanup).status, 'failed');
-  // Let the scripted peer's object-release replies arrive before counting the missing cancel ACK.
-  await browser.cdp.send('Browser.getVersion');
-  const blocked = await keyboard.insertText('不得写入').catch((e) => e);
-  assert.ok(blocked instanceof InputActionError);
-  assert.ok(blocked.cause instanceof InputBlockedError);
-  assert.equal(browser.connection.unansweredCount, 1);
-  assert.equal(chrome.commands.filter((c) => c.method === 'Input.imeSetComposition').length, 2);
-  assert.equal(chrome.commands.filter((c) => c.method === 'Input.insertText').length, 0);
-});
+for (const forceCancel of [false, true]) {
+  test(`unacknowledged composition cancellation fails cleanup without retries or later input; forceCancel=${forceCancel}`, async () => {
+    await using chrome = await ScriptedChrome.start();
+    model(chrome);
+    chrome.handle('Input.imeSetComposition', (params) => (params.text ? undefined : NO_REPLY));
+    await using browser = await chrome.connect({ attach: 'none' });
+    const session = await browser.attachSession([...browser.targetInfo.keys()][0]!);
+    const keyboard = new Keyboard(session);
+    const error = await keyboard
+      .compose(
+        async (ime) => {
+          await ime.update('取消');
+        },
+        { cleanupTimeout: 40, forceCancel },
+      )
+      .catch((e) => e);
+    assert.ok(error instanceof InputActionError);
+    assert.equal((await error.cleanup).status, 'failed');
+    // Let the scripted peer's object-release replies arrive before counting the missing cancel ACK.
+    await browser.cdp.send('Browser.getVersion');
+    const blocked = await keyboard.insertText('不得写入').catch((e) => e);
+    assert.ok(blocked instanceof InputActionError);
+    assert.ok(blocked.cause instanceof InputBlockedError);
+    assert.equal(browser.connection.unansweredCount, 1);
+    assert.equal(chrome.commands.filter((c) => c.method === 'Input.imeSetComposition').length, 2);
+    assert.equal(chrome.commands.filter((c) => c.method === 'Input.insertText').length, 0);
+  });
+}
 
 test('focus probes run in a reused isolated world; pageEvents false sends no enable', async () => {
   await using chrome = await ScriptedChrome.start();
@@ -297,7 +459,7 @@ test('focus probes run in a reused isolated world; pageEvents false sends no ena
   for (const c of captures) assert.equal((c.params as { objectId?: string }).objectId, 'world-1');
 });
 
-test('an explicit execution context is used as is; Page events stay on by default', async () => {
+test('an explicit execution context is probed through its global object; Page events stay on by default', async () => {
   await using chrome = await ScriptedChrome.start();
   model(chrome);
   await using browser = await chrome.connect({ attach: 'none' });
@@ -310,9 +472,48 @@ test('an explicit execution context is used as is; Page events stay on by defaul
   );
   assert.equal(chrome.commands.filter((c) => c.method === 'Page.enable').length, 1);
   assert.equal(chrome.commands.filter((c) => c.method === 'Page.createIsolatedWorld').length, 0);
-  assert.equal(chrome.commands.filter((c) => c.method === 'Runtime.evaluate').length, 0);
+  const evaluations = chrome.commands.filter((c) => c.method === 'Runtime.evaluate');
+  assert.deepEqual(
+    evaluations.map((c) => (c.params as { contextId?: number }).contextId),
+    [42],
+  );
   const [capture] = chrome.commands.filter((c) => c.method === 'Runtime.callFunctionOn');
-  assert.equal((capture!.params as { executionContextId?: number }).executionContextId, 42);
+  assert.equal((capture!.params as { objectId?: string }).objectId, 'world-0');
+  assert.equal((capture!.params as { executionContextId?: number }).executionContextId, undefined);
+});
+
+test('a forced cancel probes the explicit context through the handle resolved first', async () => {
+  await using chrome = await ScriptedChrome.start();
+  const blur = model(chrome);
+  await using browser = await chrome.connect({ attach: 'none' });
+  const session = await browser.attachSession([...browser.targetInfo.keys()][0]!);
+  await new Keyboard(session).compose(
+    async (ime) => {
+      await ime.update('中文');
+      blur();
+    },
+    { executionContextId: 42, forceCancel: true },
+  );
+  // A numeric context ID can name a newer document's context; the handle cannot.
+  assert.equal(chrome.commands.filter((c) => c.method === 'Runtime.evaluate').length, 1);
+  const probes = chrome.commands.filter(
+    (c) =>
+      c.method === 'Runtime.callFunctionOn' &&
+      (c.params as { functionDeclaration: string }).functionDeclaration.includes(
+        'document.activeElement',
+      ),
+  );
+  assert.equal(probes.length, 2);
+  for (const probe of probes) {
+    assert.equal((probe.params as { objectId?: string }).objectId, 'world-0');
+    assert.equal((probe.params as { executionContextId?: number }).executionContextId, undefined);
+  }
+  assert.deepEqual(
+    chrome.commands
+      .filter((c) => c.method === 'Input.imeSetComposition')
+      .map((c) => (c.params as { text: string }).text),
+    ['中文', ''],
+  );
 });
 
 test('a probe world gone with its document or released is replaced', async () => {

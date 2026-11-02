@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { Session } from '../protocol/connection.ts';
 import { ProtocolError, UnsupportedError } from '../errors.ts';
-import type { WaitOptions } from '../utils.ts';
 
 export function isContextGone(error: unknown): boolean {
   return (
@@ -29,16 +28,19 @@ export function parseRemoteObjectId(objectId: string | undefined): {
   return { isolate: match[1]!, context };
 }
 
+/**
+ * The main-world context of the frame that owns `isolatedContext`. Callers bound the wait; the
+ * lookup is shared by every caller of one document.
+ */
 export async function resolveMainContext(
   session: Session,
   isolatedContext: number,
-  options: WaitOptions,
 ): Promise<number> {
   const objectGroup = randomUUID();
   try {
     // The isolated context belongs to the exact frame, including same-process
     // children. No DOM-tree search, frame-owner access or injected bridge needed.
-    const isolated = await session.sendWith('Runtime.evaluate', options, {
+    const isolated = await session.send('Runtime.evaluate', {
       expression: 'this.document',
       contextId: isolatedContext,
       objectGroup,
@@ -47,12 +49,12 @@ export async function resolveMainContext(
     const source = parseRemoteObjectId(isolated.result.objectId);
     if (source.context !== isolatedContext)
       throw new UnsupportedError('RemoteObjectId context does not match Page.createIsolatedWorld');
-    const { node } = await session.sendWith('DOM.describeNode', options, {
+    const { node } = await session.send('DOM.describeNode', {
       objectId: isolated.result.objectId!,
     });
     // Chromium ResolveNode uses the node's owning frame MAIN world when the
     // executionContextId is omitted. Always use that frame's CDP session.
-    const { object } = await session.sendWith('DOM.resolveNode', options, {
+    const { object } = await session.send('DOM.resolveNode', {
       backendNodeId: node.backendNodeId,
       objectGroup,
     });
@@ -62,7 +64,7 @@ export async function resolveMainContext(
 
     // Verify the inferred context still points at this document before caching
     // it. This read has no user-script side effects and never replays evaluation.
-    const probe = await session.sendWith('Runtime.evaluate', options, {
+    const probe = await session.send('Runtime.evaluate', {
       expression: 'this.document',
       contextId: main.context,
       objectGroup,
@@ -70,7 +72,7 @@ export async function resolveMainContext(
     });
     if (!probe.result.objectId)
       throw new UnsupportedError('Main-world document could not be verified');
-    const verified = await session.sendWith('DOM.describeNode', options, {
+    const verified = await session.send('DOM.describeNode', {
       objectId: probe.result.objectId,
     });
     if (verified.node.backendNodeId !== node.backendNodeId)

@@ -125,20 +125,23 @@ export class Mouse {
       if (this.buttons) throw new Error('Mouse button is already held');
       const bits = { none: 0, left: 1, right: 2, middle: 4, back: 8, forward: 16 };
       if (!bits[button]) throw new TypeError('A mouse button is required');
-      const release = action.release(async () => {
-        this.buttons = 0;
-        this.held = undefined;
-        await action.sendCleanup(this.session, 'Input.dispatchMouseEvent', {
-          type: 'mouseReleased',
-          x: this.x,
-          y: this.y,
-          button,
-          buttons: 0,
-          clickCount: 1,
-          modifiers: this.behavior.modifiers,
-        });
-        action.record('up', this.position);
-      });
+      const release = action.release(
+        async () => {
+          this.buttons = 0;
+          this.held = undefined;
+          await action.sendCleanup(this.session, 'Input.dispatchMouseEvent', {
+            type: 'mouseReleased',
+            x: this.x,
+            y: this.y,
+            button,
+            buttons: 0,
+            clickCount: 1,
+            modifiers: this.behavior.modifiers,
+          });
+          action.record('up', this.position);
+        },
+        { session: this.session },
+      );
       this.buttons = bits[button];
       this.held = { button, release };
       await action.send(this.session, 'Input.dispatchMouseEvent', {
@@ -162,20 +165,23 @@ export class Mouse {
       if (this.scope) await this.held.release.run();
       else {
         const button = this.held.button;
-        const release = action.release(async () => {
-          this.buttons = 0;
-          this.held = undefined;
-          await action.sendCleanup(this.session, 'Input.dispatchMouseEvent', {
-            type: 'mouseReleased',
-            x: this.x,
-            y: this.y,
-            button,
-            buttons: 0,
-            clickCount: 1,
-            modifiers: this.behavior.modifiers,
-          });
-          action.record('up', this.position);
-        });
+        const release = action.release(
+          async () => {
+            this.buttons = 0;
+            this.held = undefined;
+            await action.sendCleanup(this.session, 'Input.dispatchMouseEvent', {
+              type: 'mouseReleased',
+              x: this.x,
+              y: this.y,
+              button,
+              buttons: 0,
+              clickCount: 1,
+              modifiers: this.behavior.modifiers,
+            });
+            action.record('up', this.position);
+          },
+          { session: this.session },
+        );
         await release.run();
       }
     });
@@ -200,16 +206,19 @@ export class Mouse {
         button: options.button ?? 'left',
         clickCount: options.clickCount ?? 1,
       };
-      const release = action.release(async () => {
-        this.buttons = 0;
-        await action.sendCleanup(this.session, 'Input.dispatchMouseEvent', {
-          ...params,
-          type: 'mouseReleased',
-          buttons: 0,
-          modifiers: this.behavior.modifiers,
-        });
-        action.record('up', { x, y });
-      });
+      const release = action.release(
+        async () => {
+          this.buttons = 0;
+          await action.sendCleanup(this.session, 'Input.dispatchMouseEvent', {
+            ...params,
+            type: 'mouseReleased',
+            buttons: 0,
+            modifiers: this.behavior.modifiers,
+          });
+          action.record('up', { x, y });
+        },
+        { session: this.session },
+      );
       const bits = { none: 0, left: 1, right: 2, middle: 4, back: 8, forward: 16 };
       this.buttons = bits[params.button];
       try {
@@ -262,19 +271,22 @@ export class Mouse {
     return this.action('drag', options, async (action) => {
       if (this.buttons) throw new Error('Cannot drag while a mouse button is held');
       await this.path(from.x, from.y, action);
-      const release = action.release(async () => {
-        this.buttons = 0;
-        await action.sendCleanup(this.session, 'Input.dispatchMouseEvent', {
-          type: 'mouseReleased',
-          x: this.x,
-          y: this.y,
-          button: 'left',
-          buttons: 0,
-          clickCount: 1,
-          modifiers: this.behavior.modifiers,
-        });
-        action.record('up', this.position);
-      });
+      const release = action.release(
+        async () => {
+          this.buttons = 0;
+          await action.sendCleanup(this.session, 'Input.dispatchMouseEvent', {
+            type: 'mouseReleased',
+            x: this.x,
+            y: this.y,
+            button: 'left',
+            buttons: 0,
+            clickCount: 1,
+            modifiers: this.behavior.modifiers,
+          });
+          action.record('up', this.position);
+        },
+        { session: this.session },
+      );
       this.buttons = 1;
       try {
         await action.send(this.session, 'Input.dispatchMouseEvent', {
@@ -514,11 +526,14 @@ export class Keyboard {
     const autoRepeat = this.pressed.has(key);
     const release =
       (this.scope && this.releases.get(key)) ||
-      action.release(async () => {
-        this.releases.delete(key);
-        await this.upRaw(key, action, true);
-        action.record('keyUp');
-      });
+      action.release(
+        async () => {
+          this.releases.delete(key);
+          await this.upRaw(key, action, true);
+          action.record('keyUp');
+        },
+        { session: this.session },
+      );
     this.releases.set(key, release);
     this.pressed.set(key, value);
     this.behavior.modifiers = this.modifiers;
@@ -552,11 +567,14 @@ export class Keyboard {
         await action.check();
         keyDefinition(key);
         await action
-          .release(async () => {
-            this.releases.delete(key);
-            await this.upRaw(key, action, true);
-            action.record('keyUp');
-          })
+          .release(
+            async () => {
+              this.releases.delete(key);
+              await this.upRaw(key, action, true);
+              action.record('keyUp');
+            },
+            { session: this.session },
+          )
           .run();
       }
     });
@@ -639,7 +657,10 @@ export class Keyboard {
       const keys = this.typesKeys && !(this.modifiers & ~8);
       for (const segment of segments) {
         await action.check();
-        if (keys && characters.has(segment)) await this.typeKey(segment, action);
+        const character = characters.get(segment);
+        // A held Shift would turn a character typed without Shift into its shifted one.
+        if (keys && character && (character.shift || !(this.modifiers & 8)))
+          await this.typeKey(segment, action);
         else {
           await this.insertRaw(segment, action);
           action.record('insertText');

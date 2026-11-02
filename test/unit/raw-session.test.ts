@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
+  ProtocolError,
   Session,
   SessionEndedError,
   TimeoutError,
@@ -23,6 +24,7 @@ test('launch none finishes its scripted handshake without a startup Tab or headl
     process: {
       released: false,
       diagnostics: { exited: false },
+      captureDiagnostics: async () => {},
       waitForExit: async () => true,
       close: async () => {
         ownedClosed = true;
@@ -57,6 +59,7 @@ test('launch abort in the scripted handshake cleans the owned process', async (t
     transport: await WebSocketTransport.connect(chrome.endpoint),
     process: {
       diagnostics: { exited: false },
+      captureDiagnostics: async () => {},
       close: async () => {
         ownedClosed = true;
       },
@@ -241,6 +244,39 @@ test('detach before an attach reply never returns a zombie session', async () =>
   await pending;
   assert.equal(browser.connection.pendingCount, 0);
   assert.equal(browser.closed, false);
+});
+
+test('detaching an attachment Chrome no longer has succeeds without another detach', async () => {
+  await using chrome = await ScriptedChrome.start();
+  await using browser = await chrome.connect({ attach: 'none' });
+  const session = await browser.attachSession(browser.pageTargets[0]!.targetId);
+  // The target closed before Chrome handled the detach.
+  chrome.handle('Target.detachFromTarget', () => {
+    throw new ProtocolError('Target.detachFromTarget', -32602, 'No session with given id');
+  });
+  await session.detach();
+  await browser.drain({ timeout: 1000 });
+  assert.equal(chrome.commands.filter((c) => c.method === 'Target.detachFromTarget').length, 1);
+  assert.equal(session.endReason, 'detach-requested');
+  assert.equal(browser.closed, false);
+});
+
+test('a plain Session displaced by attachSession() ends instead of silently losing events', async () => {
+  await using chrome = await ScriptedChrome.start();
+  await using browser = await chrome.connect({ attach: 'none' });
+  const targetId = [...browser.targetInfo.keys()][0]!;
+  const sessions: Session[] = [];
+  browser.cdp.on('Target.attachedToTarget', ({ sessionId }) => {
+    sessions.push(browser.connection.session(sessionId));
+  });
+  const session = await browser.attachSession(targetId);
+  assert.equal(sessions.length, 1);
+  assert.notEqual(sessions[0], session);
+  assert.equal(sessions[0]!.id, session.id);
+  assert.equal(sessions[0]!.closed, true);
+  assert.match(sessions[0]!.closeReason!.message, /replaced by attachSession/);
+  assert.equal(session.closed, false);
+  assert.equal(browser.connection.session(session.id!), session);
 });
 
 test('target destruction during attach rejects before the late reply', async () => {

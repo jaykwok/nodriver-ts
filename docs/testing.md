@@ -88,7 +88,9 @@ assert.equal(await tab.evaluate('answer', undefined, { world: 'isolated' }), 42)
 `start()` defaults to one `about:blank` page. Pass `{ pages: [] }` for none, or
 `{ pages: [{ url: 'https://fixture.test/', title: 'Fixture' }] }` for initial metadata.
 `browser.newTab()` (without navigation) and `browser.newContext()` work with built-in replies.
-Navigation, screenshots, input, and other application operations require scripts.
+Navigation, screenshots, input, and other application operations require scripts. As in Chrome,
+a command for an unknown session is answered at browser level with `Session with given id not found.`
+(-32001), and an attach to an unknown target with `No target with given id found` (-32602).
 
 ```ts
 const ready = browser.waitForTab();

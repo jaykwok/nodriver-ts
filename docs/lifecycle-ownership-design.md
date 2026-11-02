@@ -51,6 +51,10 @@ ownership state. Only then does the helper acknowledge. The host removes its pro
 before requesting commit and releases its control streams after acknowledgement.
 Repeated release shares a promise; concurrent close waits for release.
 
+If the helper refuses the request or the request never reaches it, release rejects with that
+error and ownership stays: `owned` remains true and `close()` still ends the browser. The CDP
+connection closes in either case.
+
 If acknowledgement is lost, release rejects with `ReleaseUncertainError`. The helper may have
 committed: the original host never sends a kill or retries the operation. Closing the control
 channel kills an uncommitted browser; a committed browser survives. Local ownership is
@@ -68,7 +72,8 @@ remaining lifetime. An independent helper remains, but no original-host stderr p
 control connection is required.
 
 Normal owned close cleans temporary profiles and the Windows helper executable. Release
-retains profiles. Hard host exit can leave temporary profiles, compiled helper directories
-and stale controller locks. Persistent locks are reclaimed after checking that their owner
-has exited. Confirm exit before
-removing leftovers.
+retains profiles and, on Windows, the running helper's `nodriver-guardian-*` directory in the
+system temp directory. A later supervised launch on Windows removes such directories once their
+helper has exited and they are more than an hour old, including those a hard host exit leaves.
+Hard host exit can also leave temporary profiles and stale controller locks. Persistent locks are
+reclaimed after checking that their owner has exited. Confirm exit before removing leftovers.

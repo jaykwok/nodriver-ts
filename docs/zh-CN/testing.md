@@ -67,7 +67,7 @@ assert.equal(await tab.evaluate('answer', undefined, { world: 'isolated' }), 42)
 
 ## Target、事件与故障
 
-`start()` 默认有一个 `about:blank` 页面。传 `{ pages: [] }` 表示没有页面，或用 `{ pages: [{ url: 'https://fixture.test/', title: 'Fixture' }] }` 设置初始元数据。`browser.newTab()`（不导航）和 `browser.newContext()` 使用内置回复即可工作。导航、截图、输入及其他应用操作需要编写回复。
+`start()` 默认有一个 `about:blank` 页面。传 `{ pages: [] }` 表示没有页面，或用 `{ pages: [{ url: 'https://fixture.test/', title: 'Fixture' }] }` 设置初始元数据。`browser.newTab()`（不导航）和 `browser.newContext()` 使用内置回复即可工作。导航、截图、输入及其他应用操作需要编写回复。与 Chrome 一样，发往未知 session 的命令在浏览器级以 `Session with given id not found.`（-32001）回复，附加未知 target 以 `No target with given id found`（-32602）回复。
 
 ```ts
 const ready = browser.waitForTab();
