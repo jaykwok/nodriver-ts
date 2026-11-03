@@ -268,7 +268,8 @@ test('a socket server that fails to start leaves no manager or temporary directo
     startBrowserMcpSocketServer({ tokens: { [token]: 'alice' }, browser: { maxLeases: 0 } }),
   ).rejects.toThrow('maxLeases');
   if (process.platform === 'win32') return;
-  const root = await mkdtemp(join(await realpath(tmpdir()), 'nodriver-tmp-'));
+  // macOS's own temporary directory leaves too little room for the socket path below it.
+  const root = await mkdtemp(join(await realpath('/tmp'), 'nodriver-tmp-'));
   const previous = process.env.TMPDIR;
   t.after(async () => {
     process.env.TMPDIR = previous;
