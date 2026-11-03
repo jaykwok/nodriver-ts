@@ -4,6 +4,8 @@ All notable changes are recorded here. The project follows [Semantic Versioning]
 
 ## Unreleased
 
+## 0.7.0 — 2026-11-04
+
 ### Breaking changes
 
 - MCP: `browser_storage_state` files move to `<state-dir>/<principal>/<name>.json` (`p-<sha256>` for principals outside `[a-z0-9_-]{1,64}`), so principals can no longer read or overwrite each other's states. To keep existing states, move `<state-dir>/<name>.json` into `<state-dir>/private/` (stdio and embedded servers without a binding) or `<state-dir>/local-operator/` (CLI HTTP and socket services).
