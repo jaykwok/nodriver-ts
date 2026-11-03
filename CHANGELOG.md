@@ -45,7 +45,7 @@ All notable changes are recorded here. The project follows [Semantic Versioning]
 
 - `handleSignals` closes every browser launched with it before the host terminates, and a host handler registered with `process.once()` counts as handling the signal.
 - On macOS and Linux, Chrome launched without `detached` ends when the host exits, including through `process.exit()` or an uncaught exception. Its process group is signalled when Chrome exits, and `close()` no longer signals a group whose ID the system may have reused.
-- `release()` rejects once Chrome has exited. In supervised mode, a request the helper refused or never received rejects and keeps ownership; `ReleaseUncertainError` is only for a request that was sent and not answered.
+- `release()` rejects once Chrome has exited. In supervised mode, a request the helper refused or never received rejects and keeps ownership; `ReleaseUncertainError` is only for a request that was sent and not answered, and not for one that Chrome's exit overtook.
 - A failed `Browser.close()` can be retried, including in supervised mode; `release()` stays refused once closing began.
 - The supervision helper does not inherit `NODE_OPTIONS`, so a preload that writes to stdout cannot corrupt its protocol and end a healthy Chrome. On Windows, its private directory is removed with retries when it closes, and a supervised launch removes directories that earlier launches left behind after a release or a host crash, once their helper has exited and they are more than an hour old.
 - A page that closes during the initial attach no longer fails `launch()` or `connect()`, and concurrent attaches no longer create duplicate context objects.

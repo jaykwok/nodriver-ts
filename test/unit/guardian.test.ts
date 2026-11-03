@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import { test } from 'node:test';
 import { mkdir, mkdtemp, readdir, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { PassThrough, Writable } from 'node:stream';
 import {
   Guardian,
   ReleaseUncertainError,
@@ -117,6 +119,49 @@ test('a release after the browser exited is refused, not uncertain, and close st
     await guardian.close();
   }
   assert.equal(guardian.diagnostics.exited, true);
+});
+
+/** A helper process that answers only through `script`, which sees each command it receives. */
+function scriptedHelper(script: (command: { command: string; id?: number }) => string[] | 'die') {
+  const child = new EventEmitter() as EventEmitter & Record<string, unknown>;
+  const stdout = new PassThrough();
+  const close = () => {
+    stdout.end();
+    stdout.once('end', () => setImmediate(() => child.emit('close', 0)));
+    stdout.resume();
+  };
+  let config = true;
+  const stdin = new Writable({
+    write(chunk: Buffer, _encoding, done) {
+      for (const line of chunk.toString().split('\n').filter(Boolean)) {
+        if (config) {
+          config = false;
+          stdout.write(JSON.stringify({ type: 'started', pid: 1 }) + '\n');
+          continue;
+        }
+        const reply = script(JSON.parse(line));
+        if (reply === 'die') close();
+        else for (const message of reply) stdout.write(message + '\n');
+      }
+      done();
+    },
+  });
+  Object.assign(child, { stdin, stdout, stderr: new PassThrough(), unref() {} });
+  return new (Guardian as unknown as new (...args: unknown[]) => Guardian)(child, 'chrome', [], {});
+}
+
+test('a release that the browser exit overtakes is refused; a helper lost mid-release is uncertain', async () => {
+  // The Windows helper stops reading commands once Chrome exits, then reports the exit and ends.
+  const overtaken = scriptedHelper(() => [JSON.stringify({ type: 'exited', exitCode: 0 })]);
+  await overtaken.waitReady({ timeout: 1000 });
+  const release = overtaken.release();
+  await poll(async () => overtaken.diagnostics.exited || undefined, { timeout: 1000 });
+  (overtaken as unknown as { child: EventEmitter }).child.emit('close', 0);
+  await assert.rejects(release, (error) => !(error instanceof ReleaseUncertainError));
+
+  const lost = scriptedHelper(() => 'die');
+  await lost.waitReady({ timeout: 1000 });
+  await assert.rejects(lost.release(), ReleaseUncertainError);
 });
 
 test('the sweep removes only stale helper directories', async () => {

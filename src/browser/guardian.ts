@@ -250,10 +250,15 @@ export class Guardian {
    * any other failure is uncertain.
    */
   async release(): Promise<void> {
+    if (this.state.exited) throw new CommandNotPerformed('Browser already exited');
     try {
       await this.request('release');
     } catch (error) {
       if (error instanceof CommandNotPerformed) throw error;
+      // Helpers report an exit only while unreleased. The Windows helper stops reading commands
+      // once Chrome exits, so a release that raced the exit ends with the helper unanswered.
+      if (this.state.exited)
+        throw new CommandNotPerformed('Browser already exited', { cause: error });
       // EOF kills an uncommitted browser; committed release survives. Never send terminate.
       this.disconnect();
       throw new ReleaseUncertainError(

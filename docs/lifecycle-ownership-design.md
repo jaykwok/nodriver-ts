@@ -53,7 +53,8 @@ Repeated release shares a promise; concurrent close waits for release.
 
 If the helper refuses the request or the request never reaches it, release rejects with that
 error and ownership stays: `owned` remains true and `close()` still ends the browser. The CDP
-connection closes in either case.
+connection closes in either case. A helper that reports Chrome's exit instead of an
+acknowledgement counts as refusing: it reports an exit only while it still owns Chrome.
 
 If acknowledgement is lost, release rejects with `ReleaseUncertainError`. The helper may have
 committed: the original host never sends a kill or retries the operation. Closing the control

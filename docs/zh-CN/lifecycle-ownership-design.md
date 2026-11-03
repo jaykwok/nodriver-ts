@@ -47,7 +47,7 @@ Windows 以关闭 job 的 kill-on-close 标志为提交点，POSIX 以 helper �
 重复 release 共用一个 Promise，并发 close 等待交接。
 
 helper 拒绝请求或请求未送达时，release 以该错误拒绝，所有权不变：`owned` 仍为 true，`close()` 仍会结束浏览器。
-两种情况下 CDP 连接都会关闭。
+两种情况下 CDP 连接都会关闭。helper 没有回复确认、而是报告 Chrome 已退出时，同样视为拒绝：helper 只在仍持有 Chrome 时报告退出。
 
 确认丢失时抛 `ReleaseUncertainError`。helper 可能已提交，因此原宿主不会再终止浏览器或重试操作。
 控制通道关闭使未提交的浏览器退出；已提交的浏览器继续存活。
