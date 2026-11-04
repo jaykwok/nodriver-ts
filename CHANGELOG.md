@@ -4,6 +4,8 @@ All notable changes are recorded here. The project follows [Semantic Versioning]
 
 ## Unreleased
 
+- `Browser.close()` gives Chrome up to 10 s, up from 3 s, to exit after `Browser.close`. On Windows, a Chrome that is still running is then terminated directly instead of through `taskkill`, and Chrome's other processes exit with it. After terminating Chrome, `close()` waits up to 15 s, up from 5 s, before it reports that Chrome did not exit. Busy Windows hosts can take seconds both to shut Chrome down and to finish a terminated process, and such a close used to fail although Chrome was exiting.
+
 ## 0.7.0 — 2026-11-04
 
 ### Breaking changes

@@ -537,7 +537,8 @@ export class Browser {
     try {
       if (this.owned && !this.closed) {
         await this.cdp.sendWith('Browser.close', { timeout: 3000 }).catch(() => {});
-        await this.process!.waitForExit(3000);
+        // Chrome's own shutdown, which busy Windows hosts take seconds to finish.
+        await this.process!.waitForExit(10_000);
       }
     } finally {
       await this.connection.close();

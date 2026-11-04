@@ -609,15 +609,9 @@ export class BrowserProcess {
     if (this.guardian) await this.guardian.close();
     else if (this.pid) {
       if (process.platform === 'win32' && !this.exited) {
-        const killer = spawn('taskkill', ['/pid', String(this.pid), '/t', '/f'], {
-          windowsHide: true,
-          stdio: 'ignore',
-          timeout: 5000,
-        });
-        await new Promise<void>((resolve, reject) => {
-          killer.once('error', reject);
-          killer.once('close', () => resolve());
-        });
+        // Terminated directly: starting a process such as taskkill can take seconds on a busy
+        // host. Chrome's other processes exit on their own once the browser process is gone.
+        this.child.kill();
       } else if (process.platform !== 'win32') {
         // Once the leader has exited, its exit handler has signalled the group.
         if (!this.exited) this.signalGroup('SIGTERM');
@@ -625,7 +619,8 @@ export class BrowserProcess {
         if (!(await this.waitForGroupExit(5000)))
           throw new DisconnectedError(`Owned Chrome process group ${this.pid} did not exit`);
       }
-      if (!(await this.waitForExit(5000)))
+      // Windows can take seconds to tear down a terminated process.
+      if (!(await this.waitForExit(15_000)))
         throw new DisconnectedError(`Owned Chrome PID ${this.pid} did not exit`);
     }
     await this.unlock();

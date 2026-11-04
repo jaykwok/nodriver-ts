@@ -5,7 +5,6 @@
 // Error Reporting and Defender state, and how long the process took to exit after all.
 import { execFile } from 'node:child_process';
 import { appendFileSync, mkdirSync } from 'node:fs';
-import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { join } from 'node:path';
 import type { Browser } from '../src/browser/browser.ts';
 import type { BrowserProcess } from '../src/browser/launcher.ts';
@@ -37,10 +36,6 @@ async function install(directory: string): Promise<void> {
   const file = join(directory, `close-${process.pid}.jsonl`);
   const timelines = new WeakMap<object, Timeline>();
   const origin = new WeakMap<Timeline, number>();
-  const killers = new Map<
-    string,
-    { at: number; took?: number; code?: number | null; signal?: string | null }[]
-  >();
 
   // Only a process that Chrome really runs in; unit tests also close stand-ins without one.
   const timeline = (owner: BrowserProcess): Timeline | undefined => {
@@ -58,6 +53,12 @@ async function install(directory: string): Promise<void> {
     origin.set(entry, performance.now());
     const record = entry;
     owner.child.once('exit', (code, signal) => step(record, 'exit', { code, signal }));
+    const kill = owner.child.kill.bind(owner.child);
+    owner.child.kill = (signal?: NodeJS.Signals | number) => {
+      const sent = kill(signal);
+      step(record, 'kill', { signal: signal ?? 'SIGTERM', sent });
+      return sent;
+    };
     return entry;
   };
   const step = (entry: Timeline | undefined, name: string, detail: Record<string, unknown> = {}) =>
@@ -92,7 +93,6 @@ async function install(directory: string): Promise<void> {
     return processClose.call(this).then(
       () => {
         step(entry, 'closed');
-        attachKillers(entry);
         // Graceful when Chrome left on its own within the wait that follows Browser.close.
         const waited = entry.steps.find((s) => s.step === 'waited');
         entry.outcome = !waited ? 'direct' : waited.exited ? 'graceful' : 'forced';
@@ -102,18 +102,12 @@ async function install(directory: string): Promise<void> {
         step(entry, 'close failed');
         entry.outcome = 'failed';
         entry.error = String(error);
-        attachKillers(entry);
         entry.snapshots = [await snapshot(entry)];
         // The test sees the failure now; the exit is watched in the background.
         void watchExit(this, entry);
         throw error;
       },
     );
-  };
-  const attachKillers = (entry: Timeline) => {
-    for (const kill of killers.get(String(entry.pid)) ?? [])
-      entry.steps.push({ step: 'taskkill', ...kill, at: Math.round(kill.at - origin.get(entry)!) });
-    entry.steps.sort((a, b) => a.at - b.at);
   };
   const watchExit = async (owner: BrowserProcess, entry: Timeline) => {
     const failed = performance.now();
@@ -133,33 +127,6 @@ async function install(directory: string): Promise<void> {
         `close diagnostics: PID ${entry.pid} outlived close(); exited ${entry.exitAfterFailureMs ?? 'not within 120000'} ms later. See ${file}\n`,
       );
   };
-
-  // The launcher imports spawn from node:child_process; the builtin's ESM bindings follow this.
-  const childProcess = createRequire(import.meta.url)(
-    'node:child_process',
-  ) as typeof import('node:child_process');
-  const spawn = childProcess.spawn;
-  childProcess.spawn = function (this: unknown, ...args: unknown[]) {
-    const child = (spawn as (...a: unknown[]) => import('node:child_process').ChildProcess).apply(
-      this,
-      args,
-    );
-    const [command, argv] = args as [string, string[]];
-    if (command === 'taskkill') {
-      const pid = argv[argv.indexOf('/pid') + 1]!;
-      const kill: { at: number; took?: number; code?: number | null; signal?: string | null } = {
-        at: performance.now(),
-      };
-      killers.set(pid, [...(killers.get(pid) ?? []), kill]);
-      child.once('close', (code, signal) => {
-        kill.took = Math.round(performance.now() - kill.at);
-        kill.code = code;
-        kill.signal = signal;
-      });
-    }
-    return child;
-  } as typeof spawn;
-  syncBuiltinESMExports();
 }
 
 /** The browser's process tree and the system state that can hold a terminated process. */
@@ -179,7 +146,7 @@ $p = ${Number(entry.pid)}; $since = [DateTime]::Parse('${entry.startedAt}').AddM
 $all = @(Get-CimInstance Win32_Process)
 $tree = @($p)
 do { $n = $tree.Count; $tree += @($all | Where-Object { $tree -contains $_.ParentProcessId -and $tree -notcontains $_.ProcessId } | ForEach-Object ProcessId) } while ($tree.Count -ne $n)
-$processes = @($all | Where-Object { $tree -contains $_.ProcessId -or $_.Name -match '^(WerFault|WerFaultSecure|taskkill|MsMpEng)\\.exe$' } | ForEach-Object {
+$processes = @($all | Where-Object { $tree -contains $_.ProcessId -or $_.Name -match '^(WerFault|WerFaultSecure|MsMpEng)\\.exe$' } | ForEach-Object {
   $threads = (Get-Process -Id $_.ProcessId).Threads
   [pscustomobject]@{
     pid = $_.ProcessId; ppid = $_.ParentProcessId; name = $_.Name; created = $_.CreationDate
