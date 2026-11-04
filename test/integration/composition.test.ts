@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createServer } from 'node:http';
 import { Browser, InputActionError, InputBlockedError, Keyboard } from '../../src/index.ts';
+import { poll } from '../../src/utils.ts';
 async function editor(browser: Browser) {
   const tab = await browser.newTab(
     'data:text/html,<textarea id=editor></textarea><input id=other>',
@@ -325,12 +326,11 @@ test('raw composition with pageEvents false sends no enable and never probes in 
     url: 'data:text/html,<textarea id=editor></textarea>',
   });
   const session = await browser.attachSession(targetId);
-  // Raw scopes never activate a target; a background page drops IME input. A page that has not
-  // received focus yet can clear its focused element when it does.
+  // Raw scopes never activate a target; a background page drops IME input.
   await session.send('Page.bringToFront');
   for (let i = 0; ; i++) {
     const ready = await session.send('Runtime.evaluate', {
-      expression: '!!document.querySelector("#editor") && document.hasFocus()',
+      expression: '!!document.querySelector("#editor")',
       returnByValue: true,
     });
     if (ready.result.value === true) break;
@@ -379,7 +379,17 @@ test('raw composition with pageEvents false sends no enable and never probes in 
   assert.deepEqual(state.result.value, { hits: 0, value: '中文一' });
   // A navigation replaces the probe world; the next composition creates a fresh one.
   await session.send('Page.navigate', { url: 'data:text/html,<input autofocus>' });
-  await new Promise((resolve) => setTimeout(resolve, 300));
+  // Autofocus applies some time after the document loads.
+  await poll(
+    async () =>
+      (
+        await session.send('Runtime.evaluate', {
+          expression: 'document.activeElement?.localName === "input"',
+          returnByValue: true,
+        })
+      ).result.value || undefined,
+    { timeout: 5000 },
+  );
   await scope.run(async (input) => {
     await input.composition.update('再');
     await input.composition.commit();
