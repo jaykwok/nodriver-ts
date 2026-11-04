@@ -1,99 +1,68 @@
 # nodriver-ts
 
-TypeScript redesign of [nodriver](https://github.com/ultrafunkamsterdam/nodriver).
+TypeScript redesign of [nodriver](https://github.com/ultrafunkamsterdam/nodriver): Chrome, Chromium and Edge automation over the Chrome DevTools Protocol (CDP), with no WebDriver and no `Runtime.enable`, plus a built-in [Model Context Protocol](https://modelcontextprotocol.io/specification/2026-07-28) server for agents.
 
 [简体中文](README.zh-CN.md)
 
-nodriver-ts drives Chrome, Chromium and Edge directly over the Chrome DevTools Protocol (CDP), with no WebDriver and no Runtime.enable. A built-in [Model Context Protocol](https://modelcontextprotocol.io/specification/2026-07-28) server lets agents use the same engine over Streamable HTTP, stdio or a local socket.
+- **Quiet CDP.** The library never sends `Runtime.enable`, `Runtime.addBinding`, `Console.enable` or `Debugger.enable`, and never falls back to them. It finds the main world through the frame's document and `DOM.resolveNode`, injects nothing into the page, and leaves Chrome's sandbox and site isolation on.
+- **Frames and shadow DOM.** Same-process and out-of-process iframes (OOPIF), nested ones included, each use the right CDP session. Queries pierce open and closed shadow roots.
+- **Input.** Clicks wait until the target is visible, stable and unobscured, and actions are never replayed. An optional seeded `human` policy adds pointer paths, key-event typing and wheel scrolling.
+- **MCP for agents.** Tools act on stable element refs (`e12`) from an indented accessibility snapshot and report what an action caused: navigations, new tabs, dialogs. HTTP leases keep browser state across requests and reconnects. Streamable HTTP, stdio and a local socket share one implementation.
 
-- **Quiet by default.** The library never sends `Runtime.enable`, `Runtime.addBinding`, `Console.enable` or `Debugger.enable`, and never falls back to them. It finds the main world through the frame's document and `DOM.resolveNode`. It does not inject getters, init scripts or a bridge. Chrome's sandbox and site isolation stay on.
-- **Frames.** Tracks same-process iframes and out-of-process iframes (OOPIF), including nested OOPIFs. Same-process frames share a CDP session; OOPIFs have their own. Queries pierce open and closed shadow roots.
-- **Input.** Clicks wait for the target to be visible, stable and unobscured before dispatching, and actions are never replayed. An optional seeded "human" policy adds pointer paths, key-event typing and wheel scrolling.
-- **Agent-ready MCP.** Tools take short stable element refs (`e12`) from an indented accessibility snapshot. An action returns a summary of what happened: navigation, new tabs, dialogs. HTTP clients get application-level leases, so browser state survives across requests and reconnects. MCP **2026-07-28** is the default; [opt-in compatibility](docs/agent-compatibility.md) supports 2025-11-25 / 2025-06-18 agents.
-- **Runtime.** The package runs on Node.js 24.22.0 or newer; the MCP HTTP server uses `node:http`.
-- **Native environment.** Headless UA masking is opt-in (`maskHeadless: true`); the default preserves native values across Workers and requests. See the [differential audit](docs/differential-audit.md).
-
-> No automation framework is undetectable. nodriver-ts removes the common CDP and WebDriver tells; it does not promise that any site will let you through. The [automation audit](docs/automation-audit.md) lists what the defaults cover and which signals remain observable.
+> No automation framework is undetectable. nodriver-ts removes the common CDP and WebDriver tells, but it does not promise that any site will let you through. See [automation traces](#automation-traces).
 
 ## Requirements
 
-- Node.js ≥ 24.22.0 for package use, development and tests. Node runs the TypeScript sources directly.
-- A locally installed Chrome, Chromium or Edge. It is auto-detected on Windows, macOS and Linux, including on `PATH`; otherwise set `CHROME_PATH` or `executablePath`.
-- Chrome opens with a window by default (`headless: false`). Servers and CI without a display should pass `headless: true` / `--headless`. Run Linux as a normal user with Chrome's shared libraries installed; the library never adds `--no-sandbox`. On WSL, headful mode needs WSLg or another display server.
+- Node.js 24.22.0 or newer.
+- A local Chrome, Chromium or Edge. It is found automatically on Windows, macOS and Linux, including on `PATH`; otherwise set `CHROME_PATH` or `executablePath`.
+- A display for the default headful mode. On servers and in CI, pass `headless: true` (`--headless` for the MCP server). On Linux, run as a normal user with Chrome's shared libraries installed: the library never adds `--no-sandbox`. Headful mode on WSL needs WSLg or another display server.
 
 Supported platforms are listed in [docs/support.md](docs/support.md).
 
-## Install
-
-Install from npm:
+## Quick start
 
 ```sh
 npm install nodriver-ts
 ```
 
-Or build from source:
-
-```sh
-git clone https://github.com/jaykwok/nodriver-ts.git
-cd nodriver-ts
-npm ci
-npm run build
-```
-
-## Library quick start
-
 ```js
 import { Browser } from 'nodriver-ts';
 
-const browser = await Browser.launch({ transport: 'pipe' }); // headful by default
-try {
-  const tab = await browser.newTab('https://example.com');
-  console.log(await (await tab.waitForSelector('h1')).text());
-  await tab.screenshot({ path: 'page.png', fullPage: true });
-} finally {
-  await browser.close();
-}
+await using browser = await Browser.launch({ headless: true }); // closed at the end of scope
+const tab = await browser.newTab('https://example.com');
+console.log(await (await tab.waitForSelector('h1')).text());
+await tab.screenshot({ path: 'page.png', fullPage: true });
 ```
 
-`await using browser = await Browser.launch(...)` can replace `try/finally`; `close()` is idempotent. The package and repository examples require Node.js 24.22.0+; use npm for package management.
+- **Evaluation.** `tab.evaluate()` runs in the page's main world, or in an isolated world with `{ world: 'isolated' }`. Functions are serialized into the page.
+- **Frames.** `tab.frames` lists every frame, OOPIFs included. Queries never cross frames silently.
+- **Contexts and proxies.** `browser.newContext({ proxy })` isolates cookies and storage, and supports authenticated HTTP(S) and SOCKS upstream proxies.
+- **Network.** `tab.network.route()` intercepts and fulfils requests, `authenticate()` answers auth challenges and `responses` subscribes to responses. `Network.enable` is sent only when you subscribe to responses, call `enable()` or set headers, cache or offline mode.
+- **Human input.** `tab.setInputPolicy({ mode: 'human', seed })` turns on reproducible pointer paths, key events for US-layout characters and wheel scrolling. Other text, such as CJK or emoji, is inserted with `insertText`. See [input](docs/input.md).
+- **Existing browsers.** `Browser.connect({ endpoint })` attaches to every tab, or, with `attach: 'created'`, only to the tabs this client opens and their popups. `close()` then only disconnects. A remote debugging endpoint gives full control of the browser, so restrict access to it.
+- **Handoff.** Launched with `detached: true` over WebSocket, Chrome can outlive this process: `browser.release()` returns an endpoint to reconnect to later. Add `supervised: true` to have a helper end Chrome if the host dies before releasing it. See [browser handoff](docs/browser-handoff.md) and [supervised launch](docs/lifecycle-ownership-design.md).
+- **Raw sessions.** `attach: 'none'` discovers targets without creating tabs, and `attachSession()` returns independent sessions with an explicit lifecycle. See [raw sessions](docs/raw-sessions.md).
+- **Diagnostics.** `trace` (or `NODRIVER_TRACE=1`) records each command's method, session, duration and error code, never its parameters or results. `browser.drain()` waits for late replies, and launch failures report their stage and process state. See [startup diagnostics](docs/startup-diagnostics.md).
+- **Tests without Chrome.** `nodriver-ts/testing` provides `ScriptedChrome`, a scripted CDP peer behind real Browser, Tab and Session objects. See [testing](docs/testing.md).
 
-- **Main world.** `evaluate` runs there by default (`{ world: 'isolated' }` is also available); functions are serialized into the page.
-- **Frames.** `tab.frames` lists every frame, including OOPIFs, and queries never cross frames silently.
-- **Browser contexts.** `browser.newContext({ proxy })` isolates cookies and storage per context, and supports authenticated HTTP(S) and SOCKS upstream proxies.
-- **Network.** `tab.network.route()` intercepts and fulfils requests, `authenticate()` answers auth challenges, and `responses` subscribes to responses. `Network.enable` is only sent when you subscribe to responses, call `enable()` or set headers/cache/offline.
-- **Input policy.** `tab.setInputPolicy({ mode: 'human', seed })` switches on reproducible trajectories, key-event typing for US-layout characters, and wheel scrolling. Other text, such as CJK or emoji, goes through `insertText`.
-- **Existing browsers.** `Browser.connect({ endpoint, attach: 'created' })` attaches only to tabs that this client opens or that they open (the default, `'all'`, attaches to every tab). `close()` only disconnects. A remote debugging endpoint gives full control of the browser, so restrict access to it.
-- **Raw sessions.** `attach: 'none'` discovers targets without creating Tabs. `attachSession()` gives independent sessions with explicit lifecycle, cancellation cleanup and send-time observation. See [raw sessions](docs/raw-sessions.md).
-- **CDP tracing.** Pass `trace: (entry) => ...` to `launch` or `connect` to collect method, session, duration, and error code. `trace: true` or `NODRIVER_TRACE=1` logs to stderr; parameters and results are never logged.
-- **Lifecycle diagnostics.** `browser.drain()` waits for late replies and attachment cleanup with distinct disconnect/timeout failures. Optional `observe.onPerformance` reports phase timings without payloads; see [raw sessions](docs/raw-sessions.md). [Startup diagnostics](docs/startup-diagnostics.md) expose failure stage, elapsed time and available process information.
-- **Supervised handoff.** Add `supervised: true` to detached WebSocket launch for process supervision, bounded stderr and explicit release on Windows/macOS/Linux. See [supervised launch](docs/lifecycle-ownership-design.md).
-- **Scripted tests.** `nodriver-ts/testing` provides a fake CDP peer that builds real Browser/Tab/Session objects, scripts replies and events, and records commands with parameters. See [testing](docs/testing.md).
-
-See [docs/api.md](docs/api.md) and the [examples](examples/).
-
-To keep Chrome open after the Node host exits, launch with `detached: true` and WebSocket,
-then persist the endpoint returned by `await browser.release()`. Later, use
-`Browser.connect({ endpoint })`. Release removes the controller's profile lock, retains the
-profile, and makes subsequent `close()` / async disposal disconnect only. Pipe handoff is
-rejected. Without `supervised`, detached launch discards Chrome stderr; a host crash before release can leave Chrome
-running. See [handoff and CDP event usage](docs/browser-handoff.md) for lifecycle limits.
+The full reference is [docs/api.md](docs/api.md); runnable programs are in [examples/](examples/).
 
 ## MCP server
 
-Point a stdio MCP client at the CLI:
+The package installs the `nodriver-mcp` command. For a stdio MCP client:
 
 ```json
 {
   "mcpServers": {
     "browser": {
-      "command": "node",
-      "args": ["/path/to/nodriver-ts/dist/mcp/cli.js"]
+      "command": "npx",
+      "args": ["-y", "nodriver-mcp"]
     }
   }
 }
 ```
 
-Once the package is installed, the binary is `nodriver-mcp`. To run it as a long-lived local HTTP service:
+As a long-lived local HTTP service:
 
 ```sh
 export NODRIVER_MCP_TOKEN="$(openssl rand -hex 32)"   # at least 32 characters
@@ -101,48 +70,51 @@ nodriver-mcp --mcp-transport http --port 3100
 # clients connect to http://127.0.0.1:3100/mcp with "Authorization: Bearer $NODRIVER_MCP_TOKEN"
 ```
 
-- **HTTP leases.** HTTP listens on loopback only. A client that omits `Browser-Lease-Id` uses the token's `default` lease. Any lease name made of letters, digits and `. _ -` creates a separate lease on first use, which lets several agents keep independent browser state. The lease id is echoed in the `Browser-Lease-Id` response header.
-- **Client requirements.** The default entrance requires MCP 2026-07-28 (`server/discover` with per-request metadata). With the official TypeScript client 2.3.1, pin `versionNegotiation: { mode: { pin: '2026-07-28' } }`. For 2025-11-25 / 2025-06-18 clients, add `--mcp-compat` to stdio arguments, or enable it on HTTP and connect to `/mcp/compat`. See [generic agent compatibility](docs/agent-compatibility.md) and [Pi 1.3.0](docs/pi.md).
-- **Browser launch.** Chrome starts lazily on the first `browser_open`, using the `agent` launch preset, which suppresses first-run and search-engine-choice UI, the crash-restore bubble and background throttling, and sets `--password-store=basic` (on Linux, saved passwords and cookies use Chrome's built-in key instead of the system keyring; see [docs/mcp.md](docs/mcp.md)).
+- **Leases.** HTTP listens on loopback only. A request without a `Browser-Lease-Id` header uses the token's `default` lease. Any other name of letters, digits and `. _ -` creates a separate lease on first use, so several agents can keep separate browser state.
+- **Protocol versions.** The default entry point requires MCP 2026-07-28. With the official TypeScript client 2.3.1, pin `versionNegotiation: { mode: { pin: '2026-07-28' } }`. For 2025-11-25 and 2025-06-18 clients, add `--mcp-compat`; HTTP clients then connect to `/mcp/compat`. See [agent compatibility](docs/agent-compatibility.md) and [Pi](docs/pi.md).
+- **Browser.** Chrome starts with the first `browser_open`, using the `agent` launch preset: no first-run or search-engine-choice screens, crash-restore bubble or background throttling, and `--password-store=basic`, with which Chrome on Linux encrypts saved passwords and cookies with its built-in key instead of the system keyring.
 
-Run `nodriver-mcp --help` for every flag. Some useful ones:
+`nodriver-mcp --help` lists every flag. Commonly used:
 
 - `--headless`, `--user-data-dir`, `--endpoint http://127.0.0.1:9222`, `--proxy URL`
 - `--lang`, `--window-size 1280x800`, `--user-agent`
 - `--input-policy human`, `--read-only`, `--disable-tool NAME`
-- `--upload-dir`, `--download-dir`, `--state-dir`: each enables the matching file tool, restricted to that directory.
+- `--upload-dir`, `--download-dir`, `--state-dir`: each enables the matching file tool, restricted to that directory
 
-### Tools
-
-The 26 default tools are:
+The 26 default tools:
 
 - **Tabs and navigation:** `browser_tabs`, `browser_open`, `browser_navigate`, `browser_history`, `browser_close_tab`, `browser_close`
-- **Observation:** `browser_snapshot` (indented accessibility tree with refs, `interactiveOnly`, `root` and `offset` paging), `browser_find` (CSS, XPath or text), `browser_wait`, `browser_screenshot` (PNG/JPEG/WebP, element or full page, scale), `browser_network` (opt-in response log)
+- **Observation:** `browser_snapshot`, `browser_find` (CSS, XPath or text), `browser_wait`, `browser_screenshot`, `browser_network`
 - **Actions:** `browser_click`, `browser_click_at`, `browser_hover`, `browser_drag`, `browser_fill`, `browser_type`, `browser_press_key`, `browser_select`, `browser_check`, `browser_scroll`, `browser_dialog`
-- **Other:** `browser_evaluate` (async function body in the main or isolated world), `browser_input_policy`, `browser_environment` (diagnostics and explicit alignment), `browser_handoff` (asks the user to finish a manual step through elicitation)
+- **Other:** `browser_evaluate`, `browser_input_policy`, `browser_environment`, `browser_handoff` (asks the user to finish a step by hand)
 
-Three tools are optional and appear only when their directory flag is set: `browser_upload`, `browser_downloads` and `browser_storage_state`.
+`browser_upload`, `browser_downloads` and `browser_storage_state` appear only when their directory flag is set.
 
-Action tools other than `browser_scroll` and `browser_dialog` accept `waitFor: "auto" | "load" | "none"` and `snapshot: true`. They return what happened (`navigated`, `newTabs`, `dialog`, `tabClosed`), so the agent does not need an extra round-trip after each step. An action interrupted by a JS dialog returns at once with `pending: true`; answer it with `browser_dialog`.
+Actions other than `browser_scroll` and `browser_dialog` accept `waitFor: "auto" | "load" | "none"` and `snapshot: true`, and return what happened (`navigated`, `newTabs`, `dialog`, `tabClosed`), so an agent needs no extra round trip after each step. An action that a JavaScript dialog interrupts returns at once with `pending: true`; answer the dialog with `browser_dialog`.
 
-The stdio, HTTP, socket and in-memory entry points share one tool implementation, lease manager and browser pool. More detail is in [docs/mcp.md](docs/mcp.md), [docs/mcp-http.md](docs/mcp-http.md) and [docs/mcp-socket.md](docs/mcp-socket.md).
+See [MCP](docs/mcp.md), [MCP over HTTP](docs/mcp-http.md) and [MCP over socket](docs/mcp-socket.md).
 
 ## Automation traces
 
 What the defaults do:
 
-- No automatic `Runtime`, `Console` or `Debugger` domains, no bindings and no init scripts in the main world.
+- No automatic `Runtime`, `Console` or `Debugger` domain, no bindings and no init scripts in the main world.
 - Chromium's `AutomationControlled` feature is disabled, so `navigator.webdriver` is natively `false`. No getter is patched.
-- Headless mode preserves native UA values by default. Explicit `maskHeadless: true` removes HeadlessChrome from page UA/UA-CH and Dedicated Workers; Shared/Service Workers and their requests can retain native values. See the [differential audit](docs/differential-audit.md).
-- Human-mode input dispatches keyDown/keyUp pairs that match the US layout, gives pointer presses a realistic `pressure`, starts the pointer at a random point instead of (0, 0), and only brings a tab to the front when it is not already there.
+- Headless mode keeps the native user agent. `maskHeadless: true` removes HeadlessChrome from the page's UA and UA-CH and from dedicated workers; shared and service workers and their requests can keep native values. See the [differential audit](docs/differential-audit.md).
+- Input brings a tab to the front only when it is not already there, and a held mouse button reports a pressure of 0.5, as a real mouse does. Human mode also sends keyDown/keyUp pairs that match the US layout and starts the pointer at a random point instead of (0, 0).
 
-These measures are not cloaking. They do not spoof fonts, WebGL, canvas, audio or hardware, and they do not solve CAPTCHAs. Environment overrides (timezone, locale, UA-CH, viewport, geolocation) are explicit opt-ins; see [docs/environment.md](docs/environment.md).
+None of this is cloaking: fonts, WebGL, canvas, audio and hardware are not spoofed, and CAPTCHAs are not solved. Environment overrides (timezone, locale, UA-CH, viewport, geolocation) are explicit opt-ins; see [environment](docs/environment.md). The [automation audit](docs/automation-audit.md) lists which signals remain observable.
 
 ## Development
 
+In the repository, Node runs the TypeScript sources directly:
+
 ```sh
+git clone https://github.com/jaykwok/nodriver-ts.git
+cd nodriver-ts
+npm ci
 npm run check                # strict type check (src and tests)
-npm test                     # unit tests on Node.js
+npm test                     # unit tests
 npm run test:integration     # real Chrome, both CDP transports
 npm run test:dist            # build, then a smoke test of the package and MCP over HTTP
 npm run format:check
@@ -152,22 +124,26 @@ npm run format:check
 
 Simplified Chinese translations are in [docs/zh-CN](docs/zh-CN/).
 
-| Document                                     | Contents                                                          |
-| -------------------------------------------- | ----------------------------------------------------------------- |
-| [API](docs/api.md)                           | Objects, deadlines and cancellation, queries, evaluation, storage |
-| [Browser handoff](docs/browser-handoff.md)   | Detached launch, release and reconnect, CDP event subscriptions   |
-| [Input](docs/input.md)                       | The human input policy, typing, pointer checks, cancellation      |
-| [Environment](docs/environment.md)           | Environment sampling, diagnostics, explicit alignment, WebRTC     |
-| [Automation audit](docs/automation-audit.md) | Default protocol behaviour, regression checks, remaining signals  |
-| [MCP](docs/mcp.md)                           | CLI, tools, refs, page JavaScript, embedding                      |
-| [MCP over HTTP](docs/mcp-http.md)            | Leases, authentication, limits, resources, hand-off               |
-| [MCP over socket](docs/mcp-socket.md)        | Unix socket / named pipe service and client                       |
-| [Support](docs/support.md)                   | Platforms, capabilities, limitations                              |
-| [Performance](docs/performance.md)           | Benchmark method and baseline                                     |
-| [Soak test](docs/soak.md)                    | Long-running resource test                                        |
-| [Scripted testing](docs/testing.md)          | `ScriptedChrome` for testing code without launching Chrome        |
-| [Upstream API map](docs/upstream-api-map.md) | nodriver members and their TypeScript counterparts                |
-| [API test map](docs/test-map.md)             | Tests that call each public member and MCP tool (generated)       |
+| Document                                                  | Contents                                                          |
+| --------------------------------------------------------- | ----------------------------------------------------------------- |
+| [API](docs/api.md)                                        | Objects, deadlines and cancellation, queries, evaluation, storage |
+| [Input](docs/input.md)                                    | The human input policy, typing, pointer checks, cancellation      |
+| [Environment](docs/environment.md)                        | Environment sampling, diagnostics, explicit alignment, WebRTC     |
+| [Browser handoff](docs/browser-handoff.md)                | Detached launch, release and reconnect, CDP event subscriptions   |
+| [Supervised launch](docs/lifecycle-ownership-design.md)   | Process supervision, bounded stderr, explicit release             |
+| [Raw sessions](docs/raw-sessions.md)                      | Unmanaged targets, session lifetime, drain, send observation      |
+| [Startup diagnostics](docs/startup-diagnostics.md)        | Launch and connect failure stages and process information         |
+| [Automation audit](docs/automation-audit.md)              | Default protocol behaviour, regression checks, remaining signals  |
+| [Differential audit](docs/differential-audit.md)          | Native, masked and configured launches, pages and workers         |
+| [MCP](docs/mcp.md)                                        | CLI, tools, refs, page JavaScript, embedding                      |
+| [MCP over HTTP](docs/mcp-http.md)                         | Leases, authentication, limits, resources, hand-off               |
+| [MCP over socket](docs/mcp-socket.md)                     | Unix socket / named pipe service and client                       |
+| [Agent compatibility](docs/agent-compatibility.md)        | MCP 2025-11-25 / 2025-06-18 clients                               |
+| [Support](docs/support.md)                                | Platforms, capabilities, limitations                              |
+| [Performance](docs/performance.md) · [Soak](docs/soak.md) | Benchmark method and baseline, long-running resource test         |
+| [Scripted testing](docs/testing.md)                       | `ScriptedChrome` for testing code without launching Chrome        |
+| [Upstream API map](docs/upstream-api-map.md)              | nodriver members and their TypeScript counterparts                |
+| [API test map](docs/test-map.md)                          | Tests that call each public member and MCP tool (generated)       |
 
 Changes are recorded in [CHANGELOG.md](CHANGELOG.md).
 
