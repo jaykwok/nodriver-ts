@@ -1,0 +1,57 @@
+name: Windows shutdown diagnostics
+# An owned browser occasionally outlived close() on Windows runners. Repeat launch and close and
+# record every close, with a process and system snapshot whenever the browser outlives it.
+on:
+  workflow_dispatch:
+    inputs:
+      cycles:
+        description: Launch and close cycles per browser
+        default: '200'
+permissions:
+  contents: read
+jobs:
+  shutdown:
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chrome, edge]
+    name: ${{ matrix.browser }}
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '^24.22.0'
+          cache: npm
+      - name: Use Edge
+        if: matrix.browser == 'edge'
+        shell: bash
+        run: echo 'CHROME_PATH=C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe' >> "$GITHUB_ENV"
+      - run: npm ci
+      - name: Record versions
+        shell: bash
+        run: |
+          mkdir -p test-results
+          node test/ci-versions.ts | tee test-results/versions.txt
+      - name: Close diagnostics
+        id: diagnostics
+        shell: bash
+        run: |
+          echo "directory=$(node -p "require('node:path').resolve('test-results/close-diagnostics')")" >> "$GITHUB_OUTPUT"
+          echo "import=--import=$(node -p "require('node:url').pathToFileURL('test/ci-close-diagnostics.ts').href")" >> "$GITHUB_OUTPUT"
+      - name: Launch and close
+        shell: bash
+        env:
+          CYCLES: ${{ inputs.cycles }}
+          NODE_OPTIONS: ${{ steps.diagnostics.outputs.import }}
+          NODRIVER_CLOSE_DIAGNOSTICS: ${{ steps.diagnostics.outputs.directory }}
+        run: node test/ci-shutdown-stress.ts "$CYCLES" 2>&1 | tee test-results/shutdown.log
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: shutdown-diagnostics-${{ matrix.browser }}
+          path: test-results/
+          if-no-files-found: ignore
+          retention-days: 30
