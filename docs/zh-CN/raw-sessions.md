@@ -2,7 +2,7 @@
 
 [English](../raw-sessions.md)
 
-`Browser.launch()` 和 `Browser.connect()` 都支持 `attach: 'none'`，供应用自行管理页面初始化、target 和 CDP 命令。
+如果由应用自己负责页面初始化、target 追踪和 CDP 命令，可在 `Browser.launch()` 或 `Browser.connect()` 上使用 `attach: 'none'`。
 
 ```ts
 import { Browser } from 'nodriver-ts';
@@ -11,51 +11,39 @@ const browser = await Browser.launch({ attach: 'none', headless: true, detached:
 try {
   const { targetId } = await browser.cdp.send('Target.createTarget', { url: 'about:blank' });
   const session = await browser.attachSession(targetId, { timeout: 5000 });
-  console.log((await session.send('Runtime.evaluate', { expression: '6 * 7' })).result.value);
+  const result = await session.send('Runtime.evaluate', { expression: '6 * 7' });
+  console.log(result.result.value);
   await session.detach();
   const endpoint = await browser.release();
-  // 保存 endpoint，之后 Browser.connect({ endpoint, attach: 'none' })。
+  // 保存 endpoint，之后用 Browser.connect({ endpoint, attach: 'none' }) 重连。
 } finally {
-  await browser.close(); // release 后只断开连接。
+  await browser.close(); // release 之后只断开连接。
 }
 ```
 
 ## 策略与就绪
 
-| attach 策略   | 自动接管页面                 | 显式 newTab / attachTarget |
-| ------------- | ---------------------------- | -------------------------- |
-| `all`（默认） | 现有页面、后续页面及 popup   | 允许                       |
-| `created`     | 本客户端创建的页面及其 popup | 允许                       |
-| `none`        | 不接管；`tabs` 始终为空      | 发送 CDP 前拒绝            |
+| attach 策略   | 自动接管页面                 | 显式 `newTab` / `attachTarget` |
+| ------------- | ---------------------------- | ------------------------------ |
+| `all`（默认） | 现有页面、后续页面及 popup   | 允许                           |
+| `created`     | 本客户端创建的页面及其 popup | 允许                           |
+| `none`        | 不接管；`tabs` 始终为空      | 发送 CDP 前拒绝                |
 
-所有策略下都可调用 `attachSession()`，每次获得独立 attachment，不按 target 去重。
-none 下初始页面、后续页面、popup 和 `Target.attachedToTarget` 都不创建 Tab/Frame。
+任何策略下都能调用 `attachSession()`，每次都新建一个独立的 attachment，不按 target 去重。`none` 下，任何页面、popup 或 `Target.attachedToTarget` 事件都不会创建 Tab 或 Frame。
 
-none 的 ready 条件是连接建立及 `Browser.getVersion`、`Target.getBrowserContexts`、
-`Target.setDiscoverTargets({ discover: true })`、`Target.getTargets` 完成，不等待启动页；
-可以在零页面时就绪。用 `pageTargets` 和根 session 的 `Target.*` 事件追踪页面。
+`none` 下，连接建立且 `Browser.getVersion`、`Target.getBrowserContexts`、`Target.setDiscoverTargets({ discover: true })` 和 `Target.getTargets` 完成后，launch/connect 即告就绪。它不等待启动页，返回时可能没有任何页面 target。请用 `pageTargets` 和根 session 的 `Target.*` 事件追踪页面，而不是 `tabs`。
 
-none 跳过可选 headless UA 探针和覆盖；显式 `maskHeadless: true` 会报错。Chrome 启动参数仍然生效。
-每次 raw attach 只发送 `Target.attachToTarget({ targetId, flatten: true })`，
-不发送 `Page.enable`、`Page.setLifecycleEventsEnabled`、`Target.setAutoAttach` 或任何 `Runtime.*`。
-域初始化、录屏帧 ack 和停止录屏由调用方负责。托管输入是唯一的例外：`inputScope()` 的 run
-和 `keyboard.compose()` 默认发送 `Page.enable`，让导航能够中断输入；传入 `pageEvents: false`
-即可让所有域初始化完全由你掌握。
+`none` 会跳过可选的 headless UA 伪装探测与覆盖，显式传入 `maskHeadless: true` 会被拒绝；Chrome 启动参数照常生效。每次 raw attach 只发送 `Target.attachToTarget({ targetId, flatten: true })`，不发送 `Page.enable`、`Page.setLifecycleEventsEnabled`、`Target.setAutoAttach` 或任何 `Runtime.*` 命令。域初始化、录屏帧 ACK 和收尾都由你负责。唯一的例外是托管输入：`inputScope()` 的 run 和 `keyboard.compose()` 默认发送 `Page.enable`，以便导航能中断输入；传入 `pageEvents: false` 则不发送任何 `*.enable` 命令。
 
-launch/connect 使用一个总初始化 deadline（默认 30 秒），覆盖端点发现、版本、contexts、
-target discovery/listing 及自动 attach。signal 贯穿上述阶段。
-launch 失败会断开连接并清理自有进程，connect 失败只断开连接。
-进程清理使用独立且有界的终止等待，可能超过初始化 deadline；宿主硬崩溃仍无法执行清理。
+launch/connect 在端点发现、版本、contexts、target 发现与列举以及自动 attach 各阶段共用一个总初始化期限（默认 30 秒）和同一个 abort signal。launch 失败会关闭连接并清理自有进程；connect 失败只断开连接。进程清理有独立且有界的终止等待，可能超出该期限；宿主硬崩溃时仍无法执行清理。
 
 ## 托管 raw 输入
 
-`browser.inputScope(session)` 和 `createInputScope(session)` 与 Tab 输入及独立 mouse/keyboard 对象共享连接队列。每次 `run()` 管理持有的按键、按钮和显式 composition，共用一次 deadline/signal/guard，逆序清理并返回 `InputReport`。Raw scope 为跟踪导航启用 Page 事件，但不激活 target；`pageEvents: false` 时不发送任何 `*.enable` 命令。直接调用 `session.sendWith()` 仍独立于该队列。接口及中断约定见[输入 scope、composition 与清理](input.md)。
+`browser.inputScope(session)` 和 `createInputScope(session)` 与 Tab 输入及独立的 mouse/keyboard 对象共用连接的输入队列。每次 `run()` 在同一个 deadline/signal/guard 下管理按住的按键、按钮和显式 composition，按逆序清理，并返回 `InputReport`。scope 从不激活 target。直接调用 `session.sendWith()` 不经过该队列。接口与中断约定见[输入 scope、composition 与清理](input.md)。
 
 ## 有界后台呈现租约
 
-`browser.presentationLease(session, options)` 通过 `Page.startScreencast` 和
-`Page.stopScreencast` 在限定时间内保持 raw target 可观察。租约与 target 焦点、Runtime、
-输入重发和连接上的其他工作相互独立。
+`browser.presentationLease(session, options)` 通过 `Page.startScreencast` 和 `Page.stopScreencast`，在一段有界的短时间内保持 raw target 可观察。租约与 target 焦点、Runtime、输入重试以及连接上的其他工作互不影响。
 
 ```ts
 const lease = browser.presentationLease(session, {
@@ -67,81 +55,48 @@ const lease = browser.presentationLease(session, {
 });
 try {
   await lease.start();
-  // 在后台 target 上执行操作。
+  // 在这里执行后台 target 上的工作。
 } finally {
   const report = await lease.close();
   console.log(report.state, report.frames, report.acknowledgedFrames);
 }
 ```
 
-默认值均有界：总时长 5 秒、最多送出 16 帧 ACK、4 MiB 解码后帧字节、最多 4 个并发 ACK、
-启动期限 2 秒、每个 ACK 期限 1 秒，以及 2 秒的停止和 ACK 清理预算。达到总时长、帧数、
-字节数或 ACK 并发上限时会停止租约并记录原因。`close()` 幂等，会等待停止命令和该租约
-自己的 ACK 工作；连接上的其他命令继续按各自生命周期运行。session 断开后，最终报告为
-`disconnected`，清理随连接生命周期结束。
+默认值：总时长 5 秒、最多送出 16 帧待 ACK、4 MiB 解码后帧字节、4 个并发 ACK、启动期限 2 秒、每个 ACK 期限 1 秒，以及 2 秒的停止与 ACK 清理预算。达到时长、帧数、字节或 ACK 上限，或某个 ACK 超时，都会停止租约并记录原因。`close()` 幂等，会等待停止命令和该租约自己的 ACK 工作；连接上的其他命令按各自的生命周期运行。session 断开时，报告为 `disconnected`，清理随连接一起结束。
 
-`screencast` 会把 `format`、`quality`、`maxWidth`、`maxHeight` 和 `everyNthFrame` 传给
-`Page.startScreencast`，未指定的字段使用 Chrome 默认值。时长和超时最大为 2147483647 毫秒，
-即 Node.js 定时器的上限。在已结束的 session 上启动租约会以 `DisconnectedError` 拒绝，
-其 `cause` 为该 session 的 `closeReason`。
+`screencast` 会把 `format`、`quality`、`maxWidth`、`maxHeight` 和 `everyNthFrame` 传给 `Page.startScreencast`，未指定的字段使用 Chrome 默认值。时长和超时最大为 2147483647 毫秒，即 Node.js 定时器的上限。在已结束的 session 上启动租约会以 `DisconnectedError` 拒绝，其 `cause` 为该 session 的 `closeReason`。
 
-同一个 session 同时只能有一个活动中的呈现租约。仍处于 `idle` 的租约可以在当前租约关闭后再次调用
-`start()`。租约处于 `starting` 时收到的帧，也会按与 `active` 阶段相同的帧数、字节数和
-ACK 限制处理。这个协调只覆盖托管呈现租约；租约活动期间不要在同一个 session 上直接调用
-`Page.startScreencast` 或 `Page.stopScreencast`。
+一个 session 同一时间最多只有一个活动的呈现租约；仍处于 idle 的租约可以在当前租约关闭后启动。租约处于 `starting` 时收到的帧，与 `active` 阶段一样计入帧数、字节和 ACK 上限。租约活动期间，不要在同一个 session 上直接调用 `Page.startScreencast` 或 `Page.stopScreencast`。
 
-报告将租约生命周期（`state`）与清理状态（`cleanup`）分开。`state` 表示租约正在活动、
-已停止、已超时、失败或已断开；`cleanup` 为 `pending`、`completed`、`timed-out`、`failed`
-或 `disconnected`。`timed-out` 表示租约已经结束，但仍有 ACK 工作未完成。`reason` 记录租约
-结束的原因；`Page.stopScreencast` 失败时 `reason` 保持该原因，`state` 为 `failed`，错误记入
-`cleanupErrors`。`inFlightAcks` 是报告关闭时仍在途的 ACK 数量；`close()` 返回后报告保持稳定。
-报告还记录送出 ACK 的帧、已确认帧、丢弃帧、编码字节、ACK 错误和清理错误。screencast ACK 与
-输入动作分别统计。后台节流行为取决于 Chrome 和操作系统。
+报告把租约结果（`state`）与清理状态（`cleanup`）分开。`state` 为 `active`、`stopped`、`timed-out`（因某项上限或 ACK 超时而结束）、`failed` 或 `disconnected`。`cleanup` 为 `pending`、`completed`、`timed-out`（清理预算耗尽时仍有 ACK 未完成）、`failed` 或 `disconnected`。`reason` 记录租约结束的原因；`Page.stopScreencast` 失败时 `reason` 保持不变，`state` 变为 `failed`，错误记入 `cleanupErrors`。报告还统计送出、已确认和丢弃的帧数、编码字节、ACK 错误和清理错误，`inFlightAcks` 为关闭时仍未完成的 ACK 数。`close()` 返回后，报告是稳定的快照。screencast ACK 与输入动作分开统计。后台节流仍取决于 Chrome 和操作系统。
 
 ## 生命周期
 
-`TargetSession extends Session`，新增 `targetId`、`endReason`、`ended: Promise<EndReason>` 和
-`detach({ signal?, timeout? })`；继承 `send`、`sendWith`、`on`、`onAny`、`waitFor`、`id`、`closed`。
+`TargetSession` 继承 `Session`，新增 `targetId`、`endReason`、`ended: Promise<EndReason>` 和 `detach({ signal?, timeout? })`，并沿用有类型的 `send`、`sendWith`、`on`、`onAny`、`waitFor`、`id`、`closed` 和 `closeReason`。
 
-首个终止原因生效，`ended` 只 resolve 一次：
+最先到达的终止事件生效，`ended` 只 resolve 一次，原因为以下之一：
 
-| 原因               | 触发条件                                             |
-| ------------------ | ---------------------------------------------------- |
-| `detach-requested` | 本地调用 detach                                      |
-| `detached`         | 收到 Target.detachedFromTarget                       |
-| `target-destroyed` | 先收到 Target.targetDestroyed                        |
-| `target-crashed`   | 收到 Inspector.targetCrashed 或 Target.targetCrashed |
-| `disconnected`     | 连接断开，包括 release/disconnect                    |
+| 原因               | 触发条件                                                        |
+| ------------------ | --------------------------------------------------------------- |
+| `detach-requested` | 调用了本 session 的 `detach()`                                  |
+| `detached`         | Chrome 发出 `Target.detachedFromTarget`                         |
+| `target-destroyed` | Chrome 先发出 `Target.targetDestroyed`                          |
+| `target-crashed`   | Chrome 发出 `Inspector.targetCrashed` 或 `Target.targetCrashed` |
+| `disconnected`     | CDP 连接结束，包括 release/disconnect                           |
 
-结束时 pending 请求和 waitFor 立即以 `SessionEndedError` 拒绝，监听器被清理。
-该错误继承 `DisconnectedError`，携带 `reason` 和 `targetId`。之后的 send/waitFor 拒绝，
-新增事件订阅抛错。其他 attachment 保持可用，除非共享已崩溃/销毁的 target 或整个连接结束。
-关闭 target 时 Chrome 可能先发 detached，所以最终原因取决于事件顺序。
+session 结束时，其 pending 请求和 `waitFor` 立即以 `SessionEndedError` 拒绝；该错误是 `DisconnectedError` 的子类，带有 `reason` 和 `targetId`。事件订阅随之移除，之后的发送和等待会被拒绝，新订阅会抛错。其他 attachment 仍可使用，除非它们属于同一个已销毁/崩溃的 target，或整个连接已结束。关闭 target 时，Chrome 可能先发出 `detached` 再发出 `target-destroyed`，取决于事件顺序。
 
-crash 是库的逻辑生命周期终点。虽然 Chrome 允许原 CDP attachment 在 crash 后继续
-reload/evaluate，但 raw API 会关闭旧 session 并清理 attachment，恢复必须重新 attach。
-先观察根 `Target.targetCrashed`，再重新 attach 和发送 `Page.reload`：
-session 级 crash 通知可能更早到达。高层 Tab 的 crash/reload 行为与此相互独立。
-新 attachment 也可能遇到再次 crash，重新 attach 不保证恢复成功。
+crash 会结束**库**层面的生命周期，尽管 Chrome 允许原 CDP attachment 在 renderer 崩溃后继续 reload 和 evaluate：raw session 会被关闭，其 attachment 也会被清理。要恢复，先等待根 session 的 `Target.targetCrashed` 通知（session 级的崩溃通知可能更早到达），再重新 attach 并发送 `Page.reload`。target 可能再次崩溃，新的 attachment 不保证恢复成功。高层 Tab 的 crash/reload 行为与此无关。
 
-`detach()` 同步结束本地生命周期，再等待 `Target.detachFromTarget` 回应，重复调用共享同一个 Promise。
-调用前 signal 已中止则 session 保持打开；发送后取消不会重新打开 session，并会启动独立清理。
-Chrome 已不再持有该 attachment 时，`detach()` 直接成功，不再发送命令。
+`detach()` 同步结束本地生命周期，再等待 `Target.detachFromTarget`；重复调用共用同一个 Promise。调用前 signal 已中止时 session 保持打开；发送后再中止不会重新打开 session，而是启动独立清理。如果 session 已经结束，或 Chrome 已不再持有该 attachment，`detach()` 直接成功，不再发送命令。
 
-根级 `Target.attachedToTarget` 监听器为 `attachSession()` 正在创建的 attachment 调用 `connection.session(id)` 时，
-得到的是普通 `Session`。attach 完成后，事件发往 `attachSession()` 返回的 `TargetSession`，普通 `Session` 随之结束：
-`closed` 为 true，`closeReason` 说明原因，其命令会被拒绝。
+如果根级 `Target.attachedToTarget` 监听器为 `attachSession()` 正在创建的 attachment 调用 `connection.session(id)`，得到的是普通 `Session`。attach 完成后，事件改发给返回的 `TargetSession`，普通 `Session` 随之结束：`closed` 为 true，`closeReason` 说明原因，其命令会被拒绝。
 
 ## 取消与迟到响应
 
-attach 超时或 signal 中止立即 reject，普通取消不影响其他 attachment。
-迟到的成功响应到达后，用独立的 5 秒 deadline 发送 `Target.detachFromTarget`。
+attach 中止或超时会立即 reject，不影响其他 attachment。如果之后仍收到成功响应，连接会以独立的 5 秒期限为该 session ID 发送 `Target.detachFromTarget`。
 
-如果取消后 5 秒内没有 attach 响应，或者 detach 清理在其独立的 5 秒内仍无法确认成功，
-库会断开整个 CDP 连接；显式 detach 失败后的清理也适用。协议确认 session 已不存在视为清理成功。
-这项异常兜底会结束该连接的所有 session，通过 `onError` 报告清理失败，并避免 attachment
-在不可追踪的连接上残留。应用应按 `connection_lost` 处理，不能把它视为普通取消。
-断开 WebSocket 不终止外部 Chrome；Pipe Chrome 会随管道关闭退出。
+如果取消后 5 秒内没有收到 attach 响应，或者清理用的 detach（包括 `detach()` 失败后的那次）在其独立的 5 秒内无法确认，库会断开 CDP 连接。协议响应表明 session 已不存在时视为成功。这种异常关闭会结束该连接上的**所有** session，确保没有无法追踪的 attachment 残留，并通过 `onError` 报告清理失败。请按 `connection_lost` 处理；普通取消只影响被取消的调用方。断开连接不会终止 WebSocket 浏览器；Pipe Chrome 会在传输关闭时退出。
 
 ## 发送、调用结算与响应观察（不记录载荷）
 
@@ -163,58 +118,34 @@ const browser = await Browser.connect({
 });
 ```
 
-`onSend` 在调用 transport 的发送方法之前同步执行。`seq` 是连接内单调递增的命令 ID，允许有空隙；
-`at` 是 `performance.now()` 的毫秒值。它记录的是发送尝试，不代表 Chrome 已收到或执行。
-观察回调中重入的发送会排队，以保持 transport 的调用顺序。观察回调的异常被隔离。
-回调应保持简短；在回调中取消不能撤回已观察到的发送尝试。
+`onSend` 在调用 transport 的发送方法之前同步执行。`seq` 是连接内单调递增的 CDP 请求 ID（允许有空隙），三个回调使用同一个值。`at` 是 `performance.now()` 的毫秒值。它记录的是一次发送尝试，不代表 Chrome 已收到或执行该命令。观察回调中发起的发送会排队，以保持 transport 的调用顺序。观察回调的异常会被隔离。回调应保持简短；在回调中中止也无法撤回已观察到的发送尝试。
 
-`onSettle` 在调用方的 Promise 结算时对每个已发送的请求执行一次，按完成顺序触发，
-提供从发送尝试开始的耗时，失败时提供协议错误码或错误名。迟到的响应不会再次触发结算。
+`onSettle` 在调用方的 Promise 结算时对每个已发送的请求执行一次，按完成顺序触发，提供从发送尝试起算的耗时，失败时提供协议错误码或错误名。迟到的响应不会让调用方再次结算。
 
-`onResponse` 在处理匹配的响应时同步执行。`seq` 与 `onSend`、`onSettle` 使用的 CDP 请求 ID 相同，
-作用域为一个连接。`sessionId` 是请求的 session ID，包括浏览器级返回的、针对已分离 session 的错误。
-`at` 是收到响应时的 `performance.now()`；`durationMs` 是从发送到响应的耗时。`late` 表示收到响应前，
-请求已因取消、超时、session 结束或发送失败退出等待；它不取决于 `onSettle` 微任务是否已运行。
-`error` 存在时是字符串形式的 CDP 错误码。重复或未知的响应被忽略；session 不匹配时断开连接，
-而不是确认该命令。所有观察回调都不接收参数、结果或协议错误文本。
-普通响应的 `onResponse` 在异步的 `onSettle` 通知之前执行。内部响应处理以及取消 attach 的清理调度先于 `onResponse`。
-如果 transport 在发送期间同步返回响应，清理发送可能仍在队列中；此时 `pendingCount` 已包含它，而 `unansweredCount` 尚未包含。
-`trace` 回调在命令完成时运行，其形状和 stderr 输出与观察回调无关。
+`onResponse` 在处理匹配的响应时同步执行。`sessionId` 是请求的 session ID，浏览器级返回的、关于已分离 session 的错误也是如此。`at` 是收到响应时的 `performance.now()`，`durationMs` 是从发送到响应的耗时。`late` 表示响应到达前，请求已因取消、超时、session 结束或发送失败而退出等待，与 `onSettle` 微任务是否已运行无关。`error` 存在时是字符串形式的 CDP 错误码。重复或未知的响应会被忽略；session 不匹配时会断开连接，而不是确认该命令。所有观察回调都拿不到参数、结果或协议错误文本。
+
+对于普通响应，`onResponse` 先于异步的 `onSettle` 执行。内部响应处理以及取消 attach 的清理调度都在 `onResponse` 之前完成。如果 transport 在发送期间同步返回响应，该清理发送可能仍在排队：此时 `pendingCount` 已包含它，`unansweredCount` 尚未包含。`trace` 回调在命令完成时运行，其格式和 stderr 输出与观察回调无关。
 
 ### 未响应计数与有期限的等待
 
-`connection.pendingCount` 统计调用方尚未结算的请求（包含待发送队列）。
-`connection.unansweredCount` 统计已尝试发送、尚未收到匹配响应的请求。
-例如已发送的命令超时后，两者分别可以为 `0` 和 `1`；晚响应到达后，后者归零，不会再次结算原调用。
-取消 attach 的晚响应可能触发独立 detach，该清理命令也计入未响应数量。
+`connection.pendingCount` 统计尚未结算的调用方请求，包括排队中的发送。`connection.unansweredCount` 统计已尝试发送、尚未收到匹配响应的请求。例如已发送的命令超时后，两者可以分别为 `0` 和 `1`；迟到的响应使 `unansweredCount` 归零，但不会让调用方再次结算。取消 attach 的迟到回复所触发的清理 detach 也会计入。
 
-取消、超时和 session 结束均不清除未响应计数；发送报错也保留，因为任意 transport 可能在部分发送后报错。
-预先取消、序列化失败或发送前已从队列取消的请求不产生计数。内部只保留 ID、方法、session 和时间元数据，
-直到响应到达或连接关闭，与应用的历史记录淘汰无关。持续发送而对端一直不响应会积累元数据，
-调用方应停止新工作并设置清理期限，无法确认响应时按自己的策略断开连接。
+取消、超时和 session 结束**不会**移除未响应的命令。发送报错同样保留计数，因为任意 transport 都可能在部分发送后才报错。预先中止的请求、序列化失败的请求，以及在发送尝试前就从队列中取消的请求不计入。每条记录只保存 ID、方法、session 和时间戳元数据，直到收到响应或连接关闭，与应用淘汰了多少历史记录无关。对端一直不回复时，这些元数据会持续增长；应停止发起新工作，设置自己的清理期限，无法确认响应时断开连接。
 
-连接关闭会清空计数，但不会合成 onResponse。必须同时检查 closed 或断开事件；断开后的零不代表响应全部收到。
-连接开放时的零也只是瞬时状态，不能阻止并发发送；CDP 响应不保证所有浏览器侧副作用均已完成。
-应用应串行管理操作与清理，再移交操作权。
+连接关闭会清空计数，但不会合成响应，因此务必检查 `closed` 或断开事件：断开后的零不代表已成功排空。连接开放时的零只是瞬时计数，不能阻止并发发送；CDP 响应也不能证明浏览器侧的所有副作用都已完成。应用应先串行管理操作与清理的归属，再交出这份归属。
 
 ### 原生 drain
 
-`await browser.drain({ timeout: 11000, signal })` 委托给 `connection.drain()`，通过状态变化通知等待，
-不进行轮询。覆盖待发送/待结算请求、未响应发送、取消 attach 的晚回复与独立清理，
-以及失败 detach 的异步重试衔接。同步观察回调及其排队发送先于空闲检查。
+`await browser.drain({ timeout: 11000, signal })` 委托给 `connection.drain()`。它不轮询，等待 pending 和排队中的请求、未响应的发送尝试、被放弃的 attach，以及库的 attachment 清理（包括重试失败 detach 的后续步骤）。同步观察回调及其排队的发送在空闲检查之前运行。
 
-| 结果                         | 行为                                         |
-| ---------------------------- | -------------------------------------------- |
-| 连接仍开放，所有跟踪工作排空 | 正常返回 `void`                              |
-| 调用前或等待期间断连         | 抛 `DisconnectedError`，`cause` 为原断连原因 |
-| 超过期限                     | 抛 `TimeoutError`                            |
-| signal 取消                  | 抛 signal 的错误 reason                      |
+| 结果                         | 行为                                                  |
+| ---------------------------- | ----------------------------------------------------- |
+| 连接仍开放，所有跟踪工作排空 | resolve 为 `void`                                     |
+| 调用前已断开或等待期间断开   | 以 `DisconnectedError` 拒绝，`cause` 为连接的失败原因 |
+| 超过期限                     | 以 `TimeoutError` 拒绝                                |
+| signal 中止                  | 以 signal 的错误 reason 拒绝                          |
 
-默认期限使用 connection 的 timeout；每个等待者的期限和 signal 独立。
-drain 超时或取消不取消命令、不重发输入、不自动断连；attachment 清理失败可能按其独立期限断连。
-先停止命令生产者：drain 不阻止未来发送，不等待任意应用 Promise、事件等待器或所有浏览器副作用。
-协议错误响应也会偿还未响应计数，但不会把原命令的失败变成成功。
-target 崩溃可能留下永不回复的命令，仍须设置期限。
+默认期限为连接的 timeout。每个等待者有自己的期限和 signal；等待者超时或取消不会取消命令、重发输入或断开连接，而库的 attachment 清理保留其独立期限，失败时仍可能断开连接。先停止命令的生产者：drain 不是阻止后续发送的锁，也不等待应用的 Promise、事件等待或浏览器侧的所有副作用。协议错误响应同样会偿还未响应计数，但不会把命令的失败变成成功。崩溃的 target 可能留下永远得不到回复的命令，因此 drain 仍须设置期限。
 
 ```ts
 // 先停止或取消操作，等待其线上回复，再 detach 该 session。
@@ -225,26 +156,17 @@ await browser.drain({ timeout: 11000 });
 
 ### 可选分阶段性能观察
 
-配置 `observe.onPerformance(entry)`，收到不含载荷的指标；复用现有 JSON 解析，不保存消息正文。
-`bytes` 是 JSON 的 UTF-8 字节数，不含 WebSocket 帧或 pipe 分隔符；时间基于 `performance.now()`。
+设置 `observe.onPerformance(entry)` 可收到不含载荷的测量值。启用后不会额外解析 JSON，也不保存消息正文。`bytes` 是 JSON 消息的 UTF-8 字节数，不含 WebSocket 帧头或 pipe 分隔符。所有时间戳均基于 `performance.now()`。
 
-| direction | 指标                                                                                                                                                                 |
-| --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `send`    | `seq`、`method`、`sessionId`、`at`、`bytes`；`queueMs` 为请求进入连接队列到序列化开始；`serializationMs` 为 JSON 序列化耗时                                          |
-| `receive` | `kind`（`response` / `event` / `invalid`）、`at`、`bytes`、`parseMs`、`dispatchMs`；匹配响应还含 `seq`、`method`、`sessionId`，发送时已开启指标则含 `responseWaitMs` |
+| direction | 字段与测量范围                                                                                                                                                           |
+| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `send`    | `seq`、`method`、`sessionId`、`at`、`bytes`；`queueMs` 为请求进入队列到开始序列化；`serializationMs` 为 JSON 序列化耗时                                                  |
+| `receive` | `kind`（`response`、`event`、`invalid`）、`at`、`bytes`、`parseMs`、`dispatchMs`；匹配的响应还含 `seq`、`method`、`sessionId`，若发送时已开启测量，还含 `responseWaitMs` |
 
-`responseWaitMs` 从 transport 调用前（onSend 后）到接收回调入口，包含传输、网络和 Chrome 等待，
-不能单独解释为 Chrome 执行时间。`dispatchMs` 覆盖同步协议处理、事件和 onResponse 回调，
-不含性能观察回调自身、onSettle 等 Promise 微任务或异步监听器后续工作。
-queueMs 只反映连接的重入发送队列，不含应用或输入队列。指标和回调本身有开销，不能将这些数值直接等同于端到端输入耗时。
+`responseWaitMs` 从 transport 调用（`onSend` 之后）到进入接收回调为止，包含传输、网络和 Chrome 的时间，无法单独分离出 Chrome 的执行时间。`dispatchMs` 覆盖同步协议处理和事件/响应回调，不含性能回调本身、`onSettle` 等 Promise 后续步骤以及异步监听器的工作。`queueMs` 中的队列是连接的可重入发送队列，不是应用或输入队列。测量和观察回调本身有开销；这些阶段不能当作端到端输入延迟的分解。
 
-晚回复保留原 seq；重复/未知响应没有关联字段。观察回调异常被隔离。
-同步 transport 可能先发 receive 指标，再发 send 指标，应按 seq 关联。
-序列化前拒绝的发送没有消息指标；指标不包含载荷或协议错误文本。
+迟到的响应保留原来的 `seq`；未知和重复的响应没有关联字段。回调异常会被隔离。同步 transport 可能先发出 receive 指标再发出 send 指标，因此应按 `seq` 关联，而不是按回调顺序。序列化前就被拒绝的发送不产生指标。任何条目都不包含载荷或协议错误文本。
 
 ## 测试
 
-`ScriptedChrome.connect({ attach: 'none' })` 使用同样的真实对象。
-fixture 支持独立 attachment、`detachSession(id)`、`crashTarget(id)`、`destroyTarget(id)`；
-`attachReplyDelayMs` 在 attachment 已建立并发出事件后延迟响应，用于取消后迟到响应测试。
-`commands` 记录 detachFromTarget 等命令及参数。
+`nodriver-ts/testing` 中的 `ScriptedChrome` 驱动同样的真实对象：`(await ScriptedChrome.start()).connect({ attach: 'none' })`。它模拟独立的 attachment，以及 `detachSession(id)`、`crashTarget(id)` 和 `destroyTarget(id)`。`attachReplyDelayMs` 在 attachment 及其事件已存在之后再延迟 attach 回复，用于测试取消后的迟到回复。包括 detach 在内的每条命令都记录在 `commands` 中。

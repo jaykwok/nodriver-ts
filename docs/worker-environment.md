@@ -10,7 +10,7 @@ This benchmark compares ways of applying a UA, language and timezone to every ex
 npm run bench:worker-environment
 ```
 
-Node.js 24.22.0 or newer and an installed Chromium browser are required. `CHROME_PATH` selects an executable. The default runs the six configurations below over WebSocket and Pipe, writing `test-results/worker-environment.json` and compact progress lines to stdout.
+Node.js 24.22.0 or newer and an installed Chromium browser are required; `CHROME_PATH` selects the executable. By default the six configurations below run over WebSocket and Pipe; the report is written to `test-results/worker-environment.json`, and one compact progress line per run goes to stdout.
 
 | Variable                  | Default / meaning                                            |
 | ------------------------- | ------------------------------------------------------------ |
@@ -20,7 +20,7 @@ Node.js 24.22.0 or newer and an installed Chromium browser are required. `CHROME
 | `WORKER_AUDIT_HEADFUL`    | `1` selects headful; otherwise headless                      |
 | `WORKER_AUDIT_REPORT`     | Output JSON path                                             |
 
-The stable Windows/Linux and Beta/Dev/Canary workflows collect the Pipe matrix and upload the report. Collection failures fail the job; configuration differences are recorded in the report, not treated as failures.
+The regression workflow (Windows and Linux) and the Beta/Dev/Canary workflow collect the Pipe matrix and upload the report. Collection failures fail the job; configuration differences are recorded in the report, not treated as failures.
 
 ## What is measured
 
@@ -35,11 +35,11 @@ The first statement of the same fixture script captures UA, languages, Intl loca
 | `prepared-navigation`   | Combined configuration, but create a blank page, finish configuration, then issue `Page.navigate`                              |
 | `prepared-locale-check` | Prepared navigation; read the effective Locale on the blank page and Workers before deciding whether to request an override    |
 
-The marker UA and Client Hints are intentionally synthetic test values. They are not a proposed device identity. `native` is not a no-CDP or physical-input baseline; use the [differential audit](differential-audit.md) for those controls.
+The marker UA and Client Hints are deliberately synthetic test values, not a proposed device identity. `native` is not a no-CDP or physical-input baseline; use the [differential audit](differential-audit.md) for those controls.
 
-The JSON keeps command results, first-script observations, requested-value comparisons, cross-context comparisons and request headers separately. A successful command does not suppress a mismatch. Missing contexts/requests, unexpected intrusive commands, duplicate preparation, failure to resume, or incomplete connection cleanup fail collection. A command rejection such as a Locale ownership conflict is recorded explicitly. A successful exit means collection completed, not that every override worked.
+The JSON keeps command results, first-script observations, requested-value comparisons, cross-context comparisons and request headers separately. A successful command does not suppress a mismatch. Missing contexts/requests, an OOPIF target that a paused configuration never observes, unexpected intrusive commands, duplicate preparation, failure to resume or incomplete connection cleanup fail collection. A command rejection such as a Locale ownership conflict is recorded explicitly. A successful exit means collection completed, not that every override worked.
 
-Languages such as `zh-CN` and `en-US` are ordinary user preferences, not automation indicators. No particular language is required. `matchesFirstScriptLanguages` compares ordered ranges case-insensitively and the progress counter is named `languageHeaderDifferences`; these are observations, not failures. [Chromium expands language lists](https://chromium.googlesource.com/chromium/src/+/refs/heads/main/net/http/http_util.h) with language-only fallbacks, and header weights and preference lists need not exactly equal `navigator.languages`. Compare against the same browser and configuration's native baseline and the explicitly requested values, not literal equality alone. The library keeps native language defaults.
+Languages such as `zh-CN` and `en-US` are ordinary user preferences, not automation indicators, and no particular language is required. `matchesFirstScriptLanguages` compares ordered ranges case-insensitively, and the progress counter `languageHeaderDifferences` counts mismatches; both are observations, not failures. [Chromium expands language lists](https://chromium.googlesource.com/chromium/src/+/refs/heads/main/net/http/http_util.h) with language-only fallbacks, and header weights and preference lists need not exactly equal `navigator.languages`. Compare against the same browser and configuration's native baseline and the explicitly requested values, not literal equality alone. The library keeps native language defaults.
 
 ## Observed behavior
 
@@ -56,6 +56,6 @@ An `already-observed` Locale result is an observation, not ownership of an overr
 
 The launcher already supports `userAgent`, `lang`, `windowSize` and `--headless=new`; what differs between strategies is which contexts each setting reaches, and when. CDP identifies Dedicated Workers as `worker`; same-process frames do not each have their own Target. [`Target.setAutoAttach`](https://github.com/ChromeDevTools/devtools-protocol/blob/master/pdl/domains/Target.pdl) operates on related targets and may require recursive attachment.
 
-The benchmark assigns Shared/Service Workers to the browser-root attachment and Dedicated Workers/OOPIFs to child attachments; overlapping root and page attachments for the same Service Worker stall preparation. Every observed target is resumed within a bounded preparation step, and the owned browser is closed on failure.
+The benchmark assigns Shared/Service Workers to the browser-root attachment and Dedicated Workers/OOPIFs to child attachments; overlapping root and page attachments for the same Service Worker stall preparation. Every observed target is resumed within a bounded preparation step (at most 5 s), and the owned browser is closed after every run, including after a failure.
 
 [Chromium's Locale controller](https://github.com/chromium/chromium/blob/main/third_party/blink/renderer/core/inspector/locale_controller.cc) shares renderer state and rejects a second agent claiming an override. A browser-wide policy would have to account for that scope, handle partial application, prepare owned pages before navigation, separate startup-only from dynamic settings, and keep `attach: 'none'` and external-browser behavior unchanged. The library therefore keeps native values by default.

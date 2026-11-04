@@ -2,9 +2,9 @@
 
 [English](../upstream-api-map.md)
 
-对照 nodriver 提交 `219a60d65d82fb3d137d0c2c5b1fb285a9f837d0` 的 `core/browser.py`、`tab.py`、`element.py`、`connection.py`、`config.py`，列出全部 163 个 public 成员（同名重载合并）。Python 魔术方法、私有实现和生成的 CDP 模块由 Promise、标准集合和官方协议类型替代；代理由 proxy-chain 处理，屏幕、媒体和交互式调试辅助不在范围内。
+本表列出 nodriver 提交 `219a60d65d82fb3d137d0c2c5b1fb285a9f837d0` 中 `core/browser.py`、`tab.py`、`element.py`、`connection.py`、`config.py` 的全部 163 个 public 成员（同名重载合并）及其对应项。Python 魔术方法、私有实现和生成的 CDP 模块由 Promise、标准集合和官方协议类型替代；代理由 proxy-chain 处理，屏幕、媒体和交互式调试辅助不在范围内。
 
-对应项为高层 API 时，行为由集成测试覆盖；为 `cdp` 命令或 `evaluate` 时，表示通过协议或页面脚本自行实现，没有同名封装。行为边界见 [API](api.md) 与 [支持范围](support.md)。
+高层对应项由集成测试覆盖。对应项为 `cdp` 命令或 `evaluate` 时没有同名封装，需通过协议或页面脚本自行实现。行为边界见 [API](api.md) 与 [支持范围](support.md)。
 
 | 上游成员                                     | TS 对应                                                           |
 | -------------------------------------------- | ----------------------------------------------------------------- |
@@ -37,8 +37,8 @@
 | `connection.Connection.remove_handler`       | 调用 Session.on 返回的函数                                        |
 | `connection.Connection.aopen`                | Browser.connect                                                   |
 | `connection.Connection.aclose`               | Browser.disconnect                                                |
-| `connection.Connection.attach`               | 自动附加；或 cdp Target.attachToTarget                            |
-| `connection.Connection.detach`               | cdp Target.detachFromTarget                                       |
+| `connection.Connection.attach`               | 自动附加；或 Browser.attachTarget / attachSession                 |
+| `connection.Connection.detach`               | TargetSession.detach / cdp Target.detachFromTarget                |
 | `connection.Connection.send`                 | Session.send / sendWith                                           |
 | `connection.Connection.process_event`        | Connection 自动路由，不暴露可注入事件 API                         |
 | `config.Config.browser_args`                 | LaunchOptions.args                                                |
@@ -150,11 +150,11 @@
 | `element.Element.apply`                      | Element.evaluate                                                  |
 | `element.Element.get_position`               | DOM.getBoxModel / Element.evaluate(getBoundingClientRect)         |
 | `element.Element.mouse_click`                | Element.click / Mouse.click                                       |
-| `element.Element.mouse_move`                 | Mouse.move                                                        |
+| `element.Element.mouse_move`                 | Element.hover / Mouse.move                                        |
 | `element.Element.mouse_drag`                 | Mouse.drag（指针拖动）                                            |
-| `element.Element.scroll_into_view`           | cdp DOM.scrollIntoViewIfNeeded                                    |
+| `element.Element.scroll_into_view`           | Element.scrollIntoView                                            |
 | `element.Element.clear_input`                | Element.fill("")                                                  |
-| `element.Element.send_keys`                  | focus + Keyboard.insertText                                       |
+| `element.Element.send_keys`                  | Element.type / focus + Keyboard.insertText                        |
 | `element.Element.send_file`                  | Element.upload                                                    |
 | `element.Element.focus`                      | Element.focus                                                     |
 | `element.Element.select_option`              | Element.select                                                    |

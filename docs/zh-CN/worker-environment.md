@@ -10,7 +10,7 @@
 npm run bench:worker-environment
 ```
 
-需要 Node.js 24.22.0 或以上，以及已安装的 Chromium 浏览器；`CHROME_PATH` 可指定可执行文件。默认通过 WebSocket、Pipe 运行下表六组配置，将结果写入 `test-results/worker-environment.json`，并在 stdout 输出简要进度。
+需要 Node.js 24.22.0 或以上，以及已安装的 Chromium 浏览器；`CHROME_PATH` 用于指定可执行文件。默认通过 WebSocket 和 Pipe 运行下表六组配置，报告写入 `test-results/worker-environment.json`，每次运行在 stdout 输出一行简要进度。
 
 | 变量                      | 默认值 / 含义                          |
 | ------------------------- | -------------------------------------- |
@@ -20,7 +20,7 @@ npm run bench:worker-environment
 | `WORKER_AUDIT_HEADFUL`    | `1` 选择 headful，否则 headless        |
 | `WORKER_AUDIT_REPORT`     | 输出 JSON 路径                         |
 
-稳定版 Windows/Linux 和 Beta/Dev/Canary 工作流会采集 Pipe 矩阵并上传报告。采集失败会使任务失败；配置差异记录在报告中，不视为失败。
+回归工作流（Windows 与 Linux）和 Beta/Dev/Canary 工作流会采集 Pipe 矩阵并上传报告。采集失败会使任务失败；配置差异记录在报告中，不视为失败。
 
 ## 测量范围
 
@@ -35,11 +35,11 @@ npm run bench:worker-environment
 | `prepared-navigation`   | 同组合配置，但先创建空白页，完成配置后再调用 `Page.navigate`                             |
 | `prepared-locale-check` | 导航前配置；先读取空白页和 Worker 当前的 Locale，再决定是否申请覆盖                      |
 
-UA 和 Client Hints 使用刻意构造的测试标记，不是推荐的设备身份。`native` 也不是无 CDP 或物理输入基线；这些对照请参阅[差分审计](differential-audit.md)。
+UA 和 Client Hints 使用刻意构造的测试标记值，不是推荐的设备身份。`native` 也不是无 CDP 或物理输入基线；这些对照请参阅[差分审计](differential-audit.md)。
 
-JSON 分开保存命令结果、首段脚本观测、请求值核验、跨上下文比较和请求头。命令成功不会覆盖字段不匹配。上下文/请求缺失、意外的侵入式命令、重复预处理、恢复失败或连接清理不完整，会使采集失败。Locale 所有权冲突等命令拒绝会明确记录。成功退出只表示采集完成，不代表所有覆盖都成功。
+JSON 分开保存命令结果、首段脚本观测、请求值核验、跨上下文比较和请求头。命令成功不会覆盖字段不匹配。上下文/请求缺失、暂停配置下始终未观测到 OOPIF Target、意外的侵入式命令、重复预处理、恢复失败或连接清理不完整，都会使采集失败。Locale 所有权冲突等命令拒绝会明确记录。成功退出只表示采集完成，不代表所有覆盖都成功。
 
-`zh-CN`、`en-US` 等都是正常的用户语言偏好，不是自动化指标，也不要求统一成某种语言。`matchesFirstScriptLanguages` 不区分大小写地比较有序语言列表，进度计数命名为 `languageHeaderDifferences`；两者只记录差异，不判定失败。[Chromium 会扩展语言列表](https://chromium.googlesource.com/chromium/src/+/refs/heads/main/net/http/http_util.h)，补充不含地区的回退项；请求头权重及偏好列表不必与 `navigator.languages` 完全相等。应对照同一浏览器和配置的原生基线及明确请求的值来比较，不能只看字符串是否相同。库默认保留原生语言。
+`zh-CN`、`en-US` 等都是正常的用户语言偏好，不是自动化指标，也不要求统一成某种语言。`matchesFirstScriptLanguages` 不区分大小写地比较有序语言列表，进度计数 `languageHeaderDifferences` 统计其中不一致的请求；两者都只是观测，不判定失败。[Chromium 会扩展语言列表](https://chromium.googlesource.com/chromium/src/+/refs/heads/main/net/http/http_util.h)，补充不含地区的回退项；请求头权重及偏好列表不必与 `navigator.languages` 完全相等。应对照同一浏览器和配置的原生基线及明确请求的值来比较，不能只看字符串是否相同。库默认保留原生语言。
 
 ## 观测到的行为
 
@@ -56,6 +56,6 @@ JSON 分开保存命令结果、首段脚本观测、请求值核验、跨上下
 
 启动器已支持 `userAgent`、`lang`、`windowSize` 和 `--headless=new`；各策略的区别在于每项设置能到达哪些上下文、何时生效。CDP 中 Dedicated Worker 的类型是 `worker`；同进程 Frame 并不各自拥有 Target。[`Target.setAutoAttach`](https://github.com/ChromeDevTools/devtools-protocol/blob/master/pdl/domains/Target.pdl) 作用于相关 Target，可能需要递归挂载。
 
-基准由 Browser 根挂载接管 Shared/Service Worker，由子挂载接管 Dedicated Worker/OOPIF；Browser 与 Page 同时挂载同一个 Service Worker 会使预处理停滞。每个已观测的 Target 都在有界的预处理步骤内恢复，失败时关闭自己创建的浏览器。
+基准由 Browser 根挂载接管 Shared/Service Worker，由子挂载接管 Dedicated Worker/OOPIF；Browser 与 Page 同时挂载同一个 Service Worker 会使预处理停滞。每个已观测的 Target 都在有界的预处理步骤（最长 5 秒）内恢复运行，自己创建的浏览器在每次运行后都会关闭，失败时也不例外。
 
 [Chromium 的 Locale 控制器](https://github.com/chromium/chromium/blob/main/third_party/blink/renderer/core/inspector/locale_controller.cc) 共享渲染进程状态，会拒绝第二个 agent 取得覆盖所有权。浏览器级策略需要处理这一作用域和部分应用失败，在导航前准备自有页面，区分仅启动时可设的配置与动态配置，并保持 `attach: 'none'` 与外部浏览器行为不变。因此库默认保留原生值。

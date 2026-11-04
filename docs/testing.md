@@ -2,16 +2,9 @@
 
 [简体中文](zh-CN/testing.md)
 
-The package and examples require Node.js 24.22.0+. Use `await using` or `try/finally` with `close()`, closing child resources before their Browser.
+Import `ScriptedChrome` from **`nodriver-ts/testing`** to test code against real `Browser`, `Tab`, `Frame` and `Session` instances without launching Chrome or casting a handwritten mock to a class with private fields. The package and examples require Node.js 24.22.0+.
 
-Import `ScriptedChrome` from **`nodriver-ts/testing`** to test code against real `Browser`, `Tab`,
-`Frame`, and `Session` instances without launching Chrome or casting a handwritten mock to a
-class with private fields.
-
-The fixture listens on an ephemeral loopback WebSocket port. It answers the library's browser
-and page startup handshake, creates targets and contexts, and records commands with their
-parameters. It has no renderer, DOM, or JavaScript engine: application commands must be scripted.
-Missing expectations fail explicitly instead of silently returning `{}`.
+The fixture listens on an ephemeral loopback WebSocket port. It answers the library's browser and page startup handshake, creates targets and contexts, and records commands with their parameters. It has no renderer, DOM or JavaScript engine, so application commands must be scripted. A missing expectation fails explicitly instead of silently returning `{}`.
 
 ```ts
 import assert from 'node:assert/strict';
@@ -34,25 +27,17 @@ assert.equal(chrome.commands.at(-1)!.sessionId, tab.cdp.id);
 chrome.assertDone();
 ```
 
-Use `try/finally` and `close()` in runtimes without `await using` syntax. Dispose the Browser
-before the fixture. `chrome.close()` also terminates any client still connected and is idempotent.
+Close child resources before their Browser, and the Browser before the fixture: `await using` does this in reverse declaration order; with `try/finally`, call `close()` on each. `chrome.close()` also terminates any client still connected and is idempotent.
 
-For raw clients use `chrome.connect({ attach: 'none' })` and `browser.attachSession(targetId)`. `chrome.detachSession(sessionId)` ends one modeled attachment; `attachReplyDelayMs` delays attach responses after attachment creation. See [raw-session tests and lifetimes](raw-sessions.md).
+For raw clients use `chrome.connect({ attach: 'none' })` and `browser.attachSession(targetId)`. `chrome.detachSession(sessionId)` ends one modeled attachment; `attachReplyDelayMs` delays attach responses after the attachment is created. See [raw-session tests and lifetimes](raw-sessions.md).
 
 ## Replies and command records
 
-- `replyOnce(method, resultOrHandler)` queues one result or handler per method. Queued replies
-  are consumed in arrival order across all sessions, before persistent handlers or defaults.
-- `handle(method, handler)` installs a persistent handler and returns an unsubscribe function.
-  Both handler forms receive typed `(params, command)` arguments; inspect `command.sessionId`
-  to distinguish pages. Async handlers may finish out of order, as real CDP commands can.
-- `commands` contains all wire requests, including startup, with `id`, `method`, `params`, and
-  optional `sessionId`. Handler mutations do not change the recorded request. These records
-  can contain sensitive values; keep fixture data synthetic.
-- An unhandled command outside the built-in handshake/lifecycle set receives a `ProtocolError`
-  with code `-32601`. It is also recorded in `unexpectedCommands`.
-- `assertDone()` throws if any queued reply is unused or any unexpected command was received.
-  Persistent handlers need not be used. Call this before teardown if teardown itself is scripted.
+- `replyOnce(method, resultOrHandler)` queues one result or handler per method. Queued replies are consumed in arrival order across all sessions, before persistent handlers or defaults.
+- `handle(method, handler)` installs a persistent handler and returns an unsubscribe function. Both handler forms receive typed `(params, command)` arguments; inspect `command.sessionId` to distinguish pages. Async handlers may finish out of order, as real CDP commands can.
+- `commands` contains all wire requests, including startup, with `id`, `method`, `params` and optional `sessionId`. Handler mutations do not change the recorded request. Records can contain sensitive values, so keep fixture data synthetic.
+- A command outside the built-in handshake/lifecycle set that nothing handles receives a `ProtocolError` with code `-32601` and is recorded in `unexpectedCommands`.
+- `assertDone()` throws if a queued reply is unused or an unexpected command was received. Persistent handlers need not be used. Call it before teardown if teardown itself is scripted.
 
 ```ts
 import { ProtocolError } from 'nodriver-ts';
@@ -68,14 +53,9 @@ const off = chrome.handle('Runtime.evaluate', (params, command) => {
 off();
 ```
 
-Returning `NO_REPLY` leaves the actual Connection request pending for timeout, abort, or
-disconnect tests. Throwing `ProtocolError` preserves its code and data on the wire; other thrown
-errors use code `-32000`. Handlers have no automatic cancellation: a late returned result is
-discarded when its original socket is closed, and is never sent to a reconnected client.
+Returning `NO_REPLY` leaves the real Connection request pending, for timeout, abort or disconnect tests. A thrown `ProtocolError` keeps its code and data on the wire; other thrown errors use code `-32000`. Handlers are not cancelled automatically: a result returned after its socket closed is discarded and never sent to a reconnected client.
 
-`tab.evaluate()` still performs the library's context-discovery CDP commands. Script those too
-when testing that path; the fixture does not invent a DOM or evaluate the expression. For an
-isolated-world evaluation, for example:
+`tab.evaluate()` still sends the library's context-discovery CDP commands, so script those too when testing that path; the fixture neither invents a DOM nor evaluates the expression. For an isolated-world evaluation:
 
 ```ts
 chrome.handle('Page.createIsolatedWorld', () => ({ executionContextId: 8 }));
@@ -85,12 +65,7 @@ assert.equal(await tab.evaluate('answer', undefined, { world: 'isolated' }), 42)
 
 ## Targets, events, and failures
 
-`start()` defaults to one `about:blank` page. Pass `{ pages: [] }` for none, or
-`{ pages: [{ url: 'https://fixture.test/', title: 'Fixture' }] }` for initial metadata.
-`browser.newTab()` (without navigation) and `browser.newContext()` work with built-in replies.
-Navigation, screenshots, input, and other application operations require scripts. As in Chrome,
-a command for an unknown session is answered at browser level with `Session with given id not found.`
-(-32001), and an attach to an unknown target with `No target with given id found` (-32602).
+`start()` defaults to one `about:blank` page. Pass `{ pages: [] }` for none, or `{ pages: [{ url: 'https://fixture.test/', title: 'Fixture' }] }` for initial metadata. `browser.newTab()` (without navigation) and `browser.newContext()` work with built-in replies; navigation, screenshots, input and other application operations require scripts. As in Chrome, a command for an unknown session is answered at browser level with `Session with given id not found.` (-32001), and an attach to an unknown target with `No target with given id found` (-32602).
 
 ```ts
 const ready = browser.waitForTab();
@@ -111,24 +86,13 @@ chrome.destroyTarget(targetId);
 await destroyed;
 ```
 
-`emit(method, params, sessionId?)` sends a typed raw CDP event; omit `sessionId` for a browser
-event. Raw emission does **not** update the fixture's target/frame model. Use `addPage`,
-`destroyTarget`, and `crashTarget` for the corresponding modeled behavior. A crash invalidates
-the real Tab's frame handles; it does not destroy the target. There is no simulated rendering,
-automatic worker/OOPIF creation, or navigation engine.
+`emit(method, params, sessionId?)` sends a typed raw CDP event; omit `sessionId` for a browser event. Raw emission does **not** update the fixture's target/frame model; use `addPage`, `destroyTarget` and `crashTarget` for the modeled behavior. A crash invalidates the real Tab's frame handles but does not destroy the target. There is no simulated rendering, automatic worker/OOPIF creation or navigation engine.
 
-`chrome.disconnect()` abruptly terminates the client socket, rejecting real pending requests
-and event waits. The fixture remains available for a later `connect()`, retaining pages and
-contexts. Only one controller may connect at a time; await `browser.close()` before reconnecting.
-For direct control use `Browser.connect({ endpoint: chrome.endpoint, ...options })`.
+`chrome.disconnect()` abruptly terminates the client socket, rejecting real pending requests and event waits. The fixture keeps its pages and contexts and accepts a later `connect()`. Only one controller may connect at a time; await `browser.close()` before reconnecting. `chrome.connect(options)` is `Browser.connect({ endpoint: chrome.endpoint, ...options })`.
 
 ## Tracing a real launched browser
 
-Both `Browser.launch()` and `Browser.connect()` accept `trace: boolean | ((entry) => void)`.
-Callbacks receive `{ method, sessionId?, durationMs, error? }`, including startup commands,
-protocol errors, timeouts, and cancellations. Parameters and results are intentionally absent.
-`trace: false` disables tracing even when `NODRIVER_TRACE` is set; `trace: true` writes the
-existing compact format to stderr. A callback takes precedence over that environment setting.
+`Browser.launch()` and `Browser.connect()` accept `trace: boolean | ((entry) => void)`. Callbacks receive `{ method, sessionId?, durationMs, error? }` for every command, including startup commands, protocol errors, timeouts and cancellations; `error` is the protocol error code or the error name. Parameters and results are never recorded. An explicit `trace` overrides `NODRIVER_TRACE`: `false` disables tracing, and `true` writes compact lines to stderr.
 
 ```ts
 const entries: import('nodriver-ts').TraceEntry[] = [];

@@ -49,7 +49,7 @@
 
 ## 期限与取消
 
-`WaitOptions` 由毫秒 `timeout` 和 `AbortSignal` 组成。0 表示立即到期，不表示无限等待。
+`WaitOptions` 由毫秒 `timeout` 和 `AbortSignal` 组成。timeout 超出 0–2147483647 毫秒时抛出 `RangeError`；0 表示立即到期，不表示无限等待。
 
 | 操作                                           | 默认期限                                                 |
 | ---------------------------------------------- | -------------------------------------------------------- |
@@ -59,7 +59,7 @@
 | `inspectEnvironment`                           | 5 秒                                                     |
 | `diagnoseEnvironment`、`alignEnvironment`      | 10 秒                                                    |
 
-`sendWith(method, { timeout, signal }, ...params)` 为单条命令设置期限与取消。多步骤操作共用一个预算：选择器查询的执行上下文等待和其中每个 DOM/Runtime 请求只使用剩余时间，`waitForSelector()` / `waitForFunction()` 的各次尝试也共用总预算。执行上下文的查找由并发调用者共享，单个调用者到期或取消只结束自己的等待。查询的对象组释放有独立的 1 秒期限，不推迟调用者返回。
+`sendWith(method, { timeout, signal }, ...params)` 为单条命令设置期限与取消。多步骤操作共用一个预算：选择器查询的每一步（执行上下文等待和其中每个 DOM/Runtime 请求）只使用剩余时间，`waitForSelector()` / `waitForFunction()` 的每次尝试也是如此。并发调用者共享同一次执行上下文查找，到期或被取消的调用者只结束自己的等待。查询的对象组释放有独立的 1 秒期限，不推迟调用者返回。
 
 宿主侧的期限或取消只停止等待，已发出的 CDP 命令、已执行的页面脚本和已派发的输入不会撤销或重放。
 
@@ -84,32 +84,32 @@
 
 函数参数在浏览器中执行，不能捕获宿主闭包；参数以单个可序列化值传递，`JSHandle` 可作为参数。用户脚本异常抛出 `EvaluationError`。字符串形式的 `evaluate` / `evaluateHandle` 可传正数 `executionTimeout`（毫秒），对应 `Runtime.evaluate.timeout`，只限制初始同步执行，不能终止已安排的定时器、请求或异步续体，也不是资源沙箱。`Element.withObject(fn)` 以隔离世界中的元素句柄运行 `fn(objectId, group)`；`fn` 在 `group` 中创建的对象随句柄一起释放。
 
-框架不调用 `Runtime.enable`：主世界通过所属 frame 的 Document 与 `DOM.resolveNode` 解析并校验，详见 [自动化痕迹审计](automation-audit.md)。因此不能等待默认未启用的 Runtime 事件；显式 `cdp.send('Runtime.enable')` 会改变这一点及检测面。`addInitScript()` 应在 `goto()` 前注册；新 OOPIF 在暂停状态下完成初始化后恢复，有 watchdog 兜底。已经开始执行的 popup 或外部页面没有首段脚本前注入保证。
+框架不调用 `Runtime.enable`：主世界通过所属 frame 的 Document 与 `DOM.resolveNode` 解析并校验，详见 [自动化痕迹审计](automation-audit.md)。因此不会收到 Runtime 事件；自行通过 `cdp` 发送 `Runtime.enable` 可以收到，但会改变检测面。`addInitScript()` 应在 `goto()` 前注册；新 OOPIF 在暂停状态下完成初始化后恢复，有 watchdog 兜底。已经开始执行的 popup 或外部页面没有首段脚本前注入保证。
 
 ## 启动与连接
 
-| 选项                              | 行为                                                                                                                                                                                                                                                                     |
-| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `headless`                        | 默认 `false`。无图形桌面时须显式 `true`；显示环境不可用时不会自动切换                                                                                                                                                                                                    |
-| `maskHeadless`                    | 默认关闭；显式 true 且未指定 `userAgent` 时去掉页面 UA/UA-CH 中的 HeadlessChrome，Shared/Service Worker 可能不一致                                                                                                                                                       |
-| `automationControlled`            | 默认 `false`：加入 `--disable-blink-features=AutomationControlled`（与调用者的其他禁用特性合并），webdriver getter 保持原生；`true` 不加该开关                                                                                                                           |
-| `preset: 'agent'`                 | 追加 `AGENT_ARGS`：关闭首次运行界面、搜索引擎选择页、崩溃恢复气泡和后台节流，并设置 `--password-store=basic`：在 Linux 上，Chrome 改用内置密钥而不是系统密钥环来加密已保存的密码和 cookie，因此不会弹出密钥环提示；通过密钥环加密过数据的持久 profile 将无法读取这些数据 |
-| `userAgent`、`lang`、`windowSize` | 启动时设置 UA、BCP 47 语言和窗口尺寸                                                                                                                                                                                                                                     |
-| `userDataDir`                     | 持久 profile，由 `acquireProfileLock()` 加锁（见下文）                                                                                                                                                                                                                   |
-| `handleSignals`                   | 默认不接管宿主信号。设为 `true` 时，SIGINT 和 SIGTERM 会关闭所有以该选项启动的浏览器；之后重新发出信号，使宿主按默认方式终止，除非宿主自己处理该信号                                                                                                                     |
-| `detached`                        | 默认 `false`；`true` 允许 Windows/Unix 独立启动与 `release()`，仅支持 WebSocket；未设置 `supervised` 时丢弃 Chrome stderr                                                                                                                                                |
-| `supervised`                      | 配合 `detached: true`：宿主在 `release()` 前死亡时由 helper 进程结束 Chrome，并保留有界的 stderr 尾部，见[监管启动](lifecycle-ownership-design.md)                                                                                                                       |
-| `trace`                           | 与 `connect` 一致：布尔值或回调，接收方法、会话、耗时与错误；`false` 覆盖 `NODRIVER_TRACE`，不记录参数或结果                                                                                                                                                             |
+| 选项                              | 行为                                                                                                                                                                                                                                                                                                                            |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `headless`                        | 默认 `false`。无图形桌面时须显式 `true`；显示环境不可用时不会自动切换                                                                                                                                                                                                                                                           |
+| `maskHeadless`                    | 默认关闭；显式 true 且未指定 `userAgent` 时去掉页面 UA/UA-CH 中的 HeadlessChrome，Shared/Service Worker 可能不一致                                                                                                                                                                                                              |
+| `automationControlled`            | 默认 `false`：加入 `--disable-blink-features=AutomationControlled`（与调用者的其他禁用特性合并），webdriver getter 保持原生；`true` 不加该开关                                                                                                                                                                                  |
+| `preset: 'agent'`                 | 追加 `AGENT_ARGS`（`args` 已设置同一开关时以其为准）：关闭搜索引擎选择页、崩溃恢复气泡和后台节流，并设置 `--password-store=basic`。在 Linux 上，Chrome 随后改用内置密钥而不是系统密钥环来加密已保存的密码和 cookie，不会弹出密钥环提示；通过密钥环加密过数据的持久 profile 将无法读取这些数据。首次运行界面在任何启动中都已关闭 |
+| `userAgent`、`lang`、`windowSize` | 启动时设置 UA、BCP 47 语言和窗口尺寸                                                                                                                                                                                                                                                                                            |
+| `userDataDir`                     | 持久 profile，由 `acquireProfileLock()` 加锁（见下文）                                                                                                                                                                                                                                                                          |
+| `handleSignals`                   | 默认不接管宿主信号。设为 `true` 时，SIGINT 和 SIGTERM 会关闭所有以该选项启动的浏览器；之后重新发出信号，使宿主按默认方式终止，除非宿主自己处理该信号                                                                                                                                                                            |
+| `detached`                        | 默认 `false`；`true` 允许 Windows/Unix 独立启动与 `release()`，仅支持 WebSocket；未设置 `supervised` 时丢弃 Chrome stderr                                                                                                                                                                                                       |
+| `supervised`                      | 配合 `detached: true`：宿主在 `release()` 前死亡时由 helper 进程结束 Chrome，并保留有界的 stderr 尾部，见[监管启动](lifecycle-ownership-design.md)                                                                                                                                                                              |
+| `trace`                           | 与 `connect` 相同：布尔值或回调，见[协议与追踪](#协议与追踪)                                                                                                                                                                                                                                                                    |
 
-持久 profile 的锁文件记录 PID 与主机名，只有确认本机持有进程已退出时才回收陈旧锁；回收过程由独立的 `.nodriver.lock.reclaim` 文件互斥。若回收期间进程被强杀而留下该文件，会明确报错，确认记录的进程已退出后再手动删除。profile 中残留的 `DevToolsActivePort`（Chrome 未正常退出时留下，例如 MCP 宿主强制结束了服务进程）会被探测：记录的端口上仍有同一浏览器在服务时拒绝启动，无响应时删除该文件后继续。启动失败且 Chrome 已退出时，错误包含退出码与 stderr。
+持久 profile 的锁文件记录 PID 与主机名，只有确认本机持有进程已退出时才回收陈旧锁；回收过程由独立的 `.nodriver.lock.reclaim` 文件互斥。若回收期间进程被强杀而留下该文件，会明确报错，确认记录的进程已退出后再手动删除。profile 中残留的 `DevToolsActivePort`（Chrome 未正常退出时留下，例如 MCP 宿主强制结束了服务进程）会被探测：记录的浏览器仍在该端口上应答时拒绝启动，否则删除该文件后继续。启动失败且 Chrome 已退出时，错误包含退出码与 stderr。
 
 `Browser.connect({ endpoint, attach })` 连接已有浏览器：`'all'`（默认）附加全部标签页，`'created'` 只附加本客户端创建的标签页及其弹出页。启动参数对已连接的浏览器无效，`close()` 只断开连接，同时结束本连接用 `proxy` 创建的 context（见[环境](environment.md#代理与-webrtc)）。
 
-确认同机 `.nodriver.lock` 持有进程仍存活，或 `DevToolsActivePort` 仍提供原浏览器服务时，抛出带 `profile` 路径的 `ProfileInUseError`。Windows 另探测 Chrome 原生 `lockfile` 的共享冲突（`EBUSY`），因此未开放调试端口的已运行 Chrome 也会得到该类型错误；仅存在但未锁定的残留文件不视为占用，权限错误不误报为占用。Unix 原生 `SingletonLock`/`SingletonSocket` 暂不额外解析，未开放调试端口时仍可能报告普通启动退出错误。
+确认同机 `.nodriver.lock` 持有进程仍存活、其他进程抢先回收了陈旧锁，或 `DevToolsActivePort` 仍由原浏览器提供服务时，抛出带 `profile` 路径的 `ProfileInUseError`。Windows 另探测 Chrome 原生 `lockfile` 的共享冲突（`EBUSY`），因此未开放调试端口的已运行 Chrome 也会得到该错误；未锁定的残留文件和权限错误都不算占用。Unix 不检查原生 `SingletonLock`/`SingletonSocket`，未开放调试端口时可能得到普通的启动退出错误。
 
-Node.js 24.22.0+ 支持用 `await using` 在正常退出和异常展开时关闭资源，也可使用 `try/finally` 与 `close()`；`close()` 幂等，失败后可再次调用。未设置 `detached` 启动的 Chrome 也会在宿主退出时结束，包括 `process.exit()` 和未捕获异常。宿主被强制终止或断电时，JavaScript 无法保证清理；这种情况下的遗留见[浏览器交接与事件](browser-handoff.md)。
+`await using` 在正常退出和异常展开时关闭资源，也可使用 `try/finally` 与 `close()`。`close()` 幂等，失败后可再次调用。未设置 `detached` 启动的 Chrome 也会在宿主退出时结束，包括 `process.exit()` 和未捕获异常。宿主被强制终止或断电时，JavaScript 无法保证清理；这种情况下的遗留见[浏览器交接与事件](browser-handoff.md)。
 
-`await browser.release()` 返回 WebSocket endpoint 并放弃进程所有权，之后 `owned` 为 `false`，`close()` 与异步析构只断开连接。自有浏览器必须以 `detached: true` 启动；pipe 会明确拒绝交接且不改变连接。交接保留 profile 与 `DevToolsActivePort`，移除记录宿主 PID 的 `.nodriver.lock`。`disconnect()` 不放弃所有权，pipe Chrome 在管道断开时会退出。未设置 `supervised` 时，独立启动的 stderr 不可用，交接前宿主崩溃可能遗留 Chrome。完整示例、清理责任和事件接口见[浏览器交接与事件](browser-handoff.md)。
+`await browser.release()` 返回 WebSocket endpoint 并放弃进程所有权，之后 `owned` 为 `false`，`close()` 与异步析构只断开连接。自有浏览器必须以 `detached: true` 启动；pipe 会明确拒绝交接且不改变连接。交接保留 profile（临时 profile 也保留）与 `DevToolsActivePort`，移除记录宿主 PID 的 `.nodriver.lock`。`disconnect()` 不放弃所有权，pipe Chrome 在管道断开时会退出。未设置 `supervised` 时，交接前宿主崩溃可能遗留 Chrome。完整示例、清理责任和事件接口见[浏览器交接与事件](browser-handoff.md)。
 
 ## 输入与元素操作
 
@@ -127,7 +127,9 @@ Node.js 24.22.0+ 支持用 `await using` 在正常退出和异常展开时关闭
 
 ## 网络
 
-`Network.enable` 只在需要时发送：订阅 `responses`、调用 `waitForResponse`、显式 `enable()`，或设置非默认 headers/cache/offline。每次订阅或调用 `enable()` 都会重试失败的设置，已成功的设置不会重复发送。`route()` 和 `authenticate()` 只使用 Fetch 域；任一 session 上 Chrome 拒绝变更时，二者会拒绝并恢复之前的路由或凭证。`setExtraHeaders()` 在发送前以 `TypeError` 拒绝无效的请求头名称和值。headers、cache 和 offline 设置只有在 Chrome 接受后才会保留，并应用到之后的 session。调用期间关闭的 session 会被跳过。路由 handler 在应答前抛错时，错误经 `onError` 和 `browser.errors` 上报，请求被中止。Chrome 拒绝的应答以 `ProtocolError` 拒绝，路由保持可应答：handler 可以再次应答，未应答的请求会被 continue。对 Chrome 已不再持有的请求（页面已取消或路由已移除）的应答直接完成，不产生效果。路由覆盖所选 Tab 及其 OOPIF，不覆盖 Service Worker、浏览器自身请求和其他 Tab。响应的 `body()` 须在内容可用后调用；缓存被驱逐或发生重定向时 CDP 可能拒绝。
+`Network.enable` 只在需要时发送：订阅 `responses`、调用 `waitForResponse`、显式 `enable()`，或设置非默认 headers/cache/offline。每次订阅或调用 `enable()` 都会重试失败的设置，已成功的设置不会重复发送。`route()` 和 `authenticate()` 只使用 Fetch 域；任一 session 上 Chrome 拒绝变更时，二者会拒绝并恢复之前的路由或凭证。`setExtraHeaders()` 在发送前以 `TypeError` 拒绝无效的请求头名称和值。headers、cache 和 offline 设置只有在 Chrome 接受后才会保留，并应用到之后的 session。调用期间关闭的 session 会被跳过。
+
+路由 handler 在应答前抛错时，错误经 `onError` 和 `browser.errors` 上报，请求被中止。Chrome 拒绝的应答以 `ProtocolError` 拒绝，路由保持可应答：handler 可以再次应答，未应答的请求会被 continue。对 Chrome 已不再持有的请求（页面已取消或路由已移除）的应答直接完成，不产生效果。路由覆盖所选 Tab 及其 OOPIF，不覆盖 Service Worker、浏览器自身请求和其他 Tab。响应的 `body()` 须在内容可用后调用；缓存被驱逐或发生重定向时 CDP 可能拒绝。
 
 ## 状态与存储
 
@@ -145,4 +147,4 @@ Cookie 快照与状态文件包含凭证，存放位置由调用者负责。
 
 严格的命令参数元组与返回、事件类型来自固定版本的 `devtools-protocol`。事件按 session 路由：`session.on(method, listener)` 和 `session.onAny(listener)` 只接收该 session 的事件，先于全局 `connection.events` 执行；`connection.listenerCount` 汇总两者。
 
-`Connection` 选项 `trace: true` 把每条命令的方法、session、耗时和错误码写到 stderr；传函数则接收 `TraceEntry`。环境变量 `NODRIVER_TRACE=1` 等价于 `true`。参数和结果从不记录。
+`launch()`、`connect()` 和 `Connection` 的 `trace` 选项接受 `true` 或函数：`true` 把每条命令的方法、session、耗时和错误码（或错误名）写到 stderr，函数则接收 `TraceEntry`。未设置该选项时，`NODRIVER_TRACE=1`（或 `true`）开启追踪；`trace: false` 始终关闭追踪。参数和结果从不记录。

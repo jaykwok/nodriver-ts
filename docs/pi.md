@@ -12,7 +12,7 @@ Add `--mcp-compat` to the stdio server arguments in Pi's MCP configuration. For 
 
 | Entry point       | Result                                                                                  |
 | ----------------- | --------------------------------------------------------------------------------------- |
-| Default `/mcp`    | Rejects initialize 2025-11-25 before launching a browser: stdio error -32022, HTTP 400  |
+| Default entry     | Rejects initialize 2025-11-25 before launching a browser: stdio error -32022, HTTP 400  |
 | `--mcp-compat`    | Negotiates 2025-11-25, lists 26 tools and runs browser operations                       |
 | Cancellation      | Cancelling a pending wait releases the queue; the next action runs exactly once         |
 | `browser_handoff` | Returns an unsupported-capability error, because Pi does not advertise form elicitation |
@@ -27,4 +27,4 @@ npm run build
 node test/pi-compat.mjs
 ```
 
-`tmp/` is ignored, and `PI_MCP_PACKAGE` can point to the same package elsewhere. The script checks the exact package version, confirms the strict entry point rejects Pi, then opens a tab, fills Unicode text, snapshots, cancels a wait, clicks, screenshots, navigates, rejects a stale ref and closes the browser. Pi is not a project dependency, and the server has no Pi-specific code paths.
+`tmp/` is ignored by git. To use an installation elsewhere, point `PI_MCP_PACKAGE` at its `@earendil-works/pi-mcp` directory, with `pi-coding-agent` next to it. The script checks the exact package version and confirms that the default entry point rejects Pi without launching a browser. It then opens a tab, fills Unicode text, snapshots, cancels a wait, clicks, screenshots, navigates, rejects a stale ref and closes the browser. Pi is not a project dependency, and the server has no Pi-specific code paths.

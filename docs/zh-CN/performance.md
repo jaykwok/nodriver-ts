@@ -9,10 +9,10 @@ AX 快照与操作队列的分阶段数据见 [AX 与队列测量](performance-p
 ## 工作负载
 
 - **传输**：Chrome Pipe 与 WebSocket 各冷启动 3 次；预热 10 次后测 100 次 `Browser.getVersion` 往返，报告 p50/p95/p99 与全部样本。
-- **快照**：100 / 1000 / 10000 个按钮的页面，AX 预热一次后各快照 7 次。输出 limit 固定 200，分别记录完整 CDP AX 响应的节点数与 JSON 字节、实际返回的 JSON 字节和端到端耗时。插桩的 JSON 解析开销计入结果，字节数不含传输分隔符与帧头。
-- **并发 context**：1 / 5 / 20 个独立 context 经官方 InMemory MCP 执行 fill → click → snapshot 并校验文字。每进程最多 4 个 context，基准池上限提高到 5 个进程、20 个租约；预先创建引用、预热一轮后默认测量 5 轮，保留浏览器级串行锁。报告任务分布、吞吐、错误、控制器与 Chrome 的 CPU 和内存，以及全部释放后的池状态。
+- **快照**：100 / 1000 / 10000 个按钮的页面，AX 预热一次后各快照 7 次，输出 limit 固定为 200。分别记录完整 CDP AX 响应的节点数与 JSON 字节、实际返回的 JSON 字节和端到端耗时。插桩的 JSON 解析开销计入结果，字节数不含传输分隔符与帧头。
+- **并发 context**：1 / 5 / 20 个独立 context 经官方 InMemory MCP 执行两种负载：只做快照的读取，以及 fill → click → snapshot 并校验输入的文字。池使用 Chrome Pipe，每进程最多 4 个 context，因此 20 个 context 使用 5 个进程。预先创建引用、预热一轮后默认测量 5 轮，保留浏览器级串行锁。报告任务分布、排队等待、吞吐、错误、控制器与 Chrome 的 CPU 和内存，以及全部释放后的池状态。
 
-环境变量 `BENCH_SAMPLES`、`BENCH_ROUNDS`、`BENCH_NODES`、`BENCH_LEASES` 调整样本数和逗号分隔的规模。输出包含运行时、Chrome、操作系统、CPU、内存与方法说明；任务出错、池未释放或发送了默认禁止的命令都会使脚本失败。
+`BENCH_SAMPLES` 和 `BENCH_ROUNDS` 调整样本数和轮数，`BENCH_NODES` 和 `BENCH_LEASES` 接受逗号分隔的规模。输出包含运行时、Chrome、操作系统、CPU、内存与方法说明；任务出错、池未释放或发送了默认禁止的命令都会使脚本失败。
 
 ## 指标口径
 
@@ -25,16 +25,16 @@ AX 快照与操作队列的分阶段数据见 [AX 与队列测量](performance-p
 
 ## 与 Python nodriver 对照
 
-`npm run bench:compare` 运行 `benchmarks/compare.ts`：同一台机器、同一个 Chrome、headless、WebSocket、全新临时 profile 和同一个本地 fixture，两侧执行相同的工作负载。Python 侧通过 `uv` 以隔离模式运行 nodriver 0.50.6（Python 3.12，websockets 17.2），脚本位于 `benchmarks/compare/nodriver_bench.py`。默认先运行 TypeScript，`BENCH_PYTHON_FIRST=1` 时先运行 Python；`BENCH_SAMPLES` 调整往返样本数（默认 200）。
+`npm run bench:compare` 运行 `benchmarks/compare.ts`：同一台机器、同一个 Chrome、headless、WebSocket、全新临时 profile 和同一个本地 fixture，两侧执行相同的工作负载。Python 侧通过 `uv` 以隔离模式在 Python 3.12 上运行 nodriver 0.50.6，脚本位于 `benchmarks/compare/nodriver_bench.py`。默认先运行 TypeScript，`BENCH_PYTHON_FIRST=1` 时先运行 Python；`BENCH_SAMPLES` 设置往返样本数（默认 200），查询次数为其一半。
 
-- **冷启动**：启动浏览器并打开空白页，各 5 次。nodriver-ts 另外报告 `coldStartMasked`，即以 `maskHeadless: true` 进行同样的启动，会多打开一个 `chrome://version` 探测标签页；表中数据使用默认启动。
+- **冷启动**：启动浏览器并打开一个空的 fixture 页面，各 5 次。nodriver-ts 另外报告 `coldStartMasked`，即以 `maskHeadless: true` 进行同样的启动，会多打开一个 `chrome://version` 探测标签页；表中数据使用默认启动。
 - **往返**：预热 20 次后测 200 次 `Browser.getVersion` 与 200 次 `evaluate("1+1")`。
 - **查询**：1000 个按钮的页面上 100 次 `#b500`（nodriver 为 `tab.select`，本项目为 `tab.query`）。
 - **导航**：20 次同源导航到新 URL。本项目 `goto` 等待 load 事件；nodriver 的 `get` 在 load 前返回，脚本以 5 ms 间隔轮询 `document.readyState` 至 complete。
 - **AX 树**：10000 个按钮的页面上 5 次 `Accessibility.getFullAXTree`（30003 个节点），含响应解析。
 - **内存**：运行结束时控制器进程的 RSS。不同运行时的内存模型不同，只作参考。
 
-Ryzen 5 5600X、Windows 11、Chrome 155.0.8059.80，nodriver-ts 运行在 Node.js 24.22.0 上，两种顺序各运行一次，表中为中位数 / p95（ms）：
+Ryzen 5 5600X、Windows 11、Chrome 155.0.8059.80，nodriver-ts 运行在 Node.js 24.22.0 上，nodriver 使用 websockets 17.2，两种顺序各运行一次，表中为中位数 / p95（ms）：
 
 | 指标                 | nodriver-ts，TS 先行 | nodriver-ts，Python 先行 | nodriver，TS 先行 | nodriver，Python 先行 |
 | -------------------- | -------------------: | -----------------------: | ----------------: | --------------------: |
@@ -46,6 +46,6 @@ Ryzen 5 5600X、Windows 11、Chrome 155.0.8059.80，nodriver-ts 运行在 Node.j
 | AX 树，30003 节点    |        627.3 / 652.0 |            603.7 / 696.1 |   1401.0 / 1604.3 |       1418.4 / 1541.5 |
 | 控制器 RSS，MiB      |                  241 |                      206 |               494 |                   495 |
 
-单次运行，结果只描述此工作负载在此机器上的表现；5 次冷启动的 p95 即最大样本，受偶发慢启动影响。查询差异来自实现方式不同（nodriver 的 `select` 每次以 `DOM.getDocument(depth=-1, pierce=true)` 取回完整 DOM 树，再在 Python 中递归查找节点），不代表 CDP 通信本身的差距；导航一项两侧的完成判定方式不同。
+以上为单次运行，只描述此工作负载在此机器上的表现；5 次冷启动的 p95 即最大样本，反映偶发的慢启动。查询差距来自实现方式，而非 CDP 通信本身：nodriver 的 `select` 每次以 `DOM.getDocument(depth=-1, pierce=true)` 取回完整 DOM 树，再在 Python 中递归查找。导航一项两侧的完成判定方式不同。
 
 长时间运行的资源表现见 [长稳测试](soak.md)。

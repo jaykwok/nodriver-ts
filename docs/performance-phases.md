@@ -2,7 +2,7 @@
 
 [简体中文](zh-CN/performance-phases.md) · [Benchmark method](performance.md)
 
-`npm run bench:mcp` on Windows x64 / Ryzen 5 5600X / Chrome 155 / Node.js 24.22.0, headless; 7 AX samples and 5 pool rounds after warmup. The fixture adds a named section with a deeply nested button.
+`npm run bench:mcp` on Windows x64 / Ryzen 5 5600X / Chrome 155 / Node.js 24.22.0, headless; 7 AX samples and 5 pool rounds after warmup. Besides the buttons, the fixture has a named section containing a nested button.
 
 | Transport | Buttons | AX bytes | Output bytes | Total p50 / p95 ms | Send→receive p50 ms | Dispatch p50 ms | After dispatch p50 ms |
 | --------- | ------: | -------: | -----------: | -----------------: | ------------------: | --------------: | --------------------: |
@@ -13,7 +13,7 @@
 | WebSocket |    1000 |  1355667 |        16089 |      81.56 / 87.92 |               65.15 |            5.98 |                  1.56 |
 | WebSocket |   10000 | 13612816 |        16093 |    750.26 / 848.28 |              554.86 |           92.10 |                 17.67 |
 
-These are controller observations. Send→receive combines Chrome calculation/serialization, transport, OS scheduling and decoding before the string callback. Dispatch combines the connection's JSON parse, validation and delivery. After dispatch combines local filtering/ref conversion, microtasks and ancillary DOM requests, including password protection; it is not pure CPU conversion time. The observer's extra JSON parse and byte count cost a median 64.44 ms (Pipe) / 86.64 ms (WebSocket) at 10000 buttons, included in total but separate from dispatch. Byte counts exclude framing. Marginal medians need not add to the median total. Chrome-internal calculation and transport/serialization cannot be separated here.
+These are controller observations. Send→receive covers Chrome's calculation and serialization, transport, OS scheduling and decoding before the string callback; Chrome-internal calculation and transport/serialization cannot be separated here. Dispatch covers the connection's JSON parse, validation and delivery. After dispatch covers local filtering/ref conversion, microtasks and ancillary DOM requests, including password protection, so it is not pure CPU conversion time. The observer's extra JSON parse and byte count cost a median 64.44 ms (Pipe) / 86.64 ms (WebSocket) at 10000 buttons, included in the total but not in dispatch. Byte counts exclude framing, and the phase medians need not add up to the median total.
 
 Alternatives on the 10000-button Pipe fixture:
 
@@ -27,7 +27,7 @@ Alternatives on the 10000-button Pipe fixture:
 
 A rooted `browser_snapshot` still reads the full tree and then returns only the semantic nodes under the root.
 
-`npm run bench:ax-subtree` tries root queries across four frames and a closed shadow host. Main-frame and same-process roots match the full-tree result, but cross-process and nested-frame queries do not return in time on either transport, so root queries cannot replace full reads in general. Snapshots therefore keep full reads with root/frame validation, ref lifetimes and paging, and never present a partial result as complete. Lazy child expansion would require `Accessibility.enable`.
+`npm run bench:ax-subtree` tries root queries in four frames and on a closed shadow host. Main-frame and same-process roots match the full-tree result, but cross-process and nested-frame queries do not return in time on either transport, so root queries cannot replace full reads in general. Snapshots therefore keep full reads with root/frame validation, ref lifetimes and paging, and never present a partial result as complete. Lazy child expansion would require `Accessibility.enable`.
 
 | Workload | Contexts | Processes | Task p50 / p95 ms | Tasks/s | Browser queue p50 / p95 ms |
 | -------- | -------: | --------: | ----------------: | ------: | -------------------------: |
@@ -38,6 +38,6 @@ A rooted `browser_snapshot` still reads the full tree and then returns only the 
 | Mixed    |        5 |         2 | 1249.57 / 1264.41 |    3.98 |             10.85 / 930.76 |
 | Mixed    |       20 |         5 | 1265.59 / 1289.18 |   15.68 |             23.83 / 936.76 |
 
-Reads are snapshot-only; mixed is fill→click→snapshot with verified text. Different processes overlap. Browser queue wait is per operation; task latency covers the whole workload and MCP dispatch. Session queue p50 is below 0.01 ms. The high mixed queue tails come from serializing focus and input, which is intentional: operations in one lease, including snapshots and ref resolution, stay serialized, and `readOnlyHint` does not change scheduling.
+Reads are snapshot-only; mixed is fill→click→snapshot with verified text. Different processes overlap. Browser queue wait is per operation; task latency covers the whole workload and MCP dispatch. Session queue p50 is below 0.01 ms. The high mixed queue tails come from intentionally serializing focus and input: operations in one lease, including snapshots and ref resolution, stay serialized, and `readOnlyHint` does not change scheduling.
 
 The benchmarks print every sample as JSON; run them on the target platform before comparing changes. AX memory behavior is described in the [soak test](soak.md).

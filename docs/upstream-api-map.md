@@ -2,9 +2,9 @@
 
 [简体中文](zh-CN/upstream-api-map.md)
 
-Compared against `core/browser.py`, `tab.py`, `element.py`, `connection.py` and `config.py` at nodriver commit `219a60d65d82fb3d137d0c2c5b1fb285a9f837d0`, this lists all 163 public members (overloads with the same name are merged). Python magic methods, private implementation details and the generated CDP modules are replaced by Promises, standard collections and the official protocol types. Proxies are handled by proxy-chain; screen, media and interactive debugging helpers are out of scope.
+This table maps all 163 public members (overloads merged) of `core/browser.py`, `tab.py`, `element.py`, `connection.py` and `config.py` at nodriver commit `219a60d65d82fb3d137d0c2c5b1fb285a9f837d0`. Python magic methods, private implementation details and the generated CDP modules give way to Promises, standard collections and the official protocol types. Proxies are handled by proxy-chain; screen, media and interactive debugging helpers are out of scope.
 
-Where the counterpart is a high-level API, its behaviour is covered by integration tests. Where it is a `cdp` command or `evaluate`, you implement it yourself through the protocol or a page script; there is no wrapper of the same name. Behavioural limits are described in [API](api.md) and [Support](support.md).
+High-level counterparts are covered by integration tests. Where the counterpart is a `cdp` command or `evaluate`, there is no wrapper of the same name: you implement it through the protocol or a page script. Behavioural limits are described in [API](api.md) and [Support](support.md).
 
 | Upstream member                              | TypeScript counterpart                                                                        |
 | -------------------------------------------- | --------------------------------------------------------------------------------------------- |
@@ -37,8 +37,8 @@ Where the counterpart is a high-level API, its behaviour is covered by integrati
 | `connection.Connection.remove_handler`       | Call the function returned by Session.on                                                      |
 | `connection.Connection.aopen`                | Browser.connect                                                                               |
 | `connection.Connection.aclose`               | Browser.disconnect                                                                            |
-| `connection.Connection.attach`               | Automatic attach; or cdp Target.attachToTarget                                                |
-| `connection.Connection.detach`               | cdp Target.detachFromTarget                                                                   |
+| `connection.Connection.attach`               | Automatic attach; or Browser.attachTarget / attachSession                                     |
+| `connection.Connection.detach`               | TargetSession.detach / cdp Target.detachFromTarget                                            |
 | `connection.Connection.send`                 | Session.send / sendWith                                                                       |
 | `connection.Connection.process_event`        | Routed automatically by Connection; no API for injecting events                               |
 | `config.Config.browser_args`                 | LaunchOptions.args                                                                            |
@@ -150,11 +150,11 @@ Where the counterpart is a high-level API, its behaviour is covered by integrati
 | `element.Element.apply`                      | Element.evaluate                                                                              |
 | `element.Element.get_position`               | DOM.getBoxModel / Element.evaluate(getBoundingClientRect)                                     |
 | `element.Element.mouse_click`                | Element.click / Mouse.click                                                                   |
-| `element.Element.mouse_move`                 | Mouse.move                                                                                    |
+| `element.Element.mouse_move`                 | Element.hover / Mouse.move                                                                    |
 | `element.Element.mouse_drag`                 | Mouse.drag (pointer drag)                                                                     |
-| `element.Element.scroll_into_view`           | cdp DOM.scrollIntoViewIfNeeded                                                                |
+| `element.Element.scroll_into_view`           | Element.scrollIntoView                                                                        |
 | `element.Element.clear_input`                | Element.fill("")                                                                              |
-| `element.Element.send_keys`                  | focus + Keyboard.insertText                                                                   |
+| `element.Element.send_keys`                  | Element.type / focus + Keyboard.insertText                                                    |
 | `element.Element.send_file`                  | Element.upload                                                                                |
 | `element.Element.focus`                      | Element.focus                                                                                 |
 | `element.Element.select_option`              | Element.select                                                                                |
