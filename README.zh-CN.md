@@ -37,11 +37,11 @@ await tab.screenshot({ path: 'page.png', fullPage: true });
 - **求值。** `tab.evaluate()` 在页面主世界运行，传入 `{ world: 'isolated' }` 则在隔离世界运行。函数会序列化到页面中。
 - **Frame。** `tab.frames` 列出所有 frame，包括 OOPIF。查询不会悄悄跨 frame。
 - **上下文与代理。** `browser.newContext({ proxy })` 隔离 Cookie 和存储，并支持带认证的 HTTP(S) 与 SOCKS 上游代理。
-- **网络。** `tab.network.route()` 拦截并替换请求，`authenticate()` 应答认证质询，`responses` 订阅响应。`Network.enable` 只在订阅响应、调用 `enable()` 或设置 headers、缓存或离线模式时发送。
+- **网络。** `tab.network.route()` 拦截并替换请求，`authenticate()` 应答认证质询，`responses` 订阅响应。`Network.enable` 只在订阅响应、调用 `enable()` 或设置请求头、缓存或离线模式时发送。
 - **human 输入。** `tab.setInputPolicy({ mode: 'human', seed })` 启用可复现的指针轨迹、US 布局字符的按键事件和滚轮滚动。其他文本（如中日韩文字或 emoji）通过 `insertText` 输入。见[输入](docs/zh-CN/input.md)。
 - **现有浏览器。** `Browser.connect({ endpoint })` 附加所有标签页；传入 `attach: 'created'` 时只附加本客户端打开的标签页及其弹出页。此时 `close()` 只断开连接。远程调试端点拥有浏览器的完全控制权，请限制对它的访问。
-- **交接。** 以 `detached: true` 和 WebSocket 启动时，Chrome 可以比当前进程活得更久：`browser.release()` 返回之后可重新连接的 endpoint。加上 `supervised: true`，宿主在 release 前退出时由 helper 结束 Chrome。见[浏览器交接](docs/zh-CN/browser-handoff.md)和[监管启动](docs/zh-CN/lifecycle-ownership-design.md)。
-- **Raw session。** `attach: 'none'` 只发现 target，不创建标签页；`attachSession()` 返回生命周期明确的独立 session。见 [raw session](docs/zh-CN/raw-sessions.md)。
+- **交接。** 以 `detached: true` 和 WebSocket 启动时，Chrome 可以比当前进程活得更久：`browser.release()` 返回之后可重新连接的端点。加上 `supervised: true`，宿主在 release 前退出时由辅助进程结束 Chrome。见[浏览器交接](docs/zh-CN/browser-handoff.md)和[监管启动](docs/zh-CN/lifecycle-ownership-design.md)。
+- **原始 session。** `attach: 'none'` 只发现 target，不创建标签页；`attachSession()` 返回生命周期明确的独立 session。见 [原始 session](docs/zh-CN/raw-sessions.md)。
 - **诊断。** `trace`（或 `NODRIVER_TRACE=1`）记录每条命令的方法、session、耗时和错误码，从不记录参数或结果。`browser.drain()` 等待晚到的响应，启动失败会报告所处阶段和进程状态。见[启动诊断](docs/zh-CN/startup-diagnostics.md)。
 - **不启动 Chrome 的测试。** `nodriver-ts/testing` 提供 `ScriptedChrome`：一个脚本化的 CDP 对端，背后是真实的 Browser、Tab 和 Session 对象。见[测试接口](docs/zh-CN/testing.md)。
 
@@ -70,7 +70,7 @@ nodriver-mcp --mcp-transport http --port 3100
 # 客户端连接 http://127.0.0.1:3100/mcp，并带上 "Authorization: Bearer $NODRIVER_MCP_TOKEN"
 ```
 
-- **租约。** HTTP 只监听 loopback。没有 `Browser-Lease-Id` 请求头的请求使用该 token 的 `default` 租约。由字母、数字和 `. _ -` 组成的其他名称在首次使用时创建独立租约，让多个 agent 各自保持浏览器状态。
+- **租约。** HTTP 只监听回环地址。没有 `Browser-Lease-Id` 请求头的请求使用该 token 的 `default` 租约。由字母、数字和 `. _ -` 组成的其他名称在首次使用时创建独立租约，让多个 agent 各自保持浏览器状态。
 - **协议版本。** 默认入口要求 MCP 2026-07-28。使用官方 TypeScript 客户端 2.3.1 时，需固定 `versionNegotiation: { mode: { pin: '2026-07-28' } }`。对于 2025-11-25 和 2025-06-18 的客户端，加上 `--mcp-compat`；HTTP 客户端随后连接 `/mcp/compat`。见[通用 Agent 兼容](docs/zh-CN/agent-compatibility.md)和 [Pi](docs/zh-CN/pi.md)。
 - **浏览器。** Chrome 在首次 `browser_open` 时启动，使用 `agent` 启动预设：不显示首次运行界面、搜索引擎选择页和崩溃恢复气泡，关闭后台节流，并设置 `--password-store=basic`。在 Linux 上，Chrome 因此用内置密钥而不是系统密钥环加密已保存的密码和 Cookie。
 
@@ -131,7 +131,7 @@ npm run format:check
 | [环境](docs/zh-CN/environment.md)                                  | 环境采样、诊断、显式对齐、WebRTC                     |
 | [浏览器交接](docs/zh-CN/browser-handoff.md)                        | 分离启动、交接与重连、CDP 事件订阅                   |
 | [监管启动](docs/zh-CN/lifecycle-ownership-design.md)               | 进程监管、有界 stderr、显式 release                  |
-| [Raw session](docs/zh-CN/raw-sessions.md)                          | 非托管 target、session 生命周期、drain、发送观察     |
+| [原始 session](docs/zh-CN/raw-sessions.md)                         | 非托管 target、session 生命周期、drain、发送观察     |
 | [启动诊断](docs/zh-CN/startup-diagnostics.md)                      | 启动和连接失败的阶段与进程信息                       |
 | [自动化痕迹审计](docs/zh-CN/automation-audit.md)                   | 默认协议行为、回归检查、仍可观测的信号               |
 | [差分审计](docs/zh-CN/differential-audit.md)                       | 原生、伪装和显式配置的启动，页面与 Worker            |

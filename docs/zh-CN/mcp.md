@@ -51,9 +51,9 @@ HTTP 与 socket 服务只接受本机连接，并要求 `NODRIVER_MCP_TOKEN`（�
 | `--port`、`--socket-path`、`--token-env NAME`              | HTTP 端口（默认 3100，仅 HTTP）、socket 路径（仅 socket）、存放令牌的环境变量（默认 `NODRIVER_MCP_TOKEN`）                                                                                                                                              |
 | `--headful` / `--headless`                                 | 窗口模式，默认有界面；二者不能同时使用                                                                                                                                                                                                                  |
 | `--browser-transport pipe\|websocket`                      | CDP 传输，默认 pipe；`--transport` 是别名                                                                                                                                                                                                               |
-| `--executable`、`--user-data-dir`                          | Chrome 路径；持久 profile（单浏览器，不按租约分 context）                                                                                                                                                                                               |
-| `--endpoint URL`、`--expose-existing-tabs`                 | 连接已有 Chrome 而不是启动新的；默认只附加本服务打开的标签页。`--endpoint` 不能与启动参数（窗口模式、浏览器传输、可执行文件、profile、代理、user agent、语言、窗口尺寸、preset）合用                                                                    |
-| `--proxy URL`                                              | 上游代理；带凭证时需要按租约分 context，因此不能与 `--user-data-dir` 合用                                                                                                                                                                               |
+| `--executable`、`--user-data-dir`                          | Chrome 路径；持久 profile（单浏览器，不按租约分上下文）                                                                                                                                                                                                 |
+| `--endpoint URL`、`--expose-existing-tabs`                 | 连接已有 Chrome 而不是启动新的；默认只附加本服务打开的标签页。`--endpoint` 不能与启动参数（窗口模式、浏览器传输、可执行文件、profile、代理、UA、语言、窗口尺寸、预设）合用                                                                              |
+| `--proxy URL`                                              | 上游代理；带凭证时需要按租约分上下文，因此不能与 `--user-data-dir` 合用                                                                                                                                                                                 |
 | `--user-agent`、`--lang`、`--window-size WxH`              | 启动时设置                                                                                                                                                                                                                                              |
 | `--preset agent\|default`                                  | 默认 agent：隐藏搜索引擎选择页和崩溃恢复气泡，关闭后台节流，并设置 `--password-store=basic`。在 Linux 上，Chrome 因此用内置密钥而不是系统密钥环加密已保存的密码和 cookie，不会弹出密钥环提示；而数据曾经通过密钥环加密的持久 profile 将无法读取这些数据 |
 | `--input-policy instant\|human`                            | 新标签页的默认输入策略                                                                                                                                                                                                                                  |
@@ -89,10 +89,10 @@ HTTP 与 socket 服务只接受本机连接，并要求 `NODRIVER_MCP_TOKEN`（�
 | `browser_scroll`       | 把元素滚动进视口（ref），或在指定坐标发送滚轮增量                                 |
 | `browser_dialog`       | 接受或取消当前 JS 对话框，支持 promptText                                         |
 | `browser_screenshot`   | 视口、整页或元素（ref）的 PNG/JPEG/WebP，可设 quality（JPEG/WebP）与 scale        |
-| `browser_network`      | 按需记录最近的响应（URL、状态、类型、MIME），不含 header 和 body                  |
+| `browser_network`      | 按需记录最近的响应（URL、状态、类型、MIME），不含响应头和响应体                   |
 | `browser_evaluate`     | 在指定标签页/frame 执行异步 JS 函数体，参数与结果均为 JSON                        |
-| `browser_input_policy` | 设置标签页的 instant/human 策略、seed、节奏、typing 与 scroll 方式                |
-| `browser_environment`  | 结构化诊断或显式对齐；网络探针和 GeoIP resolver 由宿主配置                        |
+| `browser_input_policy` | 设置标签页的 instant/human 策略、种子、节奏、打字与滚动方式                       |
+| `browser_environment`  | 结构化诊断或显式对齐；网络探针和 GeoIP 解析器由宿主配置                           |
 | `browser_close`        | 关闭自有浏览器或断开外部浏览器；之后可再次 open                                   |
 | `browser_handoff`      | 请用户在浏览器中完成手工操作并确认；需要可访问的 UI 和 elicitation.form           |
 
@@ -100,7 +100,7 @@ HTTP 与 socket 服务只接受本机连接，并要求 `NODRIVER_MCP_TOKEN`（�
 
 - **`browser_upload`**（`--upload-dir`）：文件名必须解析到该目录内。离开该目录的文件名在访问文件系统之前就被拒绝，解析后离开该目录的链接同样被拒绝。错误信息只提及调用者给出的文件名，不包含宿主路径。
 - **`browser_downloads`**（`--download-dir`）：列出或等待最近 100 条下载记录，文件以 GUID 命名保存在该目录。每条记录带递增的 `sequence`，list 返回 `latestSequence`。wait 不占用操作队列，因此可在触发下载的点击之前或之后调用；它等待序号大于 `after` 的第一条记录完成或取消，`after` 默认为该标签页上次 wait 返回的序号（初始为 0）。超时会报错且不推进游标，再次 wait 继续等待同一个下载。
-- **`browser_storage_state`**（`--state-dir`）：按名称保存或加载 Cookie 与第一方 localStorage，范围是该 context 中任一 frame 用过的 HTTP(S) origin，包括已关闭的标签页。空存储不导出，跨站 iframe 的分区 localStorage 也不导出。读写在拦截文档请求的临时空白页中进行，因此不会访问站点，也不跟随重定向。状态文件拒绝已有的符号链接与硬链接，经临时文件原子替换保存，POSIX 权限为 0600。文件内容不进入对话，只返回计数。文件位于 `<state-dir>/<principal>/<name>.json`，因此名称归已认证的 principal 私有。principal 符合 `[a-z0-9_-]{1,64}` 时目录名就是它本身，否则为 `p-` 加上 principal 的 SHA-256 十六进制值；未传 binding 的服务使用 `private`，CLI 的 HTTP 和 socket 服务使用 `local-operator`。principal 目录位置上的链接会被拒绝。加载未知名称时报告 `No saved state named <name>`，与其他 principal 是否保存过该名称无关。
+- **`browser_storage_state`**（`--state-dir`）：按名称保存或加载 Cookie 与第一方 localStorage，范围是该上下文中任一 frame 用过的 HTTP(S) 源，包括已关闭的标签页。空存储不导出，跨站 iframe 的分区 localStorage 也不导出。读写在拦截文档请求的临时空白页中进行，因此不会访问站点，也不跟随重定向。状态文件拒绝已有的符号链接与硬链接，经临时文件原子替换保存，POSIX 权限为 0600。文件内容不进入对话，只返回计数。文件位于 `<state-dir>/<principal>/<name>.json`，因此名称归已认证的主体私有。认证主体符合 `[a-z0-9_-]{1,64}` 时目录名就是它本身，否则为 `p-` 加上认证主体的 SHA-256 十六进制值；未传 binding 的服务使用 `private`，CLI 的 HTTP 和 socket 服务使用 `local-operator`。认证主体目录位置上的链接会被拒绝。加载未知名称时报告 `No saved state named <name>`，与其他认证主体是否保存过该名称无关。
 
 ### 只读模式
 
@@ -134,7 +134,7 @@ HTTP 与 socket 服务只接受本机连接，并要求 `NODRIVER_MCP_TOKEN`（�
 
 标签页和 frame 都通过返回的 ID 指定，不存在隐式的“当前标签页”。`browser_snapshot` 默认读取主 frame，同进程和跨进程 iframe 用返回的 `frameId` 选择。快照读取 `Accessibility.getFullAXTree`，只包含浏览器渲染出的语义信息，不是完整的 DOM 导出；AX 树中没有暴露的目标用 `browser_find` 查找。输出去掉无名称的 generic/none/presentation 包装层和与父节点重复的静态文本，以缩进表示层级，同时返回结构化 nodes（depth、role、name、states、value、url）。
 
-引用是 `e1`、`e2` 这样的短 ID，保存在服务端，绑定实际元素、session 与文档代次，不向 DOM 写入标记。同一文档中的同一节点保持同一引用。导航、换进程、节点删除或标签页关闭后，旧引用会报错，不会被替换成相似的新元素。每个租约最多保留 2000 个引用，淘汰最久未使用的引用；遇到这种情况时重新 snapshot 或 find。
+引用是 `e1`、`e2` 这样的短 ID，保存在服务端，绑定实际元素、session 与文档代次，不向 DOM 写入标记。同一文档中的同一节点保持同一引用。导航、换进程、节点删除或标签页关闭后，旧引用会报错，不会被替换成相似的新元素。每个租约最多保留 2000 个引用，淘汰最久未使用的引用；遇到这种情况时重新快照或查找。
 
 快照每页默认 200 个节点、最多 500 个，名称截断到 300 字符。响应包含 `truncated`、`totalNodes` 和 `nextOffset`，用 `offset` 继续读取。分页只限制输出，底层读取完整 AX 树。一次快照最多覆盖 20,000 个节点：超过后停止遍历，每一页的 `capped` 和 `truncated` 都为 true，`totalNodes` 止于该上限，最后一页没有 `nextOffset`。其余部分通过 `root` 或 `frameId` 读取。
 
@@ -166,7 +166,7 @@ HTTP 与 socket 服务只接受本机连接，并要求 `NODRIVER_MCP_TOKEN`（�
 - **结果**：`{ "type": "json", "value": ... }`；无 return 或返回 undefined 时为 `{ "type": "undefined" }`。对象遵循 `JSON.stringify` 语义（Date 变成字符串，嵌套 undefined 被省略，NaN 变成 null）；BigInt、循环引用、顶层 function/symbol 报错。DOM 节点须映射成所需字段，不返回远端句柄。
 - **大小**：脚本与参数（JSON 序列化后）各最多 32,768 个字符，结果 JSON 最多 262,144 个字符。超限报错，不截断。
 - **范围**：`frameId` 可选，省略时为主 frame。它必须属于当前租约的标签页，支持同进程 iframe 与 OOPIF。`world` 默认 main，可访问页面全局变量；isolated 与页面 JS 全局对象隔离，但共享 DOM，不是安全沙箱。脚本只在 Chrome 中运行，无法访问宿主的 Node、文件系统或进程；请求、Cookie、存储和同源限制遵循页面自身权限。该工具能读写页面敏感状态，因此标为会修改状态。
-- **期限**：timeout 默认 10 秒，最大为操作期限（默认 30 秒）。CDP 执行期限限制初始同步计算，宿主等待期限与取消同时生效。**已安排的定时器、网络请求或异步续体不保证停止，副作用也不回滚。** 超时或取消后不重放，后续操作可能与遗留的页面任务交错；要停止页面上的全部任务，请关闭该标签页。
+- **期限**：超时时间默认 10 秒，最大为操作期限（默认 30 秒）。CDP 执行期限限制初始同步计算，宿主等待期限与取消同时生效。**已安排的定时器、网络请求或异步续体不保证停止，副作用也不回滚。** 超时或取消后不重放，后续操作可能与遗留的页面任务交错；要停止页面上的全部任务，请关闭该标签页。
 - **输入行为**：`element.click()`、直接赋值 value 或 `dispatchEvent()` 不经过输入策略，也不产生可信输入事件。需要真实输入时使用 `browser_click`、`browser_fill`、`browser_type` 和 `browser_scroll`。跨页面导航请用 `browser_navigate`，以免执行期间文档被销毁。
 
 ## 嵌入
@@ -185,7 +185,7 @@ const handle = serveStdio(() => createBrowserMcpServer({ launch: { transport: 'p
 
 `launch` 与 `connect: { endpoint }` 互斥。每次工厂调用创建独立的实例与引用注册表，不要让无关的 agent 共用一个实例。返回值是标准 `McpServer`，可以注册应用自己的工具。关闭服务或 stdin EOF 会清理其拥有的 Chrome 与临时 profile，并保留持久 profile；CLI 收到 SIGINT/SIGTERM 时同样如此。进程被强杀或断电时无法保证清理。
 
-第二个参数 `BrowserMcpBinding` 传入已有的 `BrowserSessionManager`、已验证的 principal 和 leaseId。此时 `server.close()` 只关闭适配器，租约归 manager 管理，见 [HTTP 接入](mcp-http.md#嵌入与所有权)。
+第二个参数 `BrowserMcpBinding` 传入已有的 `BrowserSessionManager`、已验证的主体和 leaseId。此时 `server.close()` 只关闭适配器，租约归管理器管理，见 [HTTP 接入](mcp-http.md#嵌入与所有权)。
 
 服务依赖固定版本的官方 SDK `@modelcontextprotocol/server` 2.3.1 与 Zod 4.6.7。默认 HTTP 与字节流入口使用 SDK 的 `legacy: 'reject'`，`server.connect(InMemory)` 同样走现代路由，前面另有一层薄薄的检查，拒绝 initialize、其他版本和缺少版本元数据的请求。解析、envelope 校验、MRTR、订阅和取消由 SDK 处理。参见[协议规范](https://modelcontextprotocol.io/specification/2026-07-28)。
 

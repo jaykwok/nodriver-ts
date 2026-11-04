@@ -23,11 +23,11 @@
 | depth=1           | 356.03 |  7,137,890 | 否，漏掉嵌套按钮     |
 | depth=2           | 523.07 | 11,011,057 | 否，漏掉嵌套按钮     |
 | partial（6 节点） |   3.29 |     75,200 | 否                   |
-| 无过滤 root query |   7.22 |      3,619 | 仅在这个简单页面完整 |
+| 无过滤根查询      |   7.22 |      3,619 | 仅在这个简单页面完整 |
 
 带 root 的 `browser_snapshot` 仍读取完整树，再只返回 root 下的语义节点。
 
-`npm run bench:ax-subtree` 在四个 frame 和 closed shadow host 上尝试 root query：主 frame、同进程 root 与完整树结果一致，但跨进程和嵌套 frame 的查询在两种传输中都无法及时返回，因此 root query 不能普遍替代完整读取。快照保留完整读取及 root/frame 校验、ref 生命周期和分页，不把部分结果当作完整快照。按需展开需要 `Accessibility.enable`。
+`npm run bench:ax-subtree` 在四个 frame 和 closed shadow host 上尝试根查询：主 frame、同进程 root 与完整树结果一致，但跨进程和嵌套 frame 的查询在两种传输中都无法及时返回，因此根查询不能普遍替代完整读取。快照保留完整读取及 root/frame 校验、ref 生命周期和分页，不把部分结果当作完整快照。按需展开需要 `Accessibility.enable`。
 
 | 负载  | Context 数 | 进程数 | 任务 p50 / p95 ms |  任务/s | 浏览器队列 p50 / p95 ms |
 | ----- | ---------: | -----: | ----------------: | ------: | ----------------------: |

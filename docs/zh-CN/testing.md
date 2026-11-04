@@ -4,7 +4,7 @@
 
 从 **`nodriver-ts/testing`** 导入 `ScriptedChrome`，即可用真实的 `Browser`、`Tab`、`Frame` 和 `Session` 实例测试代码，不必启动 Chrome，也不必把手写 mock 强转成带私有字段的类。包与示例需要 Node.js 24.22.0+。
 
-该 fixture 监听一个临时的 loopback WebSocket 端口，应答库的浏览器与页面启动握手，创建 target 和 context，并连同参数记录收到的命令。它没有渲染器、DOM 或 JavaScript 引擎，因此应用层命令必须事先编写回复。缺少预期回复时明确失败，不会静默返回 `{}`。
+该 fixture 监听一个临时的回环 WebSocket 端口，应答库的浏览器与页面启动握手，创建 target 和上下文，并连同参数记录收到的命令。它没有渲染器、DOM 或 JavaScript 引擎，因此应用层命令必须事先编写回复。缺少预期回复时明确失败，不会静默返回 `{}`。
 
 ```ts
 import assert from 'node:assert/strict';
@@ -29,7 +29,7 @@ chrome.assertDone();
 
 先关闭子资源，再关闭所属 Browser，最后关闭 fixture：`await using` 按声明的逆序自动完成；使用 `try/finally` 时逐个调用 `close()`。`chrome.close()` 也会终止仍连着的客户端，并且是幂等的。
 
-raw 客户端使用 `chrome.connect({ attach: 'none' })` 和 `browser.attachSession(targetId)`。`chrome.detachSession(sessionId)` 结束一个模拟 attachment；`attachReplyDelayMs` 在 attachment 建立后延迟回应。详见 [raw-session 测试与生命周期](raw-sessions.md)。
+原始客户端使用 `chrome.connect({ attach: 'none' })` 和 `browser.attachSession(targetId)`。`chrome.detachSession(sessionId)` 结束一个模拟附加实例；`attachReplyDelayMs` 在附加实例建立后延迟回应。详见 [原始 session 测试与生命周期](raw-sessions.md)。
 
 ## 回复与命令记录
 
@@ -88,7 +88,7 @@ await destroyed;
 
 `emit(method, params, sessionId?)` 发送带类型的原始 CDP 事件；省略 `sessionId` 即为浏览器级事件。原始事件**不会**更新 fixture 的 target/frame 模型，相应的建模行为请使用 `addPage`、`destroyTarget` 和 `crashTarget`。崩溃使真实 Tab 的 frame 句柄失效，但不销毁 target。fixture 不模拟渲染，不自动创建 Worker/OOPIF，也没有导航引擎。
 
-`chrome.disconnect()` 突然终止客户端 socket，拒绝真实的挂起请求和事件等待。fixture 保留页面和 context，之后仍可再次 `connect()`。同一时间只允许一个控制端连接；重连前请等待 `browser.close()` 完成。`chrome.connect(options)` 等同于 `Browser.connect({ endpoint: chrome.endpoint, ...options })`。
+`chrome.disconnect()` 突然终止客户端 socket，拒绝真实的挂起请求和事件等待。fixture 保留页面和上下文，之后仍可再次 `connect()`。同一时间只允许一个控制端连接；重连前请等待 `browser.close()` 完成。`chrome.connect(options)` 等同于 `Browser.connect({ endpoint: chrome.endpoint, ...options })`。
 
 ## 追踪真实启动的浏览器
 

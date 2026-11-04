@@ -9,15 +9,15 @@ AX 快照与操作队列的分阶段数据见 [AX 与队列测量](performance-p
 ## 工作负载
 
 - **传输**：Chrome Pipe 与 WebSocket 各冷启动 3 次；预热 10 次后测 100 次 `Browser.getVersion` 往返，报告 p50/p95/p99 与全部样本。
-- **快照**：100 / 1000 / 10000 个按钮的页面，AX 预热一次后各快照 7 次，输出 limit 固定为 200。分别记录完整 CDP AX 响应的节点数与 JSON 字节、实际返回的 JSON 字节和端到端耗时。插桩的 JSON 解析开销计入结果，字节数不含传输分隔符与帧头。
-- **并发 context**：1 / 5 / 20 个独立 context 经官方 InMemory MCP 执行两种负载：只做快照的读取，以及 fill → click → snapshot 并校验输入的文字。池使用 Chrome Pipe，每进程最多 4 个 context，因此 20 个 context 使用 5 个进程。预先创建引用、预热一轮后默认测量 5 轮，保留浏览器级串行锁。报告任务分布、排队等待、吞吐、错误、控制器与 Chrome 的 CPU 和内存，以及全部释放后的池状态。
+- **快照**：100 / 1000 / 10000 个按钮的页面，AX 预热一次后各快照 7 次，输出上限固定为 200。分别记录完整 CDP AX 响应的节点数与 JSON 字节、实际返回的 JSON 字节和端到端耗时。插桩的 JSON 解析开销计入结果，字节数不含传输分隔符与帧头。
+- **并发上下文**：1 / 5 / 20 个独立上下文经官方 InMemory MCP 执行两种负载：只做快照的读取，以及 fill → click → snapshot 并校验输入的文字。池使用 Chrome Pipe，每进程最多 4 个上下文，因此 20 个上下文使用 5 个进程。预先创建引用、预热一轮后默认测量 5 轮，保留浏览器级串行锁。报告任务分布、排队等待、吞吐、错误、控制器与 Chrome 的 CPU 和内存，以及全部释放后的池状态。
 
 `BENCH_SAMPLES` 和 `BENCH_ROUNDS` 调整样本数和轮数，`BENCH_NODES` 和 `BENCH_LEASES` 接受逗号分隔的规模。输出包含运行时、Chrome、操作系统、CPU、内存与方法说明；任务出错、池未释放或发送了默认禁止的命令都会使脚本失败。
 
 ## 指标口径
 
 - **控制器内存**：`process.memoryUsage()`。
-- **Chrome 内存**：CDP `SystemInfo.getProcessInfo` 列出的进程 RSS 之和（Linux 读 `/proc/PID/status` 的 VmRSS，Windows 读 WorkingSet64）。共享页会被重复计算，不含未列出的 crash handler，不等于 PSS 或峰值。采样前已退出的进程记为 missing，不当作零。
+- **Chrome 内存**：CDP `SystemInfo.getProcessInfo` 列出的进程 RSS 之和（Linux 读 `/proc/PID/status` 的 VmRSS，Windows 读 WorkingSet64）。共享页会被重复计算，不含未列出的崩溃处理程序，不等于 PSS 或峰值。采样前已退出的进程记为 missing，不当作零。
 - **CPU**：控制器和该 Chrome 进程集合的累计 CPU 时间差；期间退出的进程可能未计入。
 - **尾延迟**：低样本量下 p99 接近最大样本，不代表稳定尾延迟。
 

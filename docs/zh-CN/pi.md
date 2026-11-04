@@ -19,7 +19,7 @@
 
 ## 测试
 
-`test/pi-compat.mjs` 使用 Pi 自带的 MCP 客户端及其扩展的 `McpServerConnection`，通过 stdio 与 loopback HTTP 连接构建后的服务：
+`test/pi-compat.mjs` 使用 Pi 自带的 MCP 客户端及其扩展的 `McpServerConnection`，通过 stdio 与回环 HTTP 连接构建后的服务：
 
 ```sh
 npm install --prefix tmp/pi-1.3.0 --ignore-scripts --no-audit --no-fund @earendil-works/pi-coding-agent@1.3.0

@@ -4,7 +4,7 @@
 
 除只读属性和事件订阅外，所有操作都是异步的。公开类型从根入口 `nodriver-ts` 导出，构建产物附带 `.d.ts`；CDP 类型来自随包安装的 `devtools-protocol`。
 
-自行管理 CDP 的应用可用 `attach: 'none'` 和 `browser.attachSession(targetId, options)`。`TargetSession` 继承 `Session`，新增 `targetId`、`ended`、`endReason`、`detach()`。生命周期、取消、`observe.onSend` / `onSettle` / `onResponse` 和 `connection.unansweredCount` 见 [raw-session 契约](raw-sessions.md)。
+自行管理 CDP 的应用可用 `attach: 'none'` 和 `browser.attachSession(targetId, options)`。`TargetSession` 继承 `Session`，新增 `targetId`、`ended`、`endReason`、`detach()`。生命周期、取消、`observe.onSend` / `onSettle` / `onResponse` 和 `connection.unansweredCount` 见 [原始 session 契约](raw-sessions.md)。
 
 ## 入口
 
@@ -29,17 +29,17 @@
 | Frame             | `parent`, `children`, `session`, `url`, `generation`, `storage`, `setStorage`, `inspectEnvironment`                                                                                                                                                                                                                             |
 | Element           | `frame`, `text`, `html`, `attribute`, `describe`, `evaluate`, `withObject`, `query`, `queryAll`, `focus`, `click`, `hover`, `scrollIntoView`, `clickablePoint`, `fill`, `type`, `select`, `setChecked`, `upload`, `screenshot`                                                                                                  |
 | Network           | `route`, `authenticate`, `setExtraHeaders`, `setCacheEnabled`, `setOffline`, `waitForResponse`, `responses`, `enable`, `networkEnabled`                                                                                                                                                                                         |
-| Route             | `request`, `continue`, `fulfill`, `abort`；只能应答一次，handler 未应答时默认 continue（见[网络](#网络)）                                                                                                                                                                                                                       |
+| Route             | `request`, `continue`, `fulfill`, `abort`；只能应答一次，处理函数未应答时默认放行（见[网络](#网络)）                                                                                                                                                                                                                            |
 | Download          | `guid`, `url`, `suggestedFilename`, `status`, `updates`, `path`, `saveAs`, `cancel`                                                                                                                                                                                                                                             |
 | Mouse             | `position`, `move`, `down`, `up`, `click`, `wheel`, `drag`；顶层视口 CSS 坐标                                                                                                                                                                                                                                                   |
 | Keyboard          | `insertText`, `type`, `down`, `up`, `press('Control+A')`, `pressedKeys`, `compose`                                                                                                                                                                                                                                              |
 | JSHandle          | `jsonValue`, `dispose`, `Symbol.asyncDispose`                                                                                                                                                                                                                                                                                   |
 | Session           | `send`, `sendWith`, `on`, `onAny`, `waitFor`, `disconnected`, `id`, `closed`, `closeReason`                                                                                                                                                                                                                                     |
-| TargetSession     | `Session` 加 `targetId`, `ended`, `endReason`, `detach`，见 [raw-session 契约](raw-sessions.md)                                                                                                                                                                                                                                 |
+| TargetSession     | `Session` 加 `targetId`, `ended`, `endReason`, `detach`，见 [原始 session 契约](raw-sessions.md)                                                                                                                                                                                                                                |
 | Connection        | `session`, `drain`, `pendingCount`, `unansweredCount`, `listenerCount`, `events`, `closed`, `closeReason`, `close`                                                                                                                                                                                                              |
 | InputScope        | `session`, `run`（回调接收 `mouse`, `keyboard`, `composition`, `wait`）, `recoverComposition`，见[输入](input.md)                                                                                                                                                                                                               |
 | Composition       | `update`, `commit`, `cancel`，见[输入](input.md)                                                                                                                                                                                                                                                                                |
-| PresentationLease | `state`, `report`, `start`, `close`，见 [raw-session 契约](raw-sessions.md)                                                                                                                                                                                                                                                     |
+| PresentationLease | `state`, `report`, `start`, `close`，见 [原始 session 契约](raw-sessions.md)                                                                                                                                                                                                                                                    |
 | ProxyForwarder    | `create`, `close`，见[环境](environment.md)                                                                                                                                                                                                                                                                                     |
 | Transport         | WebSocket / Pipe；自定义传输实现 `send`, `close`, `onmessage`, `onclose`                                                                                                                                                                                                                                                        |
 | 错误              | `NodriverError` 是 `TimeoutError`、`DisconnectedError`（及其子类 `SessionEndedError`）、`ProtocolError`、`EvaluationError`、`StaleElementError`、`ActionabilityError`、`UnsupportedError`、`ProfileInUseError`、`ReleaseUncertainError`、`InputActionError`、`InputBlockedError` 的基类                                         |
@@ -49,7 +49,7 @@
 
 ## 期限与取消
 
-`WaitOptions` 由毫秒 `timeout` 和 `AbortSignal` 组成。timeout 超出 0–2147483647 毫秒时抛出 `RangeError`；0 表示立即到期，不表示无限等待。
+`WaitOptions` 由毫秒 `timeout` 和 `AbortSignal` 组成。超时时间超出 0–2147483647 毫秒时抛出 `RangeError`；0 表示立即到期，不表示无限等待。
 
 | 操作                                           | 默认期限                                                 |
 | ---------------------------------------------- | -------------------------------------------------------- |
@@ -67,7 +67,7 @@
 
 导航默认等待 `load`，另支持 `domcontentloaded`、`commit` 和 `networkidle`（Chrome 生命周期事件 networkIdle）。SPA/hash 导航以同文档导航事件完成，BFCache 恢复以恢复事件完成。新文档提交后，`history.replaceState()` 等同文档变更只更新等待返回的 URL，等待仍在所请求的生命周期事件结束。`reload()` 只随新文档完成；`go()` 的同文档历史导航只在页面到达该条目的 URL 时完成。
 
-导航、下载、弹窗和响应等待须在触发动作之前注册。关闭的 session 会拒绝其上的请求和事件等待，迟到的响应被丢弃。`tab.crashed` 表示页面自身的 renderer 崩溃；进程外 iframe 崩溃不会设置它。`reload()` 或 `goto()` 可恢复崩溃的页面：主 frame 的新文档会清除该标志，旧句柄保持失效。连接断开后应建立新连接；框架不重放脚本或输入。
+导航、下载、弹窗和响应等待须在触发动作之前注册。关闭的 session 会拒绝其上的请求和事件等待，迟到的响应被丢弃。`tab.crashed` 表示页面自身的渲染进程崩溃；进程外 iframe 崩溃不会设置它。`reload()` 或 `goto()` 可恢复崩溃的页面：主 frame 的新文档会清除该标志，旧句柄保持失效。连接断开后应建立新连接；框架不重放脚本或输入。
 
 ## 查询
 
@@ -80,11 +80,11 @@
 
 ## 求值与执行世界
 
-`evaluate()` 默认在 main world 执行，`{ world: 'isolated' }` 使用隔离世界；DOM 辅助操作始终使用随机命名的隔离世界。隔离世界与页面共享 DOM，页面能观察 DOM 变化和输入事件。
+`evaluate()` 默认在主世界执行，`{ world: 'isolated' }` 使用隔离世界；DOM 辅助操作始终使用随机命名的隔离世界。隔离世界与页面共享 DOM，页面能观察 DOM 变化和输入事件。
 
 函数参数在浏览器中执行，不能捕获宿主闭包；参数以单个可序列化值传递，`JSHandle` 可作为参数。用户脚本异常抛出 `EvaluationError`。字符串形式的 `evaluate` / `evaluateHandle` 可传正数 `executionTimeout`（毫秒），对应 `Runtime.evaluate.timeout`，只限制初始同步执行，不能终止已安排的定时器、请求或异步续体，也不是资源沙箱。`Element.withObject(fn)` 以隔离世界中的元素句柄运行 `fn(objectId, group)`；`fn` 在 `group` 中创建的对象随句柄一起释放。
 
-框架不调用 `Runtime.enable`：主世界通过所属 frame 的 Document 与 `DOM.resolveNode` 解析并校验，详见 [自动化痕迹审计](automation-audit.md)。因此不会收到 Runtime 事件；自行通过 `cdp` 发送 `Runtime.enable` 可以收到，但会改变检测面。`addInitScript()` 应在 `goto()` 前注册；新 OOPIF 在暂停状态下完成初始化后恢复，有 watchdog 兜底。已经开始执行的 popup 或外部页面没有首段脚本前注入保证。
+框架不调用 `Runtime.enable`：主世界通过所属 frame 的 Document 与 `DOM.resolveNode` 解析并校验，详见 [自动化痕迹审计](automation-audit.md)。因此不会收到 Runtime 事件；自行通过 `cdp` 发送 `Runtime.enable` 可以收到，但会改变检测面。`addInitScript()` 应在 `goto()` 前注册；新 OOPIF 在暂停状态下完成初始化后恢复，有看门狗兜底。已经开始执行的弹出页或外部页面没有首段脚本前注入保证。
 
 ## 启动与连接
 
@@ -98,18 +98,18 @@
 | `userDataDir`                     | 持久 profile，由 `acquireProfileLock()` 加锁（见下文）                                                                                                                                                                                                                                                                          |
 | `handleSignals`                   | 默认不接管宿主信号。设为 `true` 时，SIGINT 和 SIGTERM 会关闭所有以该选项启动的浏览器；之后重新发出信号，使宿主按默认方式终止，除非宿主自己处理该信号                                                                                                                                                                            |
 | `detached`                        | 默认 `false`；`true` 允许 Windows/Unix 独立启动与 `release()`，仅支持 WebSocket；未设置 `supervised` 时丢弃 Chrome stderr                                                                                                                                                                                                       |
-| `supervised`                      | 配合 `detached: true`：宿主在 `release()` 前死亡时由 helper 进程结束 Chrome，并保留有界的 stderr 尾部，见[监管启动](lifecycle-ownership-design.md)                                                                                                                                                                              |
+| `supervised`                      | 配合 `detached: true`：宿主在 `release()` 前死亡时由辅助进程结束 Chrome，并保留有界的 stderr 尾部，见[监管启动](lifecycle-ownership-design.md)                                                                                                                                                                                  |
 | `trace`                           | 与 `connect` 相同：布尔值或回调，见[协议与追踪](#协议与追踪)                                                                                                                                                                                                                                                                    |
 
 持久 profile 的锁文件记录 PID 与主机名，只有确认本机持有进程已退出时才回收陈旧锁；回收过程由独立的 `.nodriver.lock.reclaim` 文件互斥。若回收期间进程被强杀而留下该文件，会明确报错，确认记录的进程已退出后再手动删除。profile 中残留的 `DevToolsActivePort`（Chrome 未正常退出时留下，例如 MCP 宿主强制结束了服务进程）会被探测：记录的浏览器仍在该端口上应答时拒绝启动，否则删除该文件后继续。启动失败且 Chrome 已退出时，错误包含退出码与 stderr。
 
-`Browser.connect({ endpoint, attach })` 连接已有浏览器：`'all'`（默认）附加全部标签页，`'created'` 只附加本客户端创建的标签页及其弹出页。启动参数对已连接的浏览器无效，`close()` 只断开连接，同时结束本连接用 `proxy` 创建的 context（见[环境](environment.md#代理与-webrtc)）。
+`Browser.connect({ endpoint, attach })` 连接已有浏览器：`'all'`（默认）附加全部标签页，`'created'` 只附加本客户端创建的标签页及其弹出页。启动参数对已连接的浏览器无效，`close()` 只断开连接，同时结束本连接用 `proxy` 创建的上下文（见[环境](environment.md#代理与-webrtc)）。
 
 确认同机 `.nodriver.lock` 持有进程仍存活、其他进程抢先回收了陈旧锁，或 `DevToolsActivePort` 仍由原浏览器提供服务时，抛出带 `profile` 路径的 `ProfileInUseError`。Windows 另探测 Chrome 原生 `lockfile` 的共享冲突（`EBUSY`），因此未开放调试端口的已运行 Chrome 也会得到该错误；未锁定的残留文件和权限错误都不算占用。Unix 不检查原生 `SingletonLock`/`SingletonSocket`，未开放调试端口时可能得到普通的启动退出错误。
 
 `await using` 在正常退出和异常展开时关闭资源，也可使用 `try/finally` 与 `close()`。`close()` 幂等，失败后可再次调用。未设置 `detached` 启动的 Chrome 也会在宿主退出时结束，包括 `process.exit()` 和未捕获异常。宿主被强制终止或断电时，JavaScript 无法保证清理；这种情况下的遗留见[浏览器交接与事件](browser-handoff.md)。
 
-`await browser.release()` 返回 WebSocket endpoint 并放弃进程所有权，之后 `owned` 为 `false`，`close()` 与异步析构只断开连接。自有浏览器必须以 `detached: true` 启动；pipe 会明确拒绝交接且不改变连接。交接保留 profile（临时 profile 也保留）与 `DevToolsActivePort`，移除记录宿主 PID 的 `.nodriver.lock`。`disconnect()` 不放弃所有权，pipe Chrome 在管道断开时会退出。未设置 `supervised` 时，交接前宿主崩溃可能遗留 Chrome。完整示例、清理责任和事件接口见[浏览器交接与事件](browser-handoff.md)。
+`await browser.release()` 返回 WebSocket 端点并放弃进程所有权，之后 `owned` 为 `false`，`close()` 与异步析构只断开连接。自有浏览器必须以 `detached: true` 启动；pipe 会明确拒绝交接且不改变连接。交接保留 profile（临时 profile 也保留）与 `DevToolsActivePort`，移除记录宿主 PID 的 `.nodriver.lock`。`disconnect()` 不放弃所有权，pipe Chrome 在管道断开时会退出。未设置 `supervised` 时，交接前宿主崩溃可能遗留 Chrome。完整示例、清理责任和事件接口见[浏览器交接与事件](browser-handoff.md)。
 
 ## 输入与元素操作
 
@@ -127,19 +127,19 @@
 
 ## 网络
 
-`Network.enable` 只在需要时发送：订阅 `responses`、调用 `waitForResponse`、显式 `enable()`，或设置非默认 headers/cache/offline。每次订阅或调用 `enable()` 都会重试失败的设置，已成功的设置不会重复发送。`route()` 和 `authenticate()` 只使用 Fetch 域；任一 session 上 Chrome 拒绝变更时，二者会拒绝并恢复之前的路由或凭证。`setExtraHeaders()` 在发送前以 `TypeError` 拒绝无效的请求头名称和值。headers、cache 和 offline 设置只有在 Chrome 接受后才会保留，并应用到之后的 session。调用期间关闭的 session 会被跳过。
+`Network.enable` 只在需要时发送：订阅 `responses`、调用 `waitForResponse`、显式 `enable()`，或设置非默认请求头/缓存/离线。每次订阅或调用 `enable()` 都会重试失败的设置，已成功的设置不会重复发送。`route()` 和 `authenticate()` 只使用 Fetch 域；任一 session 上 Chrome 拒绝变更时，二者会拒绝并恢复之前的路由或凭证。`setExtraHeaders()` 在发送前以 `TypeError` 拒绝无效的请求头名称和值。请求头、缓存和离线 设置只有在 Chrome 接受后才会保留，并应用到之后的 session。调用期间关闭的 session 会被跳过。
 
-路由 handler 在应答前抛错时，错误经 `onError` 和 `browser.errors` 上报，请求被中止。Chrome 拒绝的应答以 `ProtocolError` 拒绝，路由保持可应答：handler 可以再次应答，未应答的请求会被 continue。对 Chrome 已不再持有的请求（页面已取消或路由已移除）的应答直接完成，不产生效果。路由覆盖所选 Tab 及其 OOPIF，不覆盖 Service Worker、浏览器自身请求和其他 Tab。响应的 `body()` 须在内容可用后调用；缓存被驱逐或发生重定向时 CDP 可能拒绝。
+路由处理函数在应答前抛错时，错误经 `onError` 和 `browser.errors` 上报，请求被中止。Chrome 拒绝的应答以 `ProtocolError` 拒绝，路由保持可应答：处理函数可以再次应答，未应答的请求会被放行。对 Chrome 已不再持有的请求（页面已取消或路由已移除）的应答直接完成，不产生效果。路由覆盖所选 Tab 及其 OOPIF，不覆盖 Service Worker、浏览器自身请求和其他 Tab。响应的 `body()` 须在内容可用后调用；缓存被驱逐或发生重定向时 CDP 可能拒绝。
 
 ## 状态与存储
 
 BrowserContext 之间的 Cookie 与存储相互隔离；这不等于独立的操作系统、GPU 或字体环境。
 
-`storageState(path?)` 保存 Cookie，以及该上下文中任一 frame 访问过的 HTTP(S) origin 的第一方 localStorage，包括 iframe 和已关闭标签页用过的 origin；空存储不导出。跨站 iframe 在其他顶层站点下的分区 localStorage、sessionStorage 和 IndexedDB 不在快照内。仍打开的主页面原地读取，其余 origin 在一个临时标签页中读取。
+`storageState(path?)` 保存 Cookie，以及该上下文中任一 frame 访问过的 HTTP(S) 源的第一方 localStorage，包括 iframe 和已关闭标签页用过的源；空存储不导出。跨站 iframe 在其他顶层站点下的分区 localStorage、sessionStorage 和 IndexedDB 不在快照内。仍打开的主页面原地读取，其余源在一个临时标签页中读取。
 
-`restoreStorage(state)` 先设置 Cookie，再替换列出的各 origin 的 localStorage：该 origin 仍打开的主页面原地写入，返回时即可读到；其余 origin 在一个临时标签页中写入。临时标签页拦截文档请求、返回空白页并绕过 Service Worker，因此不访问站点、不跟随重定向、不运行站点脚本。同一 origin 的其他已打开文档与浏览器中跨标签页写入一样，异步收到变更。
+`restoreStorage(state)` 先设置 Cookie，再替换列出的各源的 localStorage：该源仍打开的主页面原地写入，返回时即可读到；其余源在一个临时标签页中写入。临时标签页拦截文档请求、返回空白页并绕过 Service Worker，因此不访问站点、不跟随重定向、不运行站点脚本。同一源的其他已打开文档与浏览器中跨标签页写入一样，异步收到变更。
 
-`Frame.storage(kind = 'local', origin?)` 与 `Frame.setStorage(values, kind = 'local', clear = false, origin?)` 可指定预期 origin：读取、清空与写入和 `location.origin` 检查在同一段脚本中执行，不匹配时抛出 `EvaluationError`，页面存储保持不变。
+`Frame.storage(kind = 'local', origin?)` 与 `Frame.setStorage(values, kind = 'local', clear = false, origin?)` 可指定预期源：读取、清空与写入和 `location.origin` 检查在同一段脚本中执行，不匹配时抛出 `EvaluationError`，页面存储保持不变。
 
 Cookie 快照与状态文件包含凭证，存放位置由调用者负责。
 

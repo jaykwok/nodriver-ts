@@ -2,7 +2,7 @@
 
 [English](../upstream-api-map.md)
 
-本表列出 nodriver 提交 `219a60d65d82fb3d137d0c2c5b1fb285a9f837d0` 中 `core/browser.py`、`tab.py`、`element.py`、`connection.py`、`config.py` 的全部 163 个 public 成员（同名重载合并）及其对应项。Python 魔术方法、私有实现和生成的 CDP 模块由 Promise、标准集合和官方协议类型替代；代理由 proxy-chain 处理，屏幕、媒体和交互式调试辅助不在范围内。
+本表列出 nodriver 提交 `219a60d65d82fb3d137d0c2c5b1fb285a9f837d0` 中 `core/browser.py`、`tab.py`、`element.py`、`connection.py`、`config.py` 的全部 163 个公开成员（同名重载合并）及其对应项。Python 魔术方法、私有实现和生成的 CDP 模块由 Promise、标准集合和官方协议类型替代；代理由 proxy-chain 处理，屏幕、媒体和交互式调试辅助不在范围内。
 
 高层对应项由集成测试覆盖。对应项为 `cdp` 命令或 `evaluate` 时没有同名封装，需通过协议或页面脚本自行实现。行为边界见 [API](api.md) 与 [支持范围](support.md)。
 
