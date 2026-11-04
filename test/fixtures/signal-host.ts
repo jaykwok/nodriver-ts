@@ -1,4 +1,4 @@
-import { writeFile } from 'node:fs/promises';
+import { rename, writeFile } from 'node:fs/promises';
 import { Browser } from '../../src/index.ts';
 
 // Launches Chrome for a parent test, records what it owns, then waits for a signal or exits.
@@ -10,10 +10,12 @@ if (mode === 'hosted')
   process.once('SIGTERM', () => {
     void writeFile(record + '.hosted', 'handled');
   });
+// Renamed into place, so the parent never reads a partly written record.
 await writeFile(
-  record!,
+  record + '.partial',
   JSON.stringify(browsers.map((b) => ({ pid: b.process!.pid, profile: b.process!.profile }))),
 );
+await rename(record + '.partial', record!);
 // Exit without closing: the host's exit ends Chrome it launched without `detached`.
 if (mode === 'exit') process.exit(0);
 setInterval(() => {}, 1000);

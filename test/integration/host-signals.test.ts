@@ -36,7 +36,13 @@ async function host(mode: 'default' | 'hosted' | 'exit') {
       ),
     { timeout: 60_000 },
     'host launch record',
-  );
+  ).catch(async (error: unknown) => {
+    // A host left running would keep this test process from exiting.
+    child.kill('SIGKILL');
+    await exited;
+    await removeTree(directory);
+    throw error;
+  });
   const gone = () =>
     poll(async () => owned.every(({ pid }) => !running(pid)) || undefined, { timeout: 15_000 });
   const cleanup = async () => {

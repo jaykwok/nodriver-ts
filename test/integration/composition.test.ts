@@ -325,11 +325,12 @@ test('raw composition with pageEvents false sends no enable and never probes in 
     url: 'data:text/html,<textarea id=editor></textarea>',
   });
   const session = await browser.attachSession(targetId);
-  // Raw scopes never activate a target; a background page drops IME input.
+  // Raw scopes never activate a target; a background page drops IME input. A page that has not
+  // received focus yet can clear its focused element when it does.
   await session.send('Page.bringToFront');
   for (let i = 0; ; i++) {
     const ready = await session.send('Runtime.evaluate', {
-      expression: '!!document.querySelector("#editor")',
+      expression: '!!document.querySelector("#editor") && document.hasFocus()',
       returnByValue: true,
     });
     if (ready.result.value === true) break;

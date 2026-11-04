@@ -452,12 +452,13 @@ test('HTTP host-provisioned diagnostics/resolver and partial input reports use t
     expect(alignment.alignment.after.frames[0].document.timezone).toBe('Europe/Paris');
     await call(client, 'browser_input_policy', {
       tabId,
-      policy: { mode: 'human', seed: 3, keyDelay: [200, 200] },
+      // The deadline falls inside the pause after the first character, with room for a slow host.
+      policy: { mode: 'human', seed: 3, keyDelay: [3000, 3000] },
     });
     const { elements } = await call(client, 'browser_find', { tabId, selector: '#name' });
     const reply = await client.callTool({
       name: 'browser_type',
-      arguments: { tabId, ref: elements[0].ref, text: '甲乙丙', timeout: 80 },
+      arguments: { tabId, ref: elements[0].ref, text: '甲乙丙', timeout: 1500 },
     });
     expect(reply.isError).toBe(true);
     const partial = reply.structuredContent as any;

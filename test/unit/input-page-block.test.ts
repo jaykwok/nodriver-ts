@@ -111,8 +111,11 @@ test('composition-only failure blocks all attachments to one page, not other tab
   );
   await browser.cdp.send('Browser.getVersion');
   await blocked(new Keyboard(reattached));
+  // The root notification can follow the session's; an attach sent between them ends with it.
+  const crashed = browser.cdp.waitFor('Target.targetCrashed', (e) => e.targetId === a!.id);
   chrome.crashTarget(a!.id);
   await reattached.ended;
+  await crashed;
   await blocked(new Keyboard(await browser.attachSession(a!.id)));
 
   const unknown = new Keyboard(browser.connection.session('unmapped'));

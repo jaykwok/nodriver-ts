@@ -103,7 +103,8 @@ test('unroute releases a paused request; the late answer is not an error', () =>
 test('extra headers reach the wire only once Chrome accepts them', async () => {
   const seen: unknown[] = [];
   const server = createServer((request, response) => {
-    seen.push(request.headers['x-name']);
+    // Chrome requests the favicon too, sending non-Latin-1 header text there as '?'.
+    if (request.url === '/') seen.push(request.headers['x-name']);
     response.setHeader('content-type', 'text/html');
     response.end('<!doctype html>');
   });
