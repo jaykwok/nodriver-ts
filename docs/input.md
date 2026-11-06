@@ -27,6 +27,16 @@ await tab.mouse.wheel(0, 420);
 console.log(tab.inputBehavior.lastReport);
 ```
 
+## Defaults for new tabs
+
+`inputPolicy` in `Browser.launch()` / `Browser.connect()` options applies to every tab of the browser, including the startup tab and tabs attached while connecting. `browser.setDefaultInputPolicy(policy)` sets it for tabs that open later, and `newContext({ inputPolicy })` or `context.setDefaultInputPolicy(policy)` overrides it for one context. Popups open in their opener's context, so they take the context's default, not the opener tab's own policy. Open tabs keep their policy, and `tab.setInputPolicy()` overrides the default for one tab. `undefined` removes a default. A default without a seed gives each tab its own random stream; with a seed, every new tab starts the same stream.
+
+```ts
+await using browser = await Browser.launch({ inputPolicy: { mode: 'human' } });
+const page = await browser.newTab(); // human
+const popup = await page.waitForPopup(); // human
+```
+
 ## Parameters
 
 Times are in milliseconds and each range is a minimum/maximum: step counts 1–120, times 0–3000, and `targetInset` (the fraction of the visible target excluded at each edge) 0–0.45. Omitted policy fields reset to their defaults, except the seed. When no seed is given, one is generated with Node crypto when the Tab's input behavior is created, and it is kept across actions, mode switches and configure calls that omit it. An explicit seed, even the current one, restarts that behavior's random stream; other tabs are unaffected. The policy cannot be changed while an action is running, and it never introduces typos, extra submits or random business actions.
@@ -36,7 +46,7 @@ The same seed, starting point, layout, configuration and call sequence reproduce
 ## Text and keys
 
 - **`fill()`**: replaces the whole value using focus, the selection and a single `Input.insertText`.
-- **`type()`**: commits text at the current selection one grapheme at a time (Intl.Segmenter), and also accepts an array of string segments. Emoji surrogate pairs, ZWJ sequences and combining characters are never split. At most 100000 UTF-16 code units per call.
+- **`type()`**: commits text at the current selection one grapheme at a time (Intl.Segmenter), and also accepts an array of string segments. `type(text, { replace: true })` first selects the whole value, as `fill()` does, and then types over it; with an empty text it deletes the value with Backspace. Emoji surrogate pairs, ZWJ sequences and combining characters are never split. At most 100000 UTF-16 code units per call.
 - **Key events**: with `typing: 'keys'`, or the default `auto` in human mode, typeable US-layout characters (letters, digits, common symbols, space) are sent one at a time as keyDown/keyUp, with Shift held for capitals and shifted symbols; keyUp carries the same key as keyDown. While Shift is held with `keyboard.down('Shift')`, characters that need no Shift are inserted with `insertText` so that the held key does not shift them. CJK, emoji, newlines and tabs use `insertText`, and `typing: 'insertText'` uses it for everything.
 - **`press()`**: supports named keys (Enter, Tab, Escape, arrow keys, Home/End, PageUp/PageDown, F1–F12, Space and more), modifier combinations and US-layout characters, for example `Shift+Tab` or `Control++`. While Shift is held, the shifted character is sent. `keyDefinition()` and `parseChord()` are exported.
 - **macOS editing shortcuts**: when the browser runs on macOS, key events carry AppKit editing commands (CDP `commands`), so `Meta+A` selects all, `Meta+Z` undoes, `Alt+ArrowLeft` moves by word, `Control+A` moves to the start of the paragraph, and so on, as on a Mac keyboard. A launched browser uses the host platform, so a `userAgent` launch option does not change it; a connected browser uses the user agent that `Browser.getVersion` reports.
@@ -48,15 +58,17 @@ Ordinary `type()` does not generate a composition lifecycle; explicit CDP compos
 
 A click first scrolls the element into the viewport, checks that it is visible, enabled and not obscured, and samples its position twice, 32 ms apart, to confirm it is stable. After the trajectory ends, the target coordinates and the parent frame's hit testing are checked again. If the position changed or the target is obscured, the press is refused; the click is never repositioned or replayed.
 
+`setChecked(checked)` is one input action: its timeout, signal and guard cover reading the state, the click and up to 1 s of waiting for the requested state. It clicks the checkbox or radio itself, or its first rendered `<label>` when a click at the control's center would not reach it, for example a native control hidden behind a styled label. It resolves to `{ changed, clicked }`, where `clicked` is `'control'` or `'label'`. A radio cannot be unchecked by clicking, so `setChecked(false)` on a checked radio is refused before any input. A click that does not reach the requested state is reported, not repeated. Plain `click()` never redirects to another element.
+
 Pointer pressure is 0.5 while a button is pressed, including moves with a button held. In human mode the first pointer position is random within 15–85% of the viewport. Hovering inside an OOPIF confirms that the event was delivered; only when the pointer already rests at the same coordinates is an extra 0.25px probe move sent, which itself produces observable events.
 
 ## Serialization and cancellation
 
 Tab input, standalone `new Mouse(session)` / `new Keyboard(session)` and raw input scopes share one reentrant queue per `Connection`, with at most 128 waiting or running calls. Separate connections do not share a queue, and direct `Session.send()` / `sendWith()` calls bypass it. Before an action, Tab input calls `Page.bringToFront` when another tab may be in front. A successful standalone `down()` keeps its key or button held until `up()`; use a scope when several calls must retain ownership together. A scope releases its held inputs automatically, in reverse acquisition order.
 
-`InputOptions.timeout` is one budget for the input stage, 10000 ms by default, starting when the action is called and including queue time and preparation; element `click`, `hover`, `fill` and `type` include their preparation in it. Each input command receives the remaining time and the combined cancellation signal through `sendWith()`. A nested scope operation may shorten the budget or add a signal/guard; it cannot extend the scope deadline or replace its guard.
+`InputOptions.timeout` is one budget for the input stage, 10000 ms by default, starting when the action is called and including queue time and preparation; element `click`, `hover`, `fill`, `type` and `setChecked` include their preparation in it. Each input command receives the remaining time and the combined cancellation signal through `sendWith()`. A nested scope operation may shorten the budget or add a signal/guard; it cannot extend the scope deadline or replace its guard.
 
-Cancellation and deadlines reject promptly with `InputActionError`, preserving the cause. `error.report` captures the action when it stops; `error.cleanup` resolves to `{ status, report }` after cleanup, with status `completed`, `failed` or `disconnected`. Reports include `phase` (`queued`, `running`, `cleaning`, `done`), `cleanup`, acknowledged event/segment counts, the seed, the action-start `randomState`, a trace of up to 2000 entries and cleanup errors; input text is not stored. Commands whose callers stopped waiting remain visible through the cleanup result and the connection lifecycle.
+Cancellation and deadlines reject promptly with `InputActionError`, preserving the cause. `error.report` captures the action when it stops; `error.cleanup` resolves to `{ status, report }` after cleanup, with status `completed`, `failed` or `disconnected`. Reports include `phase` (`queued`, `running`, `cleaning`, `done`), `cleanup`, acknowledged event/segment counts, `dispatched` (input commands sent that can change the page: presses, releases, keys, text and composition; moves and wheel scrolling are not counted), the seed, the action-start `randomState`, a trace of up to 2000 entries and cleanup errors; input text is not stored. Commands whose callers stopped waiting remain visible through the cleanup result and the connection lifecycle.
 
 `cleanupTimeout`, 5000 ms by default and independent of the input timeout and an aborted signal, bounds releases and late-response draining. The next managed input waits until cleanup completes; after a failed cleanup, later managed input is rejected with `InputBlockedError` as the cause. Input actions keep their original command results and never resend commands. Cleanup waits only for the action's own late replies: its input commands, element preparation and raw commands issued from its callback on any connection, including those whose callers stopped waiting, plus the detach the library sends for an attach of the action that answers late. Other pending commands, such as another tab's evaluation, neither delay nor fail cleanup.
 

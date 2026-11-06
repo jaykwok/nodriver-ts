@@ -9,6 +9,22 @@
 - **输入。** 点击会等待目标可见、稳定且未被遮挡，动作从不重放。可选的带种子 `human` 策略提供指针轨迹、按键事件打字和滚轮滚动。
 - **面向 agent 的 MCP。** 工具通过缩进可访问性快照中稳定的元素引用（`e12`）操作元素，并报告动作引起了什么：导航、新标签页、对话框。HTTP 租约让浏览器状态在多次请求和重连之间保留。Streamable HTTP、stdio 和本地 socket 共用同一套实现。
 
+## 整体结构
+
+```mermaid
+flowchart LR
+  app["你的代码"] --> api["Browser · Context · Tab<br/>Frame · Element · Locator"]
+  agent["AI agent"] -->|"MCP：HTTP、stdio、socket"| mcp["nodriver-mcp"]
+  mcp --> api
+  api --> input["输入层<br/>队列 · 检查 · 清理"]
+  api --> conn["CDP 连接<br/>session · 期限"]
+  input --> conn
+  conn -->|"WebSocket 或 pipe"| chrome["Chrome · Chromium · Edge"]
+  chrome --- pages["页面、OOPIF、worker"]
+```
+
+你的代码和 MCP 服务使用同一套对象。所有命令都经过同一个连接：连接把命令发往它所属的 browser、page 或 frame session，应用调用方的超时和取消信号，并在 `ProtocolError` 中注明该 session。
+
 > 没有检测不到的自动化框架。nodriver-ts 去除常见的 CDP 和 WebDriver 痕迹，但不保证任何网站都会放行。见[自动化痕迹](#自动化痕迹)。
 
 ## 运行要求
@@ -34,11 +50,13 @@ console.log(await (await tab.waitForSelector('h1')).text());
 await tab.screenshot({ path: 'page.png', fullPage: true });
 ```
 
+- **会重新渲染的元素。** `tab.locator('#save')` 在每次操作前重新查询，因此单页应用重绘按钮后，点击仍作用于当前的按钮。已经发出的输入绝不重复。
+- **页面内的请求。** `tab.fetch('/api/me', { responseType: 'json' })` 用页面的 Cookie、源和代理运行 `fetch()`。超时或中止时，页面中的请求也会被中止。
 - **求值。** `tab.evaluate()` 在页面主世界运行，传入 `{ world: 'isolated' }` 则在隔离世界运行。函数会序列化到页面中。
 - **Frame。** `tab.frames` 列出所有 frame，包括 OOPIF。查询不会悄悄跨 frame。
 - **上下文与代理。** `browser.newContext({ proxy })` 隔离 Cookie 和存储，并支持带认证的 HTTP(S) 与 SOCKS 上游代理。
 - **网络。** `tab.network.route()` 拦截并替换请求，`authenticate()` 应答认证质询，`responses` 订阅响应。`Network.enable` 只在订阅响应、调用 `enable()` 或设置请求头、缓存或离线模式时发送。
-- **human 输入。** `tab.setInputPolicy({ mode: 'human', seed })` 启用可复现的指针轨迹、US 布局字符的按键事件和滚轮滚动。其他文本（如中日韩文字或 emoji）通过 `insertText` 输入。见[输入](docs/zh-CN/input.md)。
+- **human 输入。** `Browser.launch({ inputPolicy: { mode: 'human' } })` 作用于所有标签页和弹出页，`tab.setInputPolicy()` 只修改单个标签页。它启用可复现的指针轨迹、US 布局字符的按键事件和滚轮滚动；其他文本（如中日韩文字或 emoji）通过 `insertText` 输入。`fill()` 一次性插入替换整个值，`type(text, { replace: true })` 则逐键输入覆盖原值。见[输入](docs/zh-CN/input.md)。
 - **现有浏览器。** `Browser.connect({ endpoint })` 附加所有标签页；传入 `attach: 'created'` 时只附加本客户端打开的标签页及其弹出页。此时 `close()` 只断开连接。远程调试端点拥有浏览器的完全控制权，请限制对它的访问。
 - **交接。** 以 `detached: true` 和 WebSocket 启动时，Chrome 可以比当前进程活得更久：`browser.release()` 返回之后可重新连接的端点。加上 `supervised: true`，宿主在 release 前退出时由辅助进程结束 Chrome。见[浏览器交接](docs/zh-CN/browser-handoff.md)和[监管启动](docs/zh-CN/lifecycle-ownership-design.md)。
 - **原始 session。** `attach: 'none'` 只发现 target，不创建标签页；`attachSession()` 返回生命周期明确的独立 session。见 [原始 session](docs/zh-CN/raw-sessions.md)。
@@ -46,6 +64,94 @@ await tab.screenshot({ path: 'page.png', fullPage: true });
 - **不启动 Chrome 的测试。** `nodriver-ts/testing` 提供 `ScriptedChrome`：一个脚本化的 CDP 对端，背后是真实的 Browser、Tab 和 Session 对象。见[测试接口](docs/zh-CN/testing.md)。
 
 完整参考见 [docs/zh-CN/api.md](docs/zh-CN/api.md)，可运行的示例在 [examples/](examples/)。
+
+## 一次操作如何执行
+
+每次点击、悬停、填写和输入都是一个输入动作，只有一个期限。同一连接上的动作依次执行；失败的动作先完成清理，下一个动作才开始。
+
+```mermaid
+flowchart TD
+  call["element.click({ timeout, signal, guard })"] --> queue["等待连接的输入队列"]
+  queue --> scroll["滚动到视口内<br/>（human 模式用滚轮）"]
+  scroll --> check{"可见、启用、<br/>稳定、未被遮挡？"}
+  check -- "尚未满足" --> check
+  check -- 是 --> move["移动指针"]
+  move --> recheck{"仍在同一位置<br/>且未被遮挡？"}
+  recheck -- 否 --> refuse["拒绝：不发送按下"]
+  recheck -- 是 --> press["按下并释放"]
+  press --> done["完成"]
+  check -.->|"超时、中止或 guard"| fail["InputActionError<br/>附带报告与清理结果"]
+  move -.->|"超时、中止或 guard"| fail
+  fail --> release["释放按住的键和按钮"]
+```
+
+点击绝不会改到别的位置，也绝不会重发。`setChecked()` 在同一个期限内读取状态、点击控件或其 label，并等待新状态。只有当旧元素在发出任何按下、按键或文本之前就被替换时，`Locator` 才会在新元素上重新执行操作。
+
+## 长期运行的应用
+
+一个服务如果用同一个浏览器完成许多任务，可以把每个任务的页面放进一个作用域，清除某个站点的登录而不影响另一个站点，并在 Chrome 启动前准备好 profile：
+
+```js
+import { Browser, updateProfileSettings } from 'nodriver-ts';
+
+await using browser = await Browser.launch({
+  userDataDir: 'data/browser-profile',
+  inputPolicy: { mode: 'human' },
+  // 在本进程持有 profile 锁期间、Chrome 启动之前运行。
+  prepareProfile: (dir) =>
+    updateProfileSettings(dir, { preferences: { credentials_enable_service: false } }),
+});
+
+{
+  await using scope = browser.tabScope();
+  const tab = await scope.newTab('https://platform.example/tasks');
+  // ... 任务打开的弹出页也归作用域所有
+} // 关闭该任务的标签页和弹出页，其他标签页保持打开
+
+await browser.defaultContext.clearSiteData({
+  domains: ['platform.example'], // admin.example 保持登录
+  openTabs: 'blank',
+});
+```
+
+```mermaid
+sequenceDiagram
+  participant App as 应用
+  participant Scope as TabScope
+  participant Ctx as BrowserContext
+  participant Chrome
+  App->>Scope: newTab(url)
+  Scope->>Chrome: 创建页面
+  Chrome-->>Scope: 页面打开的弹出页
+  Note over Scope: 拥有自己打开的标签页、<br/>接管的标签页及其弹出页
+  App->>Scope: keep(tab)，留给人工处理
+  App->>Scope: close()
+  Scope->>Chrome: 关闭归属页面，<br/>包括仍在附加的弹出页
+  App->>Ctx: clearSiteData({ domains })
+  Ctx->>Chrome: 删除匹配的 Cookie
+  Ctx->>Chrome: 通过 page session 清理存储
+  Ctx-->>App: 已删除的 Cookie、已清理的源、已处理的标签页
+```
+
+只要还有标签页显示该站点，`clearSiteData()` 默认就会拒绝执行，因为页面可能把数据重新写回；`openTabs: 'close'` 或 `'blank'` 会先处理这些标签页。`prepareProfile` 同时支持临时 profile 和持久 profile；`updateProfileSettings()` 把设置合并进 `Local State` 和 `Preferences`，保留其他键，并回读校验。这项校验只覆盖文件本身，不能说明某个浏览器版本是否遵循该设置。
+
+## 浏览器生命周期
+
+```mermaid
+flowchart TD
+  launch["Browser.launch()"] --> profile{"指定了 userDataDir？"}
+  profile -- 否 --> temp["创建临时 profile"]
+  profile -- 是 --> lock["获取 profile 锁<br/>拒绝正在使用的 profile"]
+  temp --> prepare["prepareProfile(dir)"]
+  lock --> prepare
+  prepare --> spawn["启动 Chrome<br/>（supervised：辅助进程）"]
+  spawn --> ready["通过 CDP 连接<br/>并附加标签页"]
+  ready --> work["使用浏览器"]
+  work --> close["close()"]
+  work --> release["release()：Chrome 继续运行，<br/>之后用其端点重新连接"]
+  close --> exit["确认 Chrome 已退出"]
+  exit --> clean["删除临时 profile<br/>并释放锁"]
+```
 
 ## MCP 服务
 
@@ -124,26 +230,26 @@ npm run format:check
 
 以下为简体中文译本；英文版位于 [docs/](docs/)，内容有出入时以英文版为准。
 
-| 文档                                                               | 内容                                                 |
-| ------------------------------------------------------------------ | ---------------------------------------------------- |
-| [API](docs/zh-CN/api.md)                                           | 对象、期限与取消、查询、求值、存储                   |
-| [输入](docs/zh-CN/input.md)                                        | human 输入策略、打字、指针检查、取消                 |
-| [环境](docs/zh-CN/environment.md)                                  | 环境采样、诊断、显式对齐、WebRTC                     |
-| [浏览器交接](docs/zh-CN/browser-handoff.md)                        | 分离启动、交接与重连、CDP 事件订阅                   |
-| [监管启动](docs/zh-CN/lifecycle-ownership-design.md)               | 进程监管、有界 stderr、显式 release                  |
-| [原始 session](docs/zh-CN/raw-sessions.md)                         | 非托管 target、session 生命周期、drain、发送观察     |
-| [启动诊断](docs/zh-CN/startup-diagnostics.md)                      | 启动和连接失败的阶段与进程信息                       |
-| [自动化痕迹审计](docs/zh-CN/automation-audit.md)                   | 默认协议行为、回归检查、仍可观测的信号               |
-| [差分审计](docs/zh-CN/differential-audit.md)                       | 原生、伪装和显式配置的启动，页面与 Worker            |
-| [MCP](docs/zh-CN/mcp.md)                                           | CLI、工具、引用、页面 JavaScript、嵌入               |
-| [HTTP 接入](docs/zh-CN/mcp-http.md)                                | 租约、认证、限额、资源、人工交互                     |
-| [socket 接入](docs/zh-CN/mcp-socket.md)                            | Unix socket / 命名管道服务与客户端                   |
-| [通用 Agent 兼容](docs/zh-CN/agent-compatibility.md)               | MCP 2025-11-25 / 2025-06-18 客户端                   |
-| [支持范围](docs/zh-CN/support.md)                                  | 平台、能力、限制                                     |
-| [性能](docs/zh-CN/performance.md) · [长稳测试](docs/zh-CN/soak.md) | 基准方法与基线、长时间资源测试                       |
-| [脚本化测试](docs/zh-CN/testing.md)                                | 用 `ScriptedChrome` 在不启动 Chrome 的情况下测试代码 |
-| [上游映射](docs/zh-CN/upstream-api-map.md)                         | nodriver 成员与 TypeScript 对应项                    |
-| [API 测试映射](docs/zh-CN/test-map.md)                             | 调用每个公开成员和 MCP 工具的测试（自动生成）        |
+| 文档                                                               | 内容                                                      |
+| ------------------------------------------------------------------ | --------------------------------------------------------- |
+| [API](docs/zh-CN/api.md)                                           | 对象、期限、查询、Locator、页面内请求、标签页作用域、存储 |
+| [输入](docs/zh-CN/input.md)                                        | human 输入策略、打字、指针检查、取消                      |
+| [环境](docs/zh-CN/environment.md)                                  | 环境采样、诊断、显式对齐、WebRTC                          |
+| [浏览器交接](docs/zh-CN/browser-handoff.md)                        | 分离启动、交接与重连、CDP 事件订阅                        |
+| [监管启动](docs/zh-CN/lifecycle-ownership-design.md)               | 进程监管、有界 stderr、显式 release                       |
+| [原始 session](docs/zh-CN/raw-sessions.md)                         | 非托管 target、session 生命周期、drain、发送观察          |
+| [启动诊断](docs/zh-CN/startup-diagnostics.md)                      | 启动和连接失败的阶段与进程信息                            |
+| [自动化痕迹审计](docs/zh-CN/automation-audit.md)                   | 默认协议行为、回归检查、仍可观测的信号                    |
+| [差分审计](docs/zh-CN/differential-audit.md)                       | 原生、伪装和显式配置的启动，页面与 Worker                 |
+| [MCP](docs/zh-CN/mcp.md)                                           | CLI、工具、引用、页面 JavaScript、嵌入                    |
+| [HTTP 接入](docs/zh-CN/mcp-http.md)                                | 租约、认证、限额、资源、人工交互                          |
+| [socket 接入](docs/zh-CN/mcp-socket.md)                            | Unix socket / 命名管道服务与客户端                        |
+| [通用 Agent 兼容](docs/zh-CN/agent-compatibility.md)               | MCP 2025-11-25 / 2025-06-18 客户端                        |
+| [支持范围](docs/zh-CN/support.md)                                  | 平台、能力、限制                                          |
+| [性能](docs/zh-CN/performance.md) · [长稳测试](docs/zh-CN/soak.md) | 基准方法与基线、长时间资源测试                            |
+| [脚本化测试](docs/zh-CN/testing.md)                                | 用 `ScriptedChrome` 在不启动 Chrome 的情况下测试代码      |
+| [上游映射](docs/zh-CN/upstream-api-map.md)                         | nodriver 成员与 TypeScript 对应项                         |
+| [API 测试映射](docs/zh-CN/test-map.md)                             | 调用每个公开成员和 MCP 工具的测试（自动生成）             |
 
 变更记录见 [CHANGELOG.md](CHANGELOG.md)。
 

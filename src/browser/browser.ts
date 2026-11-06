@@ -8,6 +8,7 @@ import {
 import { BrowserProcess, type LaunchOptions } from './launcher.ts';
 import { StartupTracker } from './startup.ts';
 import { BrowserContext, type ContextOptions } from './context.ts';
+import type { TabScope } from './tab-scope.ts';
 import { Tab, type Environment } from '../page/tab.ts';
 import { Download } from './download.ts';
 import { ProxyForwarder } from '../optional/proxy.ts';
@@ -23,7 +24,12 @@ import {
   type WaitOptions,
 } from '../utils.ts';
 import { DisconnectedError, NodriverError, ProtocolError, TimeoutError } from '../errors.ts';
-import { inputCoordinator, type InputCoordinator } from '../input/behavior.ts';
+import {
+  checkedInputPolicy,
+  inputCoordinator,
+  type InputCoordinator,
+  type InputPolicy,
+} from '../input/behavior.ts';
 import { InputScope, type InputScopeOptions } from '../input/scope.ts';
 import { PresentationLease, type PresentationLeaseOptions } from '../page/presentation.ts';
 /**
@@ -35,6 +41,8 @@ export interface ConnectOptions extends ConnectionOptions, WaitOptions {
   endpoint: string;
   /** Defaults to "all". "created" adopts this client's tabs; "none" allows raw sessions only. */
   attach?: AttachPolicy;
+  /** Input policy of every tab, including those attached while connecting; see setDefaultInputPolicy(). */
+  inputPolicy?: InputPolicy;
 }
 export class Browser {
   readonly input: InputCoordinator;
@@ -73,6 +81,7 @@ export class Browser {
   frontTab?: Tab;
   /** Environment applied to every page session before the tab's own overrides. */
   baseEnvironment: Environment = {};
+  private inputDefault?: InputPolicy;
   private tabMap = new Map<string, Tab>();
   private attaching = new Map<string, Promise<Tab>>();
   private downloads = new Map<string, Download>();
@@ -112,6 +121,7 @@ export class Browser {
         throw new TypeError(
           "attach: 'none' does not support maskHeadless; configure raw sessions explicitly",
         );
+      const inputPolicy = options.inputPolicy && checkedInputPolicy(options.inputPolicy);
       const launched = await BrowserProcess.start({ ...options, ...step() }, startup);
       startup.process = () => launched.process.diagnostics;
       const connection = new Connection(launched.transport, {
@@ -130,6 +140,7 @@ export class Browser {
           launched.endpoint,
           options.attach,
         );
+        browser.inputDefault = inputPolicy;
         browser.networkPolicy = {
           proxyConfigured: !!(
             options.proxyServer || options.args?.some((a) => a.startsWith('--proxy-server'))
@@ -187,12 +198,14 @@ export class Browser {
           .webSocketDebuggerUrl;
       }
       startup.enter('websocket-connect');
+      const inputPolicy = options.inputPolicy && checkedInputPolicy(options.inputPolicy);
       const transport = await WebSocketTransport.connect(endpoint, step());
       const connection = new Connection(transport, options);
       try {
         startup.enter('protocol-handshake');
         const version = await connection.root.sendWith('Browser.getVersion', step());
         const browser = new Browser(connection, version, undefined, endpoint, options.attach);
+        browser.inputDefault = inputPolicy;
         startup.enter('target-initialization');
         const initializing = step();
         await bounded(browser.initialize(step), initializing, 'Browser initialization');
@@ -244,6 +257,18 @@ export class Browser {
     } as Protocol.Emulation.UserAgentMetadata;
     this.baseEnvironment = { ...this.baseEnvironment, userAgent, userAgentMetadata };
     for (const t of this.tabs) await t.setEnvironment({ userAgent, userAgentMetadata });
+  }
+  /** Input policy of tabs opened later in contexts without their own default. */
+  get defaultInputPolicy(): InputPolicy | undefined {
+    return structuredClone(this.inputDefault);
+  }
+  /**
+   * Sets the input policy of tabs that open later, popups included, in contexts without their own
+   * default; undefined restores the built-in policy. Open tabs keep theirs, and a tab's own
+   * setInputPolicy() overrides it. Omit seed to give each tab its own random stream.
+   */
+  setDefaultInputPolicy(policy: InputPolicy | undefined): void {
+    this.inputDefault = policy && checkedInputPolicy(policy);
   }
   get tabs(): Tab[] {
     return [...this.tabMap.values()].filter((t) => !t.closed);
@@ -415,7 +440,12 @@ export class Browser {
       throw e;
     }
   }
+  /** A scope for the pages of one task in the default context; see TabScope. */
+  tabScope(): TabScope {
+    return this.defaultContext.tabScope();
+  }
   async newContext(options: ContextOptions = {}): Promise<BrowserContext> {
+    const inputPolicy = options.inputPolicy && checkedInputPolicy(options.inputPolicy);
     const proxy = options.proxy ? await ProxyForwarder.create(options.proxy) : undefined;
     try {
       const { browserContextId } = await this.cdp.send('Target.createBrowserContext', {
@@ -431,6 +461,7 @@ export class Browser {
         proxy,
         !!(options.proxy || options.proxyServer),
       );
+      context.setDefaultInputPolicy(inputPolicy);
       this.contextMap.set(browserContextId, context);
       return context;
     } catch (e) {

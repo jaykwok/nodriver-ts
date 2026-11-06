@@ -40,6 +40,12 @@ export interface InputReport {
   randomState: number;
   completedSegments: number;
   events: number;
+  /**
+   * Input commands sent that can change the page: button presses and releases, keys, text and
+   * composition, counted when sent rather than when acknowledged. Moves and wheel scrolling are not
+   * counted.
+   */
+  dispatched: number;
   trace: Array<{ type: string; x?: number; y?: number; delay?: number }>;
   cleanupErrors: string[];
   phase: 'queued' | 'running' | 'cleaning' | 'done';
@@ -253,6 +259,14 @@ const defaults = {
   typing: 'auto' as 'auto' | 'keys' | 'insertText',
   scroll: 'auto' as 'auto' | 'wheel' | 'dom',
 } satisfies Omit<Required<InputPolicy>, 'seed'>;
+/** @internal Rejects a policy configure() would reject; returns a copy to keep. */
+export function checkedInputPolicy(policy: InputPolicy): InputPolicy {
+  new InputBehavior(
+    (task) => task(),
+    () => {},
+  ).configure(policy);
+  return structuredClone(policy);
+}
 export class InputBehavior {
   policy: Required<InputPolicy>;
   /** @internal Modifier state shared by this behavior's mouse and keyboard. */

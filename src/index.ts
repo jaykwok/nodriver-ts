@@ -1,9 +1,18 @@
 export { Browser } from './browser/browser.ts';
 export type { ConnectOptions, AttachPolicy } from './browser/browser.ts';
 export { BrowserContext } from './browser/context.ts';
-export type { ContextOptions, StorageState } from './browser/context.ts';
+export { TabScope, type TabScopeCloseResult } from './browser/tab-scope.ts';
+export type {
+  ClearSiteDataOptions,
+  ClearSiteDataResult,
+  ContextOptions,
+  SiteDataType,
+  StorageState,
+} from './browser/context.ts';
 export { findExecutable, acquireProfileLock, AGENT_ARGS } from './browser/launcher.ts';
 export type { LaunchOptions } from './browser/launcher.ts';
+export { updateProfileSettings } from './browser/profile.ts';
+export type { ProfileSettings, ProfileSettingsUpdate } from './browser/profile.ts';
 export { ReleaseUncertainError } from './browser/guardian.ts';
 export { getStartupDiagnostics } from './browser/startup.ts';
 export type {
@@ -34,7 +43,9 @@ export type { EvaluateOptions, World, EvaluationInput } from './page/frames.ts';
 export type { NavigationOptions } from './page/navigation.ts';
 export { Network, Route } from './page/network.ts';
 export type { Response } from './page/network.ts';
-export { Element } from './dom/element.ts';
+export { Element, type SetCheckedResult, type TypeOptions } from './dom/element.ts';
+export type { FetchOptions, FetchResponse } from './page/fetch.ts';
+export { Locator } from './dom/locator.ts';
 export type { Selector, QueryOptions } from './dom/query.ts';
 export { Mouse, Keyboard, keyDefinition, parseChord } from './input/input.ts';
 export type { ComposeOptions } from './input/input.ts';

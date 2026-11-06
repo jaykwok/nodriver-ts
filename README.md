@@ -9,6 +9,22 @@ TypeScript redesign of [nodriver](https://github.com/ultrafunkamsterdam/nodriver
 - **Input.** Clicks wait until the target is visible, stable and unobscured, and actions are never replayed. An optional seeded `human` policy adds pointer paths, key-event typing and wheel scrolling.
 - **MCP for agents.** Tools act on stable element refs (`e12`) from an indented accessibility snapshot and report what an action caused: navigations, new tabs, dialogs. HTTP leases keep browser state across requests and reconnects. Streamable HTTP, stdio and a local socket share one implementation.
 
+## How it fits together
+
+```mermaid
+flowchart LR
+  app["Your code"] --> api["Browser · Context · Tab<br/>Frame · Element · Locator"]
+  agent["AI agent"] -->|"MCP: HTTP, stdio, socket"| mcp["nodriver-mcp"]
+  mcp --> api
+  api --> input["Input layer<br/>queue · checks · cleanup"]
+  api --> conn["CDP connection<br/>sessions · deadlines"]
+  input --> conn
+  conn -->|"WebSocket or pipe"| chrome["Chrome · Chromium · Edge"]
+  chrome --- pages["Pages, OOPIFs, workers"]
+```
+
+Your code and the MCP server use the same objects. Every command goes through one connection, which routes it to the browser, page or frame session it belongs to, applies the caller's timeout and signal, and names that session in a `ProtocolError`.
+
 > No automation framework is undetectable. nodriver-ts removes the common CDP and WebDriver tells, but it does not promise that any site will let you through. See [automation traces](#automation-traces).
 
 ## Requirements
@@ -34,11 +50,13 @@ console.log(await (await tab.waitForSelector('h1')).text());
 await tab.screenshot({ path: 'page.png', fullPage: true });
 ```
 
+- **Elements that re-render.** `tab.locator('#save')` queries again before each action, so a click reaches the current button after a single-page app redraws it. Input that was already sent is never repeated.
+- **Requests in the page.** `tab.fetch('/api/me', { responseType: 'json' })` runs `fetch()` with the page's cookies, origin and proxy. A timeout or abort also aborts the request in the page.
 - **Evaluation.** `tab.evaluate()` runs in the page's main world, or in an isolated world with `{ world: 'isolated' }`. Functions are serialized into the page.
 - **Frames.** `tab.frames` lists every frame, OOPIFs included. Queries never cross frames silently.
 - **Contexts and proxies.** `browser.newContext({ proxy })` isolates cookies and storage, and supports authenticated HTTP(S) and SOCKS upstream proxies.
 - **Network.** `tab.network.route()` intercepts and fulfils requests, `authenticate()` answers auth challenges and `responses` subscribes to responses. `Network.enable` is sent only when you subscribe to responses, call `enable()` or set headers, cache or offline mode.
-- **Human input.** `tab.setInputPolicy({ mode: 'human', seed })` turns on reproducible pointer paths, key events for US-layout characters and wheel scrolling. Other text, such as CJK or emoji, is inserted with `insertText`. See [input](docs/input.md).
+- **Human input.** `Browser.launch({ inputPolicy: { mode: 'human' } })` applies to every tab and popup, and `tab.setInputPolicy()` changes one tab. It turns on reproducible pointer paths, key events for US-layout characters and wheel scrolling; other text, such as CJK or emoji, is inserted with `insertText`. `fill()` replaces a value with one insertion, `type(text, { replace: true })` types over it key by key. See [input](docs/input.md).
 - **Existing browsers.** `Browser.connect({ endpoint })` attaches to every tab, or, with `attach: 'created'`, only to the tabs this client opens and their popups. `close()` then only disconnects. A remote debugging endpoint gives full control of the browser, so restrict access to it.
 - **Handoff.** Launched with `detached: true` over WebSocket, Chrome can outlive this process: `browser.release()` returns an endpoint to reconnect to later. Add `supervised: true` to have a helper end Chrome if the host dies before releasing it. See [browser handoff](docs/browser-handoff.md) and [supervised launch](docs/lifecycle-ownership-design.md).
 - **Raw sessions.** `attach: 'none'` discovers targets without creating tabs, and `attachSession()` returns independent sessions with an explicit lifecycle. See [raw sessions](docs/raw-sessions.md).
@@ -46,6 +64,94 @@ await tab.screenshot({ path: 'page.png', fullPage: true });
 - **Tests without Chrome.** `nodriver-ts/testing` provides `ScriptedChrome`, a scripted CDP peer behind real Browser, Tab and Session objects. See [testing](docs/testing.md).
 
 The full reference is [docs/api.md](docs/api.md); runnable programs are in [examples/](examples/).
+
+## How an action runs
+
+Every click, hover, fill and type is one input action with one deadline. Actions on a connection run one at a time, and a failed action cleans up before the next one starts.
+
+```mermaid
+flowchart TD
+  call["element.click({ timeout, signal, guard })"] --> queue["Wait for the connection's input queue"]
+  queue --> scroll["Scroll into view<br/>(wheel in human mode)"]
+  scroll --> check{"Visible, enabled,<br/>stable, unobscured?"}
+  check -- "not yet" --> check
+  check -- yes --> move["Move the pointer"]
+  move --> recheck{"Still at the same point<br/>and not covered?"}
+  recheck -- no --> refuse["Refuse: no press is sent"]
+  recheck -- yes --> press["Press and release"]
+  press --> done["Resolve"]
+  check -.->|"timeout, abort or guard"| fail["InputActionError<br/>with report and cleanup"]
+  move -.->|"timeout, abort or guard"| fail
+  fail --> release["Release held keys and buttons"]
+```
+
+A click is never moved to another point or sent again. `setChecked()` reads the state, clicks the control or its label, and waits for the new state within the same deadline. A `Locator` may run an action again on a new element only when the old one was replaced before any press, key or text was sent.
+
+## Long-running applications
+
+A service that keeps one browser for many tasks can open each task's pages in a scope, clear one site's login without touching another, and prepare the profile before Chrome starts:
+
+```js
+import { Browser, updateProfileSettings } from 'nodriver-ts';
+
+await using browser = await Browser.launch({
+  userDataDir: 'data/browser-profile',
+  inputPolicy: { mode: 'human' },
+  // Runs while this process holds the profile lock, before Chrome starts.
+  prepareProfile: (dir) =>
+    updateProfileSettings(dir, { preferences: { credentials_enable_service: false } }),
+});
+
+{
+  await using scope = browser.tabScope();
+  const tab = await scope.newTab('https://platform.example/tasks');
+  // ... popups the task opens belong to the scope too
+} // closes the task's tabs and popups; other tabs stay open
+
+await browser.defaultContext.clearSiteData({
+  domains: ['platform.example'], // admin.example keeps its login
+  openTabs: 'blank',
+});
+```
+
+```mermaid
+sequenceDiagram
+  participant App
+  participant Scope as TabScope
+  participant Ctx as BrowserContext
+  participant Chrome
+  App->>Scope: newTab(url)
+  Scope->>Chrome: create page
+  Chrome-->>Scope: popup opened by the page
+  Note over Scope: owns tabs, adopted tabs<br/>and their popups
+  App->>Scope: keep(tab) for a person to finish
+  App->>Scope: close()
+  Scope->>Chrome: close owned pages,<br/>including popups still attaching
+  App->>Ctx: clearSiteData({ domains })
+  Ctx->>Chrome: delete matching cookies
+  Ctx->>Chrome: clear storage through a page session
+  Ctx-->>App: deleted cookies, cleared origins, handled tabs
+```
+
+`clearSiteData()` refuses by default while a tab still shows the site, because the page could write the data back; `openTabs: 'close'` or `'blank'` handles those tabs first. `prepareProfile` works with temporary and persistent profiles, and `updateProfileSettings()` merges settings into `Local State` and `Preferences`, keeping other keys, and reads them back. That check covers the files, not whether a given browser version honours a setting.
+
+## Browser lifecycle
+
+```mermaid
+flowchart TD
+  launch["Browser.launch()"] --> profile{"userDataDir?"}
+  profile -- no --> temp["Create a temporary profile"]
+  profile -- yes --> lock["Take the profile lock<br/>and refuse a profile in use"]
+  temp --> prepare["prepareProfile(dir)"]
+  lock --> prepare
+  prepare --> spawn["Start Chrome<br/>(supervised: helper process)"]
+  spawn --> ready["Connect over CDP<br/>and attach tabs"]
+  ready --> work["Use the browser"]
+  work --> close["close()"]
+  work --> release["release(): Chrome keeps running,<br/>reconnect with its endpoint"]
+  close --> exit["Confirm Chrome has exited"]
+  exit --> clean["Remove the temporary profile<br/>and release the lock"]
+```
 
 ## MCP server
 
@@ -124,26 +230,26 @@ npm run format:check
 
 Simplified Chinese translations are in [docs/zh-CN](docs/zh-CN/).
 
-| Document                                                  | Contents                                                          |
-| --------------------------------------------------------- | ----------------------------------------------------------------- |
-| [API](docs/api.md)                                        | Objects, deadlines and cancellation, queries, evaluation, storage |
-| [Input](docs/input.md)                                    | The human input policy, typing, pointer checks, cancellation      |
-| [Environment](docs/environment.md)                        | Environment sampling, diagnostics, explicit alignment, WebRTC     |
-| [Browser handoff](docs/browser-handoff.md)                | Detached launch, release and reconnect, CDP event subscriptions   |
-| [Supervised launch](docs/lifecycle-ownership-design.md)   | Process supervision, bounded stderr, explicit release             |
-| [Raw sessions](docs/raw-sessions.md)                      | Unmanaged targets, session lifetime, drain, send observation      |
-| [Startup diagnostics](docs/startup-diagnostics.md)        | Launch and connect failure stages and process information         |
-| [Automation audit](docs/automation-audit.md)              | Default protocol behaviour, regression checks, remaining signals  |
-| [Differential audit](docs/differential-audit.md)          | Native, masked and configured launches, pages and workers         |
-| [MCP](docs/mcp.md)                                        | CLI, tools, refs, page JavaScript, embedding                      |
-| [MCP over HTTP](docs/mcp-http.md)                         | Leases, authentication, limits, resources, hand-off               |
-| [MCP over socket](docs/mcp-socket.md)                     | Unix socket / named pipe service and client                       |
-| [Agent compatibility](docs/agent-compatibility.md)        | MCP 2025-11-25 / 2025-06-18 clients                               |
-| [Support](docs/support.md)                                | Platforms, capabilities, limitations                              |
-| [Performance](docs/performance.md) · [Soak](docs/soak.md) | Benchmark method and baseline, long-running resource test         |
-| [Scripted testing](docs/testing.md)                       | `ScriptedChrome` for testing code without launching Chrome        |
-| [Upstream API map](docs/upstream-api-map.md)              | nodriver members and their TypeScript counterparts                |
-| [API test map](docs/test-map.md)                          | Tests that call each public member and MCP tool (generated)       |
+| Document                                                  | Contents                                                               |
+| --------------------------------------------------------- | ---------------------------------------------------------------------- |
+| [API](docs/api.md)                                        | Objects, deadlines, queries, locators, page fetch, tab scopes, storage |
+| [Input](docs/input.md)                                    | The human input policy, typing, pointer checks, cancellation           |
+| [Environment](docs/environment.md)                        | Environment sampling, diagnostics, explicit alignment, WebRTC          |
+| [Browser handoff](docs/browser-handoff.md)                | Detached launch, release and reconnect, CDP event subscriptions        |
+| [Supervised launch](docs/lifecycle-ownership-design.md)   | Process supervision, bounded stderr, explicit release                  |
+| [Raw sessions](docs/raw-sessions.md)                      | Unmanaged targets, session lifetime, drain, send observation           |
+| [Startup diagnostics](docs/startup-diagnostics.md)        | Launch and connect failure stages and process information              |
+| [Automation audit](docs/automation-audit.md)              | Default protocol behaviour, regression checks, remaining signals       |
+| [Differential audit](docs/differential-audit.md)          | Native, masked and configured launches, pages and workers              |
+| [MCP](docs/mcp.md)                                        | CLI, tools, refs, page JavaScript, embedding                           |
+| [MCP over HTTP](docs/mcp-http.md)                         | Leases, authentication, limits, resources, hand-off                    |
+| [MCP over socket](docs/mcp-socket.md)                     | Unix socket / named pipe service and client                            |
+| [Agent compatibility](docs/agent-compatibility.md)        | MCP 2025-11-25 / 2025-06-18 clients                                    |
+| [Support](docs/support.md)                                | Platforms, capabilities, limitations                                   |
+| [Performance](docs/performance.md) · [Soak](docs/soak.md) | Benchmark method and baseline, long-running resource test              |
+| [Scripted testing](docs/testing.md)                       | `ScriptedChrome` for testing code without launching Chrome             |
+| [Upstream API map](docs/upstream-api-map.md)              | nodriver members and their TypeScript counterparts                     |
+| [API test map](docs/test-map.md)                          | Tests that call each public member and MCP tool (generated)            |
 
 Changes are recorded in [CHANGELOG.md](CHANGELOG.md).
 

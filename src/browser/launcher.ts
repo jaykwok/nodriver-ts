@@ -18,11 +18,13 @@ import { PipeTransport } from '../transport/pipe.ts';
 import type { Transport } from '../transport/transport.ts';
 import type { ConnectionOptions } from '../protocol/connection.ts';
 import type { AttachPolicy } from './browser.ts';
+import type { InputPolicy } from '../input/behavior.ts';
 import { StartupTracker, type StartupProcessDiagnostics } from './startup.ts';
 import { Guardian, ReleaseUncertainError } from './guardian.ts';
 import { DisconnectedError, NodriverError, ProfileInUseError } from '../errors.ts';
 import {
   abortReason,
+  bounded,
   CONNECT_TIMEOUT,
   delay,
   poll,
@@ -37,10 +39,19 @@ export interface LaunchOptions extends WaitOptions, ConnectionOptions {
   /** False by default. True preserves Chromium's native automation flag. */
   automationControlled?: boolean;
   userDataDir?: string;
+  /**
+   * Called with the profile directory before Chrome starts, to write or check files such as
+   * `Local State` (see updateProfileSettings()): for a temporary profile after the library has
+   * prepared it, for a userDataDir while this process holds its lock. Bounded by the launch
+   * timeout; its signal also aborts at that deadline, so stop writing when it does.
+   */
+  prepareProfile?: (directory: string, options: WaitOptions) => void | Promise<void>;
   args?: string[];
   transport?: 'websocket' | 'pipe';
   /** Defaults to all. none discovers targets without constructing Tab/Frame models. */
   attach?: AttachPolicy;
+  /** Input policy of every tab, including the startup tab and popups; see setDefaultInputPolicy(). */
+  inputPolicy?: InputPolicy;
   /**
    * Allow release() to leave Chrome running independently, including on Windows.
    * Requires WebSocket; stderr is discarded so no parent-owned pipe survives handoff.
@@ -358,6 +369,17 @@ export class BrowserProcess {
         // Never accidentally connect to a different Chrome already using this profile.
         await removeStaleActivePort(profile);
         await checkNativeProfileLock(profile);
+      }
+      if (options.prepareProfile) {
+        const timeout = timeoutValue(options.timeout ?? CONNECT_TIMEOUT);
+        const signal = AbortSignal.any(
+          [AbortSignal.timeout(timeout), options.signal].filter((s): s is AbortSignal => !!s),
+        );
+        await bounded(
+          Promise.resolve().then(() => options.prepareProfile!(profile, { timeout, signal })),
+          { timeout, signal: options.signal },
+          'Profile preparation',
+        );
       }
       const extraArgs = [...(options.args ?? [])];
       if (options.automationControlled !== true) {

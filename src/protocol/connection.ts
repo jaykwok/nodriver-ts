@@ -150,6 +150,8 @@ export class Connection {
   private lost = new Set<number>();
   private sessions = new Map<string, Session>();
   private sessionParents = new Map<string, string>();
+  /** Target type of each attachment, for errors. */
+  private targetTypes = new Map<string, string>();
   private abandoned = new Map<
     number,
     { timer: ReturnType<typeof setTimeout>; recorder?: RequestRecorder }
@@ -648,7 +650,12 @@ export class Connection {
         if (detached)
           p.reject(new DisconnectedError(`Session detached: ${p.sessionId} (${m.error!.message})`));
         else if (m.error)
-          p.reject(new ProtocolError(p.method, m.error.code, m.error.message, m.error.data));
+          p.reject(
+            new ProtocolError(p.method, m.error.code, m.error.message, m.error.data, {
+              sessionId: p.sessionId,
+              targetType: p.sessionId ? this.targetTypes.get(p.sessionId) : 'browser',
+            }),
+          );
         else {
           try {
             p.hooks?.accept(m.result ?? {});
@@ -662,6 +669,10 @@ export class Connection {
         this.observeResponse(response);
       } else if (typeof m.method === 'string') {
         if (metric) Object.assign(metric, { method: m.method, sessionId: m.sessionId });
+        if (m.method === 'Target.attachedToTarget') {
+          const event = m.params as { sessionId: string; targetInfo?: { type?: string } };
+          if (event.targetInfo?.type) this.targetTypes.set(event.sessionId, event.targetInfo.type);
+        }
         if (m.method === 'Target.attachedToTarget' && !m.sessionId) {
           const event = m.params as { sessionId: string; targetInfo: { targetId: string } };
           if (
@@ -748,6 +759,7 @@ export class Connection {
     // Parent detach can suppress descendant detach events (notably BFCache
     // OOPIFs when their tab/context closes). Retire the whole ownership tree.
     this.sessionParents.delete(id);
+    this.targetTypes.delete(id);
     for (const [child, parent] of this.sessionParents)
       if (parent === id) this.detach(child, reason);
     for (const [key, p] of this.pending)
@@ -785,6 +797,7 @@ export class Connection {
     for (const s of this.sessions.values()) s.invalidate(reason);
     this.sessions.clear();
     this.sessionParents.clear();
+    this.targetTypes.clear();
     this.disconnected.emit(reason);
     this.disconnected.clear();
     this.events.clear();

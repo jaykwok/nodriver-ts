@@ -4,7 +4,41 @@ All notable changes are recorded here. The project follows [Semantic Versioning]
 
 ## Unreleased
 
+### Breaking changes
+
+- `setChecked()` failures are `InputActionError`s, as with `click()`, with the original error as `cause`; they used to be thrown directly.
+- `ProtocolError.message` ends with the session the command was sent to, such as `[browser session]`. Compare `protocolMessage` instead of the whole message.
+
+### Input
+
+- `setChecked()` takes `InputOptions` and runs as one input action: the timeout, signal and guard cover reading the state, the click and waiting for the result, and no other input runs in between. It waits up to 1 s for the requested state instead of reading it once right after the click, and resolves to `{ changed, clicked }`. When a click at the control's center would not reach it, as with a native checkbox hidden behind a styled label, it clicks the control's first rendered `<label>`; it used to time out. `setChecked(false)` on a checked radio is refused before any input; it used to click and then fail.
+- Default input policies: the `inputPolicy` option of `Browser.launch()`, `Browser.connect()` and `newContext()`, and `setDefaultInputPolicy()` on `Browser` and `BrowserContext`, apply a policy to tabs that open later, popups included. A context's default overrides the browser's, and `tab.setInputPolicy()` overrides both for one tab.
+- `type(text, { replace: true })` selects the whole value first and types over it, for typing that replaces a value key by key; `fill()` still replaces it with one insertion.
+- `InputReport.dispatched` counts the input commands an action sent that can change the page (presses, releases, keys, text and composition), when they are sent rather than when Chrome acknowledges them. Moves and wheel scrolling are not counted.
+
+### Pages and queries
+
+- `tab.locator(selector)` and `frame.locator()` return a `Locator`, a query that runs again before each action, so `click`, `hover`, `fill`, `type`, `setChecked`, `text` and `attribute` reach the current element after a re-render. One timeout covers finding the element and the action. An action whose element is replaced before it sends a press, key or text runs again on a new match; once such input was sent, its failure is reported and it is never repeated.
+- `tab.fetch(url, options)` and `frame.fetch()` run `fetch()` in the frame's isolated world with the page's cookies, origin and network, and return the status, headers and body as text, JSON or base64 up to `maxBytes`. On timeout or abort the page request is aborted too, and `FetchCancelledError.aborted` tells whether that was confirmed or the request may have reached the server.
+
+### State and storage
+
+- `BrowserContext.clearSiteData({ domains, origins, types, openTabs })` deletes the cookies and storage (localStorage, sessionStorage, IndexedDB, Cache Storage, Service Workers) of some sites and keeps the rest of the context, for example to log out of one site while staying logged in to another. Open tabs of a matching site make it throw unless `openTabs` is `'close'` or `'blank'`. It reports the deleted cookies, the cleared origins and the handled tabs, and throws if a matching cookie exists again afterwards. Its storage commands go to a page session, as Chrome refuses `Storage.clearDataForOrigin` on the browser session.
+
+### Browser and process lifecycle
+
+- `browser.tabScope()` and `context.tabScope()` group the pages of one task in a shared browser: tabs opened through the scope, adopted tabs and their popups, transitively. `close()` closes them, including popups that open meanwhile or are still attaching, and a tab still opening through the scope; other tabs and tabs released with `keep()` stay open.
+- `Browser.launch({ prepareProfile })` calls a function with the profile directory before Chrome starts, to write or check files such as `Local State`: for a temporary profile after the library has prepared it, for a `userDataDir` while this process holds its lock. It is bounded by the launch timeout, and a failure ends the launch.
+- `updateProfileSettings(directory, { localState, preferences, profile })` merges settings into a profile's `Local State` and `Preferences`, keeping other keys, and reads each file back to check every given value. It refuses to rewrite a file that is not valid JSON. The check covers the files, not whether a browser version honours a setting.
 - `Browser.close()` gives Chrome up to 10 s, up from 3 s, to exit after `Browser.close`. On Windows, a Chrome that is still running is then terminated directly instead of through `taskkill`, and Chrome's other processes exit with it. After terminating Chrome, `close()` waits up to 15 s, up from 5 s, before it reports that Chrome did not exit. Busy Windows hosts can take seconds both to shut Chrome down and to finish a terminated process, and such a close used to fail although Chrome was exiting.
+
+### Protocol
+
+- `ProtocolError` names the session a failed command was sent to: `sessionId`, `targetType` (`browser`, `page`, `iframe`, `worker` ...) and a suffix such as `[browser session]` or `[page session <id>]` at the end of the message. `protocolMessage` holds Chrome's message alone. A command sent to the wrong kind of session, which Chrome may answer only with `Internal error`, is now recognisable from the error.
+
+### Tooling
+
+- `ScriptedChrome.addPage({ openerId })` models a popup of a page.
 
 ## 0.7.0 — 2026-11-04
 

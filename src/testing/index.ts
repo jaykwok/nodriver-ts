@@ -12,9 +12,7 @@ const UNKNOWN_SESSION = Symbol('UNKNOWN_SESSION');
 function wireError(error: unknown): { code: number; message: string; data?: string } {
   if (!(error instanceof ProtocolError))
     return { code: -32000, message: error instanceof Error ? error.message : String(error) };
-  let message = error.message.slice(error.method.length + 2);
-  if (error.data) message = message.slice(0, -(error.data.length + 3));
-  return { code: error.code, message, data: error.data };
+  return { code: error.code, message: error.protocolMessage, data: error.data };
 }
 
 export interface RecordedCommand<M extends Command = Command> {
@@ -127,8 +125,13 @@ export class ScriptedChrome {
     socket.send(JSON.stringify({ method, params, sessionId }));
   }
 
-  /** Add a page to the fake's target model and notify an active discovery subscription. */
-  addPage(page: { url?: string; title?: string; browserContextId?: string } = {}): string {
+  /**
+   * Add a page to the fake's target model and notify an active discovery subscription. An
+   * `openerId` models a popup of that page.
+   */
+  addPage(
+    page: { url?: string; title?: string; browserContextId?: string; openerId?: string } = {},
+  ): string {
     const targetId = `page-${++this.sequence}`;
     const info: Protocol.Target.TargetInfo = {
       targetId,
@@ -138,6 +141,7 @@ export class ScriptedChrome {
       attached: false,
       canAccessOpener: false,
       browserContextId: page.browserContextId,
+      ...(page.openerId ? { openerId: page.openerId } : {}),
     };
     this.pages.set(targetId, info);
     if (this.discovering) this.emit('Target.targetCreated', { targetInfo: info });

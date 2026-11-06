@@ -1,10 +1,15 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { access, mkdtemp, open, readFile, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, open, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { Browser, ProfileInUseError, findExecutable } from '../../src/index.ts';
+import {
+  Browser,
+  ProfileInUseError,
+  findExecutable,
+  updateProfileSettings,
+} from '../../src/index.ts';
 import { poll, removeTree } from '../../src/utils.ts';
 
 test(
@@ -81,3 +86,56 @@ test(
     }
   },
 );
+
+test('prepareProfile prepares temporary and persistent profiles before Chrome starts', async () => {
+  let directory = '';
+  {
+    await using browser = await Browser.launch({
+      headless: true,
+      prepareProfile: async (dir, options) => {
+        directory = dir;
+        assert.ok(options.timeout! > 0);
+        await mkdir(join(dir, 'Default'), { recursive: true });
+        await writeFile(
+          join(dir, 'Default', 'Preferences'),
+          JSON.stringify({ intl: { accept_languages: 'fr-FR,fr' } }),
+        );
+      },
+    });
+    const tab = await browser.newTab();
+    assert.deepEqual(await tab.evaluate('navigator.languages'), ['fr-FR', 'fr']);
+  }
+  await assert.rejects(access(directory));
+  // A failing hook ends the launch before Chrome starts and removes the directory.
+  const failed = await Browser.launch({
+    headless: true,
+    prepareProfile: (dir) => {
+      directory = dir;
+      throw new Error('refused');
+    },
+  }).catch((error: unknown) => error);
+  assert.match(String(failed), /refused/);
+  await assert.rejects(access(directory));
+  // A persistent profile is prepared while this process holds its lock, and kept.
+  const persistent = await mkdtemp(join(tmpdir(), 'nodriver-prepared-'));
+  try {
+    {
+      await using browser = await Browser.launch({
+        headless: true,
+        userDataDir: persistent,
+        prepareProfile: async (dir) => {
+          assert.equal(dir, persistent);
+          await access(join(dir, '.nodriver.lock'));
+          await updateProfileSettings(dir, {
+            preferences: { intl: { accept_languages: 'de-DE,de' } },
+          });
+        },
+      });
+      const tab = await browser.newTab();
+      assert.deepEqual(await tab.evaluate('navigator.languages'), ['de-DE', 'de']);
+    }
+    await access(persistent);
+  } finally {
+    await removeTree(persistent);
+  }
+});

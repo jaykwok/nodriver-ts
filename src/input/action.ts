@@ -42,6 +42,14 @@ function isObjectGone(error: unknown): boolean {
     (error instanceof ProtocolError && /Could not find object with given id/.test(error.message))
   );
 }
+/** Input that can change the page, unlike pointer moves and wheel scrolling. */
+function changesPage(method: string, params: unknown): boolean {
+  if (method === 'Input.dispatchMouseEvent') {
+    const type = (params as { type?: string }).type;
+    return type === 'mousePressed' || type === 'mouseReleased';
+  }
+  return method.startsWith('Input.') && method !== 'Input.synthesizeScrollGesture';
+}
 /**
  * A cleanup budget that runs only while no JavaScript dialog is open on the action's pages: Chrome
  * holds the replies to input a page was handling until its dialog closes. The budget restarts
@@ -180,6 +188,7 @@ export class InputAction {
       randomState: behavior.randomState,
       completedSegments: 0,
       events: 0,
+      dispatched: 0,
       trace: [],
       cleanupErrors: [],
       phase: 'queued',
@@ -240,6 +249,7 @@ export class InputAction {
   ): Promise<Result<M>> {
     const options = this.step();
     this.observe(session);
+    if (changesPage(method, params[0])) this.report.dispatched++;
     const acknowledged = this.behavior.coordinator?.trackCommand(session, method, params[0]);
     const result = await session.sendWith(method, this.ledger(options), ...params);
     acknowledged?.();

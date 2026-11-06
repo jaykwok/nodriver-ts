@@ -53,7 +53,24 @@ test('queued and persistent typed handlers see params, route by session, and pre
       error instanceof ProtocolError &&
       error.code === -32001 &&
       error.data === 'details' &&
-      error.message === 'Runtime.evaluate: scripted failure (details)',
+      error.protocolMessage === 'scripted failure' &&
+      error.sessionId === a!.cdp.id &&
+      error.targetType === 'page' &&
+      error.message === `Runtime.evaluate: scripted failure (details) [page session ${a!.cdp.id}]`,
+  );
+  chrome.replyOnce('Storage.clearDataForOrigin', () => {
+    throw new ProtocolError('Storage.clearDataForOrigin', -32603, 'Internal error');
+  });
+  await assert.rejects(
+    browser.cdp.send('Storage.clearDataForOrigin', {
+      origin: 'https://a.test',
+      storageTypes: 'all',
+    }),
+    (error: unknown) =>
+      error instanceof ProtocolError &&
+      error.sessionId === undefined &&
+      error.targetType === 'browser' &&
+      error.message === 'Storage.clearDataForOrigin: Internal error [browser session]',
   );
   chrome.assertDone();
 });

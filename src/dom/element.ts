@@ -9,6 +9,15 @@ import { budget, delay, poll, type WaitOptions } from '../utils.ts';
 import { query, type QueryOptions, type Selector } from './query.ts';
 import type { InputOptions, InputReport } from '../input/behavior.ts';
 type Point = { x: number; y: number };
+export interface TypeOptions extends InputOptions {
+  /** Select the whole value first, so the typed text replaces it. */
+  replace?: boolean;
+}
+export interface SetCheckedResult {
+  changed: boolean;
+  /** What was clicked; absent when the input already had the requested state. */
+  clicked?: 'control' | 'label';
+}
 let objectGroupId = 0;
 /** The budget of an element operation outside an input action, shared by its CDP steps. */
 const operation = new AsyncLocalStorage<() => WaitOptions>();
@@ -188,15 +197,69 @@ export class Element {
   async query(selector: Selector, options?: QueryOptions): Promise<Element | undefined> {
     return (await this.queryAll(selector, { ...options, limit: 1 }))[0];
   }
-  async setChecked(checked: boolean, options: WaitOptions = {}): Promise<void> {
-    const current = await this.evaluate((el) => {
-      if (!(el instanceof HTMLInputElement) || !['checkbox', 'radio'].includes(el.type))
-        throw new Error('setChecked requires checkbox or radio');
-      return el.checked;
+  /**
+   * One input action: the timeout, signal and guard cover reading the state, the click and
+   * waiting up to 1 s for the requested state. Clicks the control, or its first rendered label
+   * when the control cannot be hit (a native control hidden behind a styled label). The click is
+   * never repeated.
+   */
+  async setChecked(checked: boolean, options: InputOptions = {}): Promise<SetCheckedResult> {
+    return this.input('setChecked', options, async () => {
+      const state = await this.evaluate((el) => {
+        if (!(el instanceof HTMLInputElement) || !['checkbox', 'radio'].includes(el.type))
+          throw new Error('setChecked requires checkbox or radio');
+        return { checked: el.checked, radio: el.type === 'radio', rendered: el.checkVisibility() };
+      });
+      if (state.checked === checked) return { changed: false };
+      if (state.radio)
+        throw new ActionabilityError(
+          'A radio cannot be unchecked by clicking it; check another radio of its group',
+        );
+      if (state.rendered) await this.scrollIntoView({ signal: options.signal });
+      const label = await this.labelToClick();
+      await (label ?? this).click({ signal: options.signal });
+      const settled = performance.now() + 1000;
+      while ((await this.evaluate((el) => (el as HTMLInputElement).checked)) !== checked) {
+        if (performance.now() >= settled)
+          throw new ActionabilityError(
+            'Input did not reach requested checked state; the click was not repeated',
+          );
+        await delay(50, this.step().signal);
+      }
+      return { changed: true, clicked: label ? 'label' : 'control' };
     });
-    if (current !== checked) await this.click(options);
-    if ((await this.evaluate((el) => (el as HTMLInputElement).checked)) !== checked)
-      throw new ActionabilityError('Input did not reach requested checked state');
+  }
+  /** The first rendered label of a control that a click at its center would not reach. */
+  private labelToClick(): Promise<Element | undefined> {
+    const pick = (el: HTMLInputElement) => {
+      const box = (target: HTMLElement) => {
+        if (!target.checkVisibility({ visibilityProperty: true })) return undefined;
+        const r = target.getBoundingClientRect();
+        return r.width >= 1 && r.height >= 1 ? r : undefined;
+      };
+      const r = box(el);
+      if (r) {
+        const x = r.left + r.width / 2,
+          y = r.top + r.height / 2;
+        const hit = (el.getRootNode() as Document | ShadowRoot).elementFromPoint(x, y);
+        for (let n: Node | null = hit; n; n = n.parentNode ?? (n as ShadowRoot).host)
+          if (n === el) return null;
+      }
+      return Array.from(el.labels ?? []).find((label) => box(label)) ?? null;
+    };
+    return this.withObject(async (objectId, objectGroup) => {
+      const result = await this.send(this.session, 'Runtime.callFunctionOn', {
+        objectId,
+        functionDeclaration: `function(){return (${pick.toString()})(this)}`,
+        objectGroup,
+      });
+      checkException(result);
+      if (!result.result.objectId) return undefined;
+      const { node } = await this.send(this.session, 'DOM.describeNode', {
+        objectId: result.result.objectId,
+      });
+      return new Element(this.frame, node.backendNodeId, this.generation, this.session);
+    });
   }
   async screenshot(
     options: {
@@ -564,12 +627,17 @@ export class Element {
       options.signal?.throwIfAborted();
     });
   }
-  /** Types at the current caret/selection; unlike fill(), never selects all. */
-  async type(text: string | string[], options: InputOptions = {}): Promise<InputReport> {
-    return this.input('type', options, async () => {
-      options.signal?.throwIfAborted();
+  /**
+   * Types at the current caret/selection one grapheme at a time. With replace: true it first
+   * selects the whole value, as fill() does, so the typed text replaces it; an empty text then
+   * deletes the value with Backspace.
+   */
+  async type(text: string | string[], options: TypeOptions = {}): Promise<InputReport> {
+    const { replace, ...input } = options;
+    return this.input('type', input, async () => {
+      input.signal?.throwIfAborted();
       this.assertValid();
-      await this.evaluate((el) => {
+      const selected = await this.evaluate((el, replace) => {
         if (
           el.matches(':disabled') ||
           (el as HTMLInputElement).readOnly ||
@@ -579,9 +647,20 @@ export class Element {
         )
           throw new Error('type() requires an enabled editable element');
         el.focus();
-      });
-      return this.frame.tab.keyboard.type(text, {
-        ...options,
+        if (!replace) return false;
+        if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+          el.select();
+          return el.value !== '';
+        }
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        const sel = getSelection()!;
+        sel.removeAllRanges();
+        sel.addRange(range);
+        return !range.collapsed;
+      }, replace === true);
+      const guarded = {
+        ...input,
         guard: async () => {
           this.assertValid();
           const focused = await this.evaluate(
@@ -590,7 +669,10 @@ export class Element {
           if (!focused)
             throw new ActionabilityError('Typing target lost focus; no further text inserted');
         },
-      });
+      };
+      if (selected && (typeof text === 'string' ? text : text.join('')) === '')
+        await this.frame.tab.keyboard.press('Backspace', guarded);
+      return this.frame.tab.keyboard.type(text, guarded);
     });
   }
   async select(values: string | string[]): Promise<string[]> {

@@ -15,6 +15,8 @@ import { NavigationWatcher, type NavigationOptions } from './navigation.ts';
 import { Network } from './network.ts';
 import { Keyboard, Mouse } from '../input/input.ts';
 import { InputBehavior, type InputPolicy } from '../input/behavior.ts';
+import type { FetchOptions, FetchResponse } from './fetch.ts';
+import { Locator } from '../dom/locator.ts';
 import { StaleElementError } from '../errors.ts';
 import type { Selector, QueryOptions } from '../dom/query.ts';
 import type { Element } from '../dom/element.ts';
@@ -115,6 +117,8 @@ export class Tab {
       },
     );
     this.inputBehavior.coordinator = this.browser.input;
+    const policy = context.defaultInputPolicy ?? browser.defaultInputPolicy;
+    if (policy) this.inputBehavior.configure(policy);
     this.mouse = new Mouse(session, this.inputBehavior);
     this.keyboard = new Keyboard(session, this.inputBehavior, browser.mac);
   }
@@ -287,6 +291,14 @@ export class Tab {
   }
   waitForSelector(selector: Selector, options?: QueryOptions & WaitOptions): Promise<Element> {
     return this.mainFrame.waitForSelector(selector, options);
+  }
+  /** A query in the current main document that runs again before each action; see Locator. */
+  locator(selector: Selector, options: Locator['options'] = {}): Locator {
+    return new Locator(() => this.mainFrame, selector, options);
+  }
+  /** fetch() in the main frame's isolated world; see Frame.fetch(). */
+  fetch<T = unknown>(url: string, options: FetchOptions = {}): Promise<FetchResponse<T>> {
+    return this.mainFrame.fetch<T>(url, options);
   }
   waitForFunction<T, A = unknown>(
     fn: string | ((arg: EvaluationInput<A>) => T | Promise<T>),

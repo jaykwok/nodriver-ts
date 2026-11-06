@@ -5,7 +5,9 @@ import { EvaluationError, StaleElementError, DisconnectedError } from '../errors
 import { bounded, budget, EventHub, poll, type WaitOptions } from '../utils.ts';
 import { query, type Selector, type QueryOptions } from '../dom/query.ts';
 import type { Element } from '../dom/element.ts';
+import { Locator } from '../dom/locator.ts';
 import type { Tab } from './tab.ts';
+import { frameFetch, type FetchOptions, type FetchResponse } from './fetch.ts';
 import { isContextGone, resolveMainContext } from './execution-context.ts';
 import {
   inspectEnvironment,
@@ -274,6 +276,19 @@ export class Frame {
     options: EvaluateOptions = {},
   ): Promise<JSHandle<T>> {
     return new JSHandle(this, await this.execute(fn, arg, options, true));
+  }
+  /**
+   * Runs fetch() in this frame's isolated world, so the request uses the page's cookies, origin,
+   * proxy and network stack, and page scripts cannot see or replace it. Any status resolves; the
+   * body is read up to maxBytes. On timeout (30 s by default) or abort the page request is
+   * aborted too, and FetchCancelledError.aborted reports whether that was confirmed.
+   */
+  fetch<T = unknown>(url: string, options: FetchOptions = {}): Promise<FetchResponse<T>> {
+    return frameFetch<T>(this, url, options);
+  }
+  /** A query that runs again before each action; see Locator. */
+  locator(selector: Selector, options: Locator['options'] = {}): Locator {
+    return new Locator(() => this, selector, options);
   }
   async queryAll(selector: Selector, options: QueryOptions = {}): Promise<Element[]> {
     return query(this, selector, options);
