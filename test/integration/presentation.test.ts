@@ -20,7 +20,21 @@ const pageUrl =
 async function page(browser: Browser) {
   const { targetId } = await browser.cdp.send('Target.createTarget', { url: pageUrl });
   const session = await browser.attachSession(targetId);
-  await session.sendWith('Page.getFrameTree', { timeout: 5000 });
+  // A target and its frame tree can exist before the first document is ready for screencast.
+  await poll(
+    async () => {
+      const { frameTree } = await session.sendWith('Page.getFrameTree', { timeout: 5000 });
+      if (frameTree.frame.url !== pageUrl) return undefined;
+      const { result } = await session.sendWith(
+        'Runtime.evaluate',
+        { timeout: 5000 },
+        { expression: 'document.readyState === "complete"', returnByValue: true },
+      );
+      return result.value === true || undefined;
+    },
+    { timeout: 5000 },
+    'presentation fixture document',
+  );
   return { targetId, session };
 }
 

@@ -58,7 +58,7 @@ const popup = await page.waitForPopup(); // human
 
 点击先把元素滚动到视口内，检查其可见、启用且未被遮挡，并间隔 32 ms 两次取点，确认位置稳定。轨迹结束后会再次检查目标坐标和父 frame 的命中测试。位置改变或目标被遮挡时拒绝按下，绝不自动重新定位或重放点击。
 
-`setChecked(checked)` 是一个完整的输入动作：超时、取消信号和 `guard` 覆盖读取状态、点击，以及最多 1 s 的等待目标状态。它点击 checkbox 或 radio 本身；当点击控件中心无法命中控件时（例如原生控件隐藏在带样式的 label 之后），改为点击控件的第一个已渲染的 `<label>`。返回 `{ changed, clicked }`，其中 `clicked` 为 `'control'` 或 `'label'`。radio 无法通过点击取消选中，因此对已选中的 radio 调用 `setChecked(false)` 会在发出任何输入前被拒绝。点击后未达到目标状态时报告错误，不会重复点击。普通 `click()` 不会改为点击其他元素。
+`setChecked(checked)` 是一个完整的输入动作：超时、取消信号和 `guard` 覆盖读取状态、点击，以及最多 1 s 的等待目标状态。它点击 checkbox 或 radio 本身；当点击控件中心无法命中控件时（例如原生控件隐藏在带样式的 label 之后），改为点击控件的第一个已渲染的 `<label>`。返回 `{ changed, clicked }`，其中 `clicked` 为 `'control'` 或 `'label'`。radio 无法通过点击取消选中，因此对已选中的 radio 调用 `setChecked(false)` 会在发出任何输入前被拒绝；`setChecked(true)` 可以选中未选中的 radio。被禁用的控件（包括位于被禁用的 `<fieldset>` 内的控件）会在同一期限内等待其变为可用；控件被禁用期间，既不点击控件本身，也不点击它的 label。点击后未达到目标状态时报告错误，不会重复点击。普通 `click()` 不会改为点击其他元素。
 
 鼠标按钮按下期间（包括按住按钮移动时），指针压力为 0.5。human 模式下，首个指针位置在视口 15–85% 范围内随机。在 OOPIF 内悬停时会确认事件确实已投递；只有指针已停在同一坐标时，才额外发送一次 0.25px 的探测移动，该探测本身也会产生可观察的事件。
 
@@ -68,7 +68,7 @@ Tab 输入、独立构造的 `new Mouse(session)` / `new Keyboard(session)` 和�
 
 `InputOptions.timeout` 是输入阶段的总预算，默认 10000 ms，从调用动作时开始计算，包含排队和准备时间；元素的 `click`、`hover`、`fill`、`type`、`setChecked` 也把前置准备计入其中。每条输入命令通过 `sendWith()` 接收剩余时间和合并后的取消信号。作用域内的子操作可以缩短预算、增加取消信号或 `guard`，但不能延长作用域的期限，也不能替换原 `guard`。
 
-取消和到期会立即以 `InputActionError` 拒绝，并保留 cause。`error.report` 记录动作停止时的状态；`error.cleanup` 在清理结束后解析为 `{ status, report }`，status 为 `completed`、`failed` 或 `disconnected`。报告包含 `phase`（`queued`、`running`、`cleaning`、`done`）、`cleanup`、已确认的事件数与片段数、`dispatched`（已发出的、可能改变页面的输入命令数：按下、释放、按键、文本和 composition；指针移动和滚轮不计入）、种子、动作开始时的 `randomState`、最多 2000 项 `trace` 以及清理错误，不保存输入文本。调用方已停止等待的命令，仍可通过清理结果和连接生命周期观察到。
+取消和到期会立即以 `InputActionError` 拒绝，并保留 cause。`error.report` 记录动作停止时的状态；`error.cleanup` 在清理结束后解析为 `{ status, report }`，status 为 `completed`、`failed` 或 `disconnected`。报告包含 `phase`（`queued`、`running`、`cleaning`、`done`）、`cleanup`、已确认的事件数与片段数、`dispatched`（已发出的、可能改变页面的输入命令数：按下、释放、按键、文本和 composition，包括清理时发出的释放；指针移动和滚轮不计入）、种子、动作开始时的 `randomState`、最多 2000 项 `trace` 以及清理错误，不保存输入文本。调用方已停止等待的命令，仍可通过清理结果和连接生命周期观察到。
 
 `cleanupTimeout` 默认 5000 ms，独立于输入超时时间和已中止的取消信号，限定释放资源和排空迟到响应的总时间。下一个托管输入会等到清理完成；清理失败后，后续托管输入会被拒绝，其 cause 为 `InputBlockedError`。输入动作保留原命令结果，从不重发命令。清理只等待该动作自己的迟到响应：它的输入命令、元素准备命令和回调中在任意连接上发出的原始命令（包括调用方已停止等待的命令），以及该动作的附加操作迟到返回时库为其发送的分离命令。其他待响应命令（例如另一个标签页的求值）既不会延迟清理，也不会使其失败。
 

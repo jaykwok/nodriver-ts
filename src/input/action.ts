@@ -261,6 +261,7 @@ export class InputAction {
     ...params: Params<M>
   ): Promise<Result<M>> {
     this.use(session);
+    if (changesPage(method, params[0])) this.report.dispatched++;
     const acknowledged = this.behavior.coordinator?.trackCommand(session, method, params[0]);
     const result = await this.withinCleanup((options) =>
       session.sendWith(method, this.ledger(options), ...params),

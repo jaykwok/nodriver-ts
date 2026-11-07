@@ -67,4 +67,15 @@ test('tab.fetch runs in the page with its cookies and aborts the page request on
   const error = await stopped;
   assert.ok(error instanceof FetchCancelledError && error.aborted);
   assert.match(String(error.cause), /stop/);
+
+  // An abort reason that is not an Error stops the page request too.
+  const reasoned = new AbortController();
+  const dropped = tab.fetch('/slow', { signal: reasoned.signal }).catch((error: unknown) => error);
+  setTimeout(() => reasoned.abort('stop'), 200);
+  const dropError = await dropped;
+  assert.ok(dropError instanceof FetchCancelledError && dropError.aborted);
+  assert.equal(
+    await tab.evaluate('globalThis.__nodriverFetches?.size ?? 0', undefined, { world: 'isolated' }),
+    0,
+  );
 });

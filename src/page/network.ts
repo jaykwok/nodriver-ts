@@ -255,15 +255,30 @@ export class Network {
       throw error;
     }
   }
-  async route(
+  route(
     pattern: RegExp,
     handler: (route: Route) => Promise<void> | void,
+  ): Promise<() => Promise<void>> {
+    return this.addRoute(pattern, handler, false);
+  }
+  /** @internal Like route(), but ahead of the caller's routes, so it sees every request first. */
+  routeFirst(
+    pattern: RegExp,
+    handler: (route: Route) => Promise<void> | void,
+  ): Promise<() => Promise<void>> {
+    return this.addRoute(pattern, handler, true);
+  }
+  private async addRoute(
+    pattern: RegExp,
+    handler: (route: Route) => Promise<void> | void,
+    first: boolean,
   ): Promise<() => Promise<void>> {
     const item = { pattern: matcher(pattern), handler };
     const remove = () => {
       this.routes = this.routes.filter((r) => r !== item);
     };
-    this.routes.push(item);
+    if (first) this.routes.unshift(item);
+    else this.routes.push(item);
     await this.applyFetch(remove);
     return async () => {
       remove();

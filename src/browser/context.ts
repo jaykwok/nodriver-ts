@@ -26,13 +26,16 @@ export type SiteDataType =
 export interface ClearSiteDataOptions {
   /** Hosts whose data is cleared together with their subdomains, such as `example.com`. */
   domains?: string[];
-  /** Exact HTTP(S) origins, for storage of origins this context has not opened in this session. */
+  /** Exact HTTP(S) origins: their pages and storage, and the cookies of their host. */
   origins?: string[];
   /** Defaults to every type. */
   types?: SiteDataType[];
   /**
-   * Tabs with a matching frame could write the data back. "fail" (default) refuses before
-   * clearing anything, "close" closes them and "blank" navigates them to about:blank.
+   * Tabs that show a matching origin could write its data back, and tabs that have shown one
+   * keep its sessionStorage. "fail" (default) refuses before clearing anything, "close" closes
+   * them, and "blank" clears their sessionStorage of matching origins and leaves them on
+   * about:blank. Matching pages this client has not attached can only be closed. The call covers
+   * the pages open when it starts, attached or not, and not pages that open during it.
    */
   openTabs?: 'fail' | 'close' | 'blank';
 }
@@ -41,7 +44,7 @@ export interface ClearSiteDataResult {
   cookies: Array<Pick<Protocol.Network.Cookie, 'name' | 'domain' | 'path' | 'partitionKey'>>;
   /** Origins whose storage was cleared. */
   origins: string[];
-  /** IDs of the matching tabs that were closed or blanked. */
+  /** Target IDs of the tabs and pages that were closed or blanked. */
   tabs: string[];
 }
 const STORAGE_TYPES: Partial<Record<SiteDataType, string>> = {
@@ -156,29 +159,72 @@ export class BrowserContext {
     if (!list.length) return;
     const tab = await this.newTab();
     try {
-      // A registered service worker would otherwise answer the navigation with site code.
-      await tab.cdp.send('Network.setBypassServiceWorker', { bypass: true });
-      let target = '';
-      await tab.network.route(/.*/, (route) =>
-        route.request.request.url === target && route.request.resourceType === 'Document'
-          ? route.fulfill({ headers: { 'content-type': 'text/html' }, body: '<!doctype html>' })
-          : route.abort('BlockedByClient'),
-      );
-      for (const origin of list) {
-        target = `${origin}/`;
-        await tab.goto(target);
-        await fn(tab.mainFrame, origin);
-      }
+      await this.visitOrigins(tab, list, fn);
     } finally {
       await tab.close();
     }
   }
   /**
+   * Navigates `tab` to each origin on an empty page that is fulfilled ahead of the tab's own
+   * routes, so the site is never contacted, cannot redirect and runs no script, then to
+   * about:blank.
+   */
+  private async visitOrigins(
+    tab: Tab,
+    origins: string[],
+    fn: (frame: Frame, origin: string) => Promise<void>,
+  ): Promise<void> {
+    if (!origins.length) return;
+    // A registered service worker would otherwise answer the navigation with site code.
+    await tab.cdp.send('Network.setBypassServiceWorker', { bypass: true });
+    let target = '';
+    let unroute: (() => Promise<void>) | undefined;
+    try {
+      unroute = await tab.network.routeFirst(/.*/, (route) =>
+        route.request.request.url === target && route.request.resourceType === 'Document'
+          ? route.fulfill({ headers: { 'content-type': 'text/html' }, body: '<!doctype html>' })
+          : route.abort('BlockedByClient'),
+      );
+      for (const origin of origins) {
+        target = `${origin}/`;
+        await tab.goto(target);
+        await fn(tab.mainFrame, origin);
+      }
+      target = '';
+      await tab.goto('about:blank');
+    } finally {
+      if (!tab.closed)
+        try {
+          await unroute?.();
+        } finally {
+          await tab.cdp.send('Network.setBypassServiceWorker', { bypass: false });
+        }
+    }
+  }
+  /** The page targets among `pages` that belong to this context. */
+  private async inContext(
+    pages: Protocol.Target.TargetInfo[],
+  ): Promise<Protocol.Target.TargetInfo[]> {
+    if (!pages.length) return [];
+    if (this.id) return pages.filter((info) => info.browserContextId === this.id);
+    const { browserContextIds, defaultBrowserContextId } = await this.browser.cdp.send(
+      'Target.getBrowserContexts',
+    );
+    return pages.filter((info) =>
+      defaultBrowserContextId
+        ? !info.browserContextId || info.browserContextId === defaultBrowserContextId
+        : !browserContextIds.includes(info.browserContextId ?? ''),
+    );
+  }
+  /**
    * Deletes the cookies and storage of some sites, keeping everything else in the context.
-   * Cookies are matched by domain: those of a listed domain or origin host and its subdomains,
-   * and cookies partitioned under such a site. Storage is cleared for the listed origins and for
-   * every origin under a listed domain that a frame of this context has committed, or that is
-   * `http(s)://<domain>`. Storage commands go to a page session, which Chrome requires.
+   * Pages and storage match a listed origin exactly, or any origin under a listed domain.
+   * Cookies ignore scheme and port: those of a listed origin's host, of a listed domain and its
+   * subdomains, and cookies partitioned under such a site are deleted. Storage is cleared for the
+   * listed origins, for `http(s)://<domain>`, and for every origin under a listed domain that this
+   * context is known to have used. sessionStorage belongs to a tab: it is cleared in the tabs
+   * that hold it, which openTabs must allow. Storage commands go to a page session, which Chrome
+   * requires.
    */
   async clearSiteData(options: ClearSiteDataOptions): Promise<ClearSiteDataResult> {
     if (this.closed) throw new NodriverError('BrowserContext is closed');
@@ -206,46 +252,126 @@ export class BrowserContext {
     if (!['fail', 'close', 'blank'].includes(openTabs))
       throw new TypeError('openTabs must be fail, close or blank');
 
-    const under = (host: string, list: string[]) =>
-      list.some((domain) => host === domain || host.endsWith(`.${domain}`));
-    const hosts = [...domains, ...[...origins].map((origin) => new URL(origin).hostname)];
-    const matches = (host: string) => under(host, hosts);
+    const under = (host: string) =>
+      domains.some((domain) => host === domain || host.endsWith(`.${domain}`));
     const originMatches = (url: string) => {
       const origin = httpOrigin(url);
-      return origin !== undefined && matches(new URL(origin).hostname);
+      return origin !== undefined && (origins.has(origin) || under(new URL(origin).hostname));
     };
+    const originHosts = new Set([...origins].map((origin) => new URL(origin).hostname));
+    const hostMatches = (host: string) => originHosts.has(host) || under(host);
     const cookieMatches = (cookie: Protocol.Network.Cookie) => {
-      if (matches(cookie.domain.replace(/^\./, ''))) return true;
+      if (hostMatches(cookie.domain.replace(/^\./, ''))) return true;
       const key = cookie.partitionKey as Protocol.Network.CookiePartitionKey | string | undefined;
       const site = typeof key === 'string' ? key : key?.topLevelSite;
-      return !!site && URL.canParse(site) && matches(new URL(site).hostname);
+      return !!site && URL.canParse(site) && hostMatches(new URL(site).hostname);
     };
 
-    const tabs = this.tabs.filter((tab) => tab.frames.some((frame) => originMatches(frame.url)));
-    if (tabs.length && openTabs === 'fail')
-      throw new NodriverError(
-        `Open tabs show these sites and could write their data back: ${tabs.map((tab) => tab.url).join(', ')}; pass openTabs: 'close' or 'blank'`,
-      );
-    for (const tab of tabs) {
-      if (openTabs === 'close') {
-        await tab.close();
+    // The call covers the pages of this context open when it starts, attached or not, fixed here
+    // before the first wait. Pages that open during the call are left alone.
+    const live = new Set(this.browser.tabs.map((tab) => tab.id));
+    const pages = new Set(this.tabs.map((tab) => tab.id));
+    const unattached = this.browser.pageTargets.filter((info) => !live.has(info.targetId));
+    const known = new Set(this.usedOrigins);
+    for (const info of await this.inContext(unattached)) {
+      pages.add(info.targetId);
+      const origin = httpOrigin(info.url);
+      if (origin) known.add(origin);
+    }
+    // Collect every origin before any page changes: closing or blanking a tab loses its frames.
+    // A page still being attached is waited for, and one attached meanwhile is read as a tab.
+    const held = new Map<string, string[]>();
+    // Reattaching keeps the target ID but replaces the Tab and its session.
+    const collected = new Set<Tab>();
+    for (;;) {
+      const attaching = [...pages].flatMap((id) => this.browser.attachInProgress(id) ?? []);
+      if (attaching.length) {
+        await Promise.allSettled(attaching);
         continue;
       }
-      if (types.has('sessionStorage'))
+      const unread = this.tabs.filter((tab) => pages.has(tab.id) && !collected.has(tab));
+      if (!unread.length) break;
+      for (const tab of unread) {
+        const committed = new Set(tab.origins);
+        // History also names origins the tab committed before this client attached it.
+        const history = await tab.cdp.send('Page.getNavigationHistory').catch(() => undefined);
+        for (const entry of history?.entries ?? []) {
+          const origin = httpOrigin(entry.url);
+          if (origin) committed.add(origin);
+        }
+        const matching = new Set(held.get(tab.id));
+        for (const origin of committed) {
+          known.add(origin);
+          if (originMatches(origin)) matching.add(origin);
+        }
+        held.set(tab.id, [...matching]);
+        collected.add(tab);
+      }
+    }
+
+    // Each page is handled by whether this client has it attached now, with no wait since the
+    // last check above.
+    const session = types.has('sessionStorage');
+    const holds = (id: string) => session && !!held.get(id)?.length;
+    const tabs = this.tabs.filter(
+      (tab) =>
+        pages.has(tab.id) &&
+        (holds(tab.id) || tab.frames.some((frame) => originMatches(frame.url))),
+    );
+    const attached = new Set(this.tabs.map((tab) => tab.id));
+    // Pages this client has not attached, or no longer has, are known by their target info.
+    const foreign = [...pages].flatMap((id) => {
+      const info = this.browser.targetInfo.get(id);
+      return info && !attached.has(id) && (holds(id) || originMatches(info.url)) ? [info] : [];
+    });
+    for (const info of foreign) {
+      const origin = httpOrigin(info.url);
+      if (origin) known.add(origin);
+    }
+    if (openTabs === 'fail' && (tabs.length || foreign.length))
+      throw new NodriverError(
+        `Tabs show these sites or hold their sessionStorage, and could keep or write their data back: ${[...tabs.map((tab) => tab.url), ...foreign.map((info) => info.url)].join(', ')}; pass openTabs: 'close' or 'blank'`,
+      );
+    if (openTabs === 'blank' && foreign.length)
+      throw new NodriverError(
+        `Pages this client has not attached show these sites or hold their sessionStorage: ${foreign.map((info) => info.url).join(', ')}; attach them with attachTarget() or pass openTabs: 'close'`,
+      );
+    // By target ID, as a page attached or detached meanwhile is closed differently. A page that
+    // closed by itself needs no closing.
+    const close = async (targetId: string) => {
+      try {
+        const tab = this.tabs.find((t) => t.id === targetId);
+        if (tab) await tab.close();
+        else await this.browser.cdp.send('Target.closeTarget', { targetId });
+      } catch (error) {
+        if (this.browser.targetInfo.has(targetId)) throw error;
+      }
+    };
+    for (const info of foreign) await close(info.targetId);
+    for (const tab of tabs) {
+      if (openTabs === 'close') {
+        // Closing a tab also discards all of its sessionStorage.
+        await close(tab.id);
+        continue;
+      }
+      if (session)
         for (const frame of tab.frames) {
           const origin = httpOrigin(frame.url);
           if (origin && originMatches(origin)) await frame.setStorage({}, 'session', true, origin);
         }
       await tab.goto('about:blank');
+      // A tab keeps an origin's sessionStorage after leaving it, and shows it again on return.
+      if (session)
+        await this.visitOrigins(tab, held.get(tab.id) ?? [], (frame, origin) =>
+          frame.setStorage({}, 'session', true, origin),
+        );
     }
 
     const storageTypes = [...types].flatMap((type) => STORAGE_TYPES[type] ?? []).join(',');
     const cleared = new Set(origins);
     if (storageTypes) {
       for (const domain of domains) cleared.add(`https://${domain}`).add(`http://${domain}`);
-      for (const tab of this.tabs) for (const frame of tab.frames) this.noteOrigin(frame.url);
-      for (const origin of this.usedOrigins)
-        if (under(new URL(origin).hostname, domains)) cleared.add(origin);
+      for (const origin of known) if (under(new URL(origin).hostname)) cleared.add(origin);
     }
     const deleted: ClearSiteDataResult['cookies'] = [];
     await this.withPageSession(async (session) => {
@@ -269,7 +395,7 @@ export class BrowserContext {
     return {
       cookies: deleted,
       origins: storageTypes ? [...cleared] : [],
-      tabs: tabs.map((tab) => tab.id),
+      tabs: [...foreign.map((info) => info.targetId), ...tabs.map((tab) => tab.id)],
     };
   }
   /** Runs `fn` on the session of an open tab of this context, or of an owned temporary tab. */

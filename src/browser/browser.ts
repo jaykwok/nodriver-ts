@@ -358,7 +358,10 @@ export class Browser {
   get pageTargets(): Protocol.Target.TargetInfo[] {
     return [...this.targetInfo.values()].filter((t) => t.type === 'page');
   }
-  /** Explicitly adopts an existing page target, e.g. one listed by pageTargets. */
+  /**
+   * Explicitly adopts an existing page target, e.g. one listed by pageTargets. If its previous
+   * session detached, returns a new initialized Tab; the old Tab remains closed.
+   */
   async attachTarget(targetId: string): Promise<Tab> {
     this.requireHighLevel();
     const info =
@@ -366,6 +369,10 @@ export class Browser {
       (await this.cdp.send('Target.getTargetInfo', { targetId })).targetInfo;
     if (info.type !== 'page') throw new TypeError(`Target ${targetId} is not a page`);
     return this.attach(info);
+  }
+  /** @internal The attach of a page target still in progress, until its tab is initialized. */
+  attachInProgress(targetId: string): Promise<Tab> | undefined {
+    return this.attaching.get(targetId);
   }
   /** Attach one independent raw session, without enabling domains or configuring the page. */
   attachSession(targetId: string, options: WaitOptions = {}): Promise<TargetSession> {
@@ -384,7 +391,11 @@ export class Browser {
     const existing = this.attaching.get(info.targetId);
     if (existing) return existing;
     const ready = this.tabMap.get(info.targetId);
-    if (ready) return Promise.resolve(ready);
+    if (ready && !ready.closed) return Promise.resolve(ready);
+    if (ready) {
+      ready.dispose();
+      this.tabMap.delete(info.targetId);
+    }
     const task = (async () => {
       const { sessionId } = await this.cdp.sendWith('Target.attachToTarget', step(), {
         targetId: info.targetId,

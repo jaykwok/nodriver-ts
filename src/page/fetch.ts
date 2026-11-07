@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { Frame } from './frames.ts';
-import { FetchCancelledError, TimeoutError } from '../errors.ts';
+import { FetchCancelledError } from '../errors.ts';
 import { bounded, type WaitOptions } from '../utils.ts';
 export interface FetchOptions extends WaitOptions {
   method?: string;
@@ -118,12 +118,17 @@ export async function frameFetch<T>(
     { id, url, init, responseType, maxBytes },
     { world: 'isolated', timeout: timeout + 5_000 },
   );
+  // Registered before bounded() subscribes, so it is set before the caller sees the outcome.
+  let finished = false;
+  void request.then(
+    () => (finished = true),
+    () => (finished = true),
+  );
   try {
     return (await bounded(request, { timeout, signal }, 'Page fetch')) as FetchResponse<T>;
   } catch (error) {
-    const cancelled = error instanceof TimeoutError || (signal?.aborted && error === signal.reason);
-    if (!cancelled) throw error;
-    void request.catch(() => {});
+    // Otherwise the caller stopped waiting: a timeout, or an abort with any reason.
+    if (finished) throw error;
     let aborted: boolean;
     try {
       aborted = await frame.evaluate(

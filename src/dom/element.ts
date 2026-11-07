@@ -171,14 +171,21 @@ export class Element {
       return valueOf(result.result) as T;
     });
   }
-  async text(): Promise<string> {
-    return this.evaluate((el) => el.textContent ?? '');
+  /** Runs a read under one timeout and signal shared by all of its CDP requests. */
+  private read<T>(label: string, options: WaitOptions, fn: () => Promise<T>): Promise<T> {
+    if (options.timeout === undefined && !options.signal) return fn();
+    return operation.run(budget(options, label), fn);
   }
-  async html(): Promise<string> {
-    return this.evaluate((el) => el.outerHTML);
+  async text(options: WaitOptions = {}): Promise<string> {
+    return this.read('text', options, () => this.evaluate((el) => el.textContent ?? ''));
   }
-  async attribute(name: string): Promise<string | null> {
-    return this.evaluate((el, key) => el.getAttribute(key), name);
+  async html(options: WaitOptions = {}): Promise<string> {
+    return this.read('html', options, () => this.evaluate((el) => el.outerHTML));
+  }
+  async attribute(name: string, options: WaitOptions = {}): Promise<string | null> {
+    return this.read('attribute', options, () =>
+      this.evaluate((el, key) => el.getAttribute(key), name),
+    );
   }
   async describe(): Promise<Protocol.DOM.Node> {
     this.assertValid();
@@ -198,26 +205,53 @@ export class Element {
     return (await this.queryAll(selector, { ...options, limit: 1 }))[0];
   }
   /**
-   * One input action: the timeout, signal and guard cover reading the state, the click and
-   * waiting up to 1 s for the requested state. Clicks the control, or its first rendered label
-   * when the control cannot be hit (a native control hidden behind a styled label). The click is
-   * never repeated.
+   * One input action: the timeout, signal and guard cover reading the state, waiting while the
+   * control is disabled, the click and waiting up to 1 s for the requested state. Clicks the
+   * control, or its first rendered label when the control cannot be hit (a native control hidden
+   * behind a styled label). The click is never repeated. A checked radio cannot be unchecked.
    */
   async setChecked(checked: boolean, options: InputOptions = {}): Promise<SetCheckedResult> {
     return this.input('setChecked', options, async () => {
-      const state = await this.evaluate((el) => {
-        if (!(el instanceof HTMLInputElement) || !['checkbox', 'radio'].includes(el.type))
-          throw new Error('setChecked requires checkbox or radio');
-        return { checked: el.checked, radio: el.type === 'radio', rendered: el.checkVisibility() };
-      });
+      const read = () =>
+        this.evaluate((el) => {
+          if (!(el instanceof HTMLInputElement) || !['checkbox', 'radio'].includes(el.type))
+            throw new Error('setChecked requires checkbox or radio');
+          return {
+            checked: el.checked,
+            radio: el.type === 'radio',
+            rendered: el.checkVisibility(),
+            // Includes a control inside a disabled fieldset.
+            disabled: el.matches(':disabled'),
+          };
+        });
+      let state = await read();
       if (state.checked === checked) return { changed: false };
-      if (state.radio)
+      if (state.radio && !checked)
         throw new ActionabilityError(
           'A radio cannot be unchecked by clicking it; check another radio of its group',
         );
+      // A label would still run its own click handlers for a disabled control.
+      if (state.disabled)
+        state = await poll(
+          async () => {
+            const next = await read();
+            return next.disabled && next.checked !== checked ? undefined : next;
+          },
+          this.step(),
+          'enabled control',
+        );
+      if (state.checked === checked) return { changed: false };
       if (state.rendered) await this.scrollIntoView({ signal: options.signal });
       const label = await this.labelToClick();
-      await (label ?? this).click({ signal: options.signal });
+      if (label)
+        // The control can become disabled while the pointer moves; its label would still act.
+        await label.clickElement({ signal: options.signal }, async () => {
+          if ((await read()).disabled)
+            throw new ActionabilityError(
+              'Control became disabled during pointer movement; click not dispatched',
+            );
+        });
+      else await this.click({ signal: options.signal });
       const settled = performance.now() + 1000;
       while ((await this.evaluate((el) => (el as HTMLInputElement).checked)) !== checked) {
         if (performance.now() >= settled)
@@ -520,6 +554,13 @@ export class Element {
   async click(
     options: InputOptions & { button?: Protocol.Input.MouseButton; clickCount?: number } = {},
   ): Promise<void> {
+    await this.clickElement(options);
+  }
+  /** click(), with `check` run again right before the press. */
+  private async clickElement(
+    options: InputOptions & { button?: Protocol.Input.MouseButton; clickCount?: number },
+    check?: () => Promise<void>,
+  ): Promise<void> {
     await this.input('click', options, async () => {
       this.assertValid();
       await this.scrollIntoView(options);
@@ -558,6 +599,7 @@ export class Element {
                 ? 'Pointer is obstructed; click not dispatched'
                 : 'Frame pointer hit was lost; click not dispatched',
             );
+          await check?.();
         },
       });
     });

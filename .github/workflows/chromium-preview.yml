@@ -20,6 +20,7 @@ on:
       - 'test/integration/runtime.test.ts'
       - 'test/integration/environment.test.ts'
       - 'test/integration/churn.test.ts'
+      - 'test/integration/site-data.test.ts'
       - 'test/fixtures/detection.ts'
       - 'test/fixtures/expect.ts'
       - 'test/fixtures/serve.ts'
@@ -79,6 +80,9 @@ jobs:
       - name: Navigation, OOPIF and context invalidation (Pipe and WebSocket)
         if: success() || failure()
         run: npm run test:compat 2>&1 | tee test-results/compat.log
+      - name: Site data clearing (page session commands)
+        if: success() || failure()
+        run: node --test --test-concurrency=1 --test-timeout=60000 test/integration/site-data.test.ts 2>&1 | tee test-results/site-data.log
       - name: Differential invariants and Worker consistency
         if: success() || failure()
         env:

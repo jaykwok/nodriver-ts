@@ -82,7 +82,7 @@ test('a held Shift does not change characters typed without Shift', async () => 
   assert.equal(await field.evaluate((el) => (el as HTMLInputElement).value), 'aB1!');
 });
 
-test('setChecked clicks the label of a hidden control, refuses radio unchecking and checks the guard', async () => {
+test('setChecked checks radios and hidden controls by label, never through a disabled one, and checks the guard', async () => {
   await using browser = await Browser.launch({ headless: true });
   const tab = await browser.newTab(
     page(`<!doctype html><body style="margin:20px">
@@ -91,6 +91,9 @@ test('setChecked clicks the label of a hidden control, refuses radio unchecking 
 <input type=checkbox id=gone style="display:none"><label for=gone style="display:block;width:200px;height:30px">gone</label>
 <input type=checkbox id=covered style="width:30px;height:30px"><div style="position:relative;top:-34px;width:40px;height:40px;background:#fff"></div>
 <input type=radio name=r id=radio checked>
+<input type=radio name=r id=other>
+<label id=disabled-label style="display:block;width:200px;height:30px"><input type=checkbox id=disabled disabled style="display:none">disabled</label>
+<fieldset disabled><label id=inert-label style="display:block;width:200px;height:30px"><input type=checkbox id=inert style="display:none">fieldset</label></fieldset>
 <script>window.clicks=[];document.addEventListener('click',(e)=>clicks.push(e.target.id||e.target.tagName))</script>`),
   );
   const element = (id: string) => tab.waitForSelector('#' + id);
@@ -117,6 +120,18 @@ test('setChecked clicks the label of a hidden control, refuses radio unchecking 
   const radio = await (await element('radio')).setChecked(false).catch((error: unknown) => error);
   assert.ok(radio instanceof InputActionError);
   assert.match(String(radio.cause), /radio cannot be unchecked/);
+  assert.deepEqual(await (await element('other')).setChecked(true), {
+    changed: true,
+    clicked: 'control',
+  });
+  for (const id of ['disabled', 'inert']) {
+    const refused = await (
+      await element(id)
+    )
+      .setChecked(true, { timeout: 500 })
+      .catch((error: unknown) => error);
+    assert.ok(refused instanceof InputActionError && refused.report.dispatched === 0, id);
+  }
   const guarded = await (
     await element('plain')
   )
@@ -133,6 +148,8 @@ test('setChecked clicks the label of a hidden control, refuses radio unchecking 
   );
   const clicks = (await tab.evaluate('clicks')) as string[];
   assert.ok(!clicks.includes('covered') && !clicks.includes('radio'));
+  for (const id of ['disabled', 'inert', 'disabled-label', 'inert-label'])
+    assert.ok(!clicks.includes(id), id);
 });
 
 test('type with replace selects the value first and types over it, in both modes', async () => {

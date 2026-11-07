@@ -133,7 +133,7 @@ sequenceDiagram
   Ctx-->>App: 已删除的 Cookie、已清理的源、已处理的标签页
 ```
 
-只要还有标签页显示该站点，`clearSiteData()` 默认就会拒绝执行，因为页面可能把数据重新写回；`openTabs: 'close'` 或 `'blank'` 会先处理这些标签页。`prepareProfile` 同时支持临时 profile 和持久 profile；`updateProfileSettings()` 把设置合并进 `Local State` 和 `Preferences`，保留其他键，并回读校验。这项校验只覆盖文件本身，不能说明某个浏览器版本是否遵循该设置。
+只要还有标签页显示该站点，或在离开该站点后仍保留其 sessionStorage，`clearSiteData()` 默认就会拒绝执行，因为页面可能保留或重新写回数据；`openTabs: 'close'` 或 `'blank'` 会先处理这些标签页。源按精确值匹配，包括端口；Cookie 按主机名匹配。`prepareProfile` 同时支持临时 profile 和持久 profile；`updateProfileSettings()` 把设置合并进 `Local State` 和 `Preferences`，保留其他键，并回读校验。这项校验只覆盖文件本身，不能说明某个浏览器版本是否遵循该设置。一个持久 profile 同一时间只能供一个浏览器使用；固定 profile 对 Chrome 在 Windows 上的密码检查有哪些影响、哪些不变，见 [Profile](docs/zh-CN/api.md#profile)。
 
 ## 浏览器生命周期
 

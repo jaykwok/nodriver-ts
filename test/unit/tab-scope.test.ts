@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { ScriptedChrome } from '../../src/testing/index.ts';
 
 test('a tab scope closes a popup of its tab that is still attaching', async () => {
@@ -38,4 +39,70 @@ test('an adopted tab and its later popups belong to a context scope', async () =
   assert.deepEqual(new Set(result.closed), new Set([existing.id, popup]));
   assert.equal(other.closed, false);
   assert.throws(() => scope.adopt(other), /closed/);
+});
+
+test('closing a scope waits for a tab that was still opening and closes it', async () => {
+  await using chrome = await ScriptedChrome.start();
+  await using browser = await chrome.connect();
+  let late = '';
+  chrome.handle('Target.createTarget', async () => {
+    await sleep(20);
+    late = chrome.addPage();
+    return { targetId: late };
+  });
+  chrome.handle('Target.closeTarget', async ({ targetId }) => {
+    await sleep(150);
+    chrome.destroyTarget(targetId);
+    return { success: true };
+  });
+  const scope = browser.tabScope();
+  const opening = scope.newTab().catch((error: unknown) => error);
+  const result = await scope.close();
+  assert.deepEqual(result.closed, [late]);
+  assert.ok(!browser.pageTargets.some((info) => info.targetId === late));
+  assert.match(String(await opening), /closed while the tab was opening/);
+  assert.equal(await scope.close(), result);
+});
+
+test('a popup opened while newTab navigates belongs to the scope', async () => {
+  await using chrome = await ScriptedChrome.start();
+  await using browser = await chrome.connect();
+  const scope = browser.tabScope();
+  let popup = '';
+  chrome.handle('Page.navigate', async ({ url }, command) => {
+    const frameId = browser.tabs.find((tab) => tab.session.id === command.sessionId)!.id;
+    popup = chrome.addPage({ openerId: frameId });
+    await browser.waitForTab((tab) => tab.id === popup);
+    const loaderId = 'navigation';
+    chrome.emit(
+      'Page.frameNavigated',
+      {
+        type: 'Navigation',
+        frame: {
+          id: frameId,
+          loaderId,
+          url,
+          domainAndRegistry: '',
+          securityOrigin: 'https://app.test',
+          mimeType: 'text/html',
+          secureContextType: 'Secure',
+          crossOriginIsolatedContextType: 'NotIsolated',
+          gatedAPIFeatures: [],
+        },
+      },
+      command.sessionId,
+    );
+    chrome.emit(
+      'Page.lifecycleEvent',
+      { frameId, loaderId, name: 'load', timestamp: 1 },
+      command.sessionId,
+    );
+    return { frameId, loaderId };
+  });
+  const root = await scope.newTab('https://app.test/');
+  assert.ok(scope.tabs.some((tab) => tab.id === popup));
+  scope.keep(root);
+  const result = await scope.close();
+  assert.deepEqual(result, { closed: [popup], kept: [root.id] });
+  assert.equal(root.closed, false);
 });

@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { Browser, NodriverError } from '../../src/index.ts';
 import { serve } from '../fixtures/serve.ts';
 
-test('clearSiteData clears one site and keeps another logged in', async () => {
+test('clearSiteData clears one site and keeps another logged in', async (t) => {
   const server = await serve({
     hostname: '127.0.0.1',
     port: 0,
@@ -24,6 +24,7 @@ indexedDB.open('db').onsuccess = () => (window.ready = true);</script>`
       );
     },
   });
+  t.after(() => server.stop());
   const platform = `http://platform.localhost:${server.port}`;
   const admin = `http://admin.localhost:${server.port}`;
   await using browser = await Browser.launch({ headless: true });
@@ -80,6 +81,181 @@ indexedDB.open('db').onsuccess = () => (window.ready = true);</script>`
     await assert.rejects(context.clearSiteData({ origins: ['file:///x'] }), TypeError);
   } finally {
     await context.close();
-    await server.stop();
+  }
+});
+
+/** A page that writes localStorage and sessionStorage for its origin when asked with ?write. */
+async function storageSite(t: { after(fn: () => unknown): void }) {
+  const server = await serve({
+    hostname: '127.0.0.1',
+    port: 0,
+    fetch: (request) =>
+      new Response(
+        new URL(request.url).searchParams.has('write')
+          ? `<script>localStorage.setItem('k', '1'); sessionStorage.setItem('s', '1');</script>`
+          : '<p>plain',
+        { headers: { 'content-type': 'text/html' } },
+      ),
+  });
+  t.after(() => server.stop());
+  return `http://127.0.0.1:${server.port}`;
+}
+
+test('an exact origin leaves another port of the same host untouched', async (t) => {
+  const wanted = await storageSite(t);
+  const other = await storageSite(t);
+  await using browser = await Browser.launch({ headless: true });
+  const context = await browser.newContext();
+  try {
+    const kept = await context.newTab(other + '/?write');
+    const site = await context.newTab(wanted + '/?write');
+    const result = await context.clearSiteData({
+      origins: [wanted],
+      types: ['localStorage', 'sessionStorage'],
+      openTabs: 'blank',
+    });
+    assert.deepEqual(result.tabs, [site.id]);
+    assert.equal(kept.url, other + '/?write');
+    assert.equal(await kept.evaluate("sessionStorage.getItem('s')"), '1');
+    assert.equal(await kept.evaluate("localStorage.getItem('k')"), '1');
+    await site.goto(wanted + '/');
+    assert.equal(await site.evaluate('localStorage.length'), 0);
+    assert.equal(await site.evaluate('sessionStorage.length'), 0);
+  } finally {
+    await context.close();
+  }
+});
+
+test('sessionStorage a tab kept after navigating away is cleared by visiting the origin', async (t) => {
+  const origin = await storageSite(t);
+  await using browser = await Browser.launch({ headless: true });
+  const context = await browser.newContext();
+  try {
+    const tab = await context.newTab(origin + '/?write');
+    await tab.goto('about:blank');
+    await assert.rejects(
+      context.clearSiteData({ origins: [origin], types: ['sessionStorage'] }),
+      /sessionStorage/,
+    );
+    const result = await context.clearSiteData({
+      origins: [origin],
+      types: ['sessionStorage'],
+      openTabs: 'blank',
+    });
+    assert.deepEqual(result.tabs, [tab.id]);
+    assert.equal(tab.url, 'about:blank');
+    await tab.goto(origin + '/');
+    assert.equal(await tab.evaluate('sessionStorage.length'), 0);
+  } finally {
+    await context.close();
+  }
+});
+
+for (const transport of ['pipe', 'websocket'] as const) {
+  test(`${transport}: a detached page can be reattached before clearing its site data`, async (t) => {
+    const origin = await storageSite(t);
+    await using browser = await Browser.launch({ headless: true, transport });
+    const context = browser.defaultContext;
+    const first = await browser.newTab(origin + '/?write');
+    await browser.cdp.send('Target.detachFromTarget', { sessionId: first.session.id! });
+    assert.equal(first.closed, true);
+    assert.ok(browser.pageTargets.some((info) => info.targetId === first.id));
+    await assert.rejects(
+      context.clearSiteData({
+        origins: [origin],
+        types: ['localStorage', 'sessionStorage'],
+        openTabs: 'blank',
+      }),
+      /attachTarget/,
+    );
+
+    const adopted = await browser.attachTarget(first.id);
+    assert.equal(adopted.closed, false);
+    assert.notEqual(adopted, first);
+    assert.notEqual(adopted.session.id, first.session.id);
+    assert.deepEqual(
+      await adopted.evaluate(
+        "({ local: localStorage.getItem('k'), session: sessionStorage.getItem('s') })",
+      ),
+      { local: '1', session: '1' },
+    );
+    const result = await context.clearSiteData({
+      origins: [origin],
+      types: ['localStorage', 'sessionStorage'],
+      openTabs: 'blank',
+    });
+    assert.deepEqual(result.tabs, [adopted.id]);
+    assert.equal(adopted.url, 'about:blank');
+    await adopted.goto(origin + '/');
+    assert.equal(await adopted.evaluate('localStorage.length'), 0);
+    assert.equal(await adopted.evaluate('sessionStorage.length'), 0);
+  });
+}
+
+test('a reattach during origin collection reads sessionStorage origins from the new session', async (t) => {
+  const origin = await storageSite(t);
+  const other = await storageSite(t);
+  await using owner = await Browser.launch({ headless: true, transport: 'websocket' });
+  const page = await owner.newTab(origin + '/?write');
+  await page.goto(other + '/');
+  await using client = await Browser.connect({ endpoint: owner.endpoint! });
+  const first = client.tabs.find((tab) => tab.id === page.id)!;
+  const send = first.cdp.send;
+  let adopted!: typeof first;
+  // Delay this real command until the old session has been replaced; the page and its
+  // navigation history remain in Chrome throughout.
+  t.mock.method(first.cdp, 'send', (async (...args: Parameters<typeof send>) => {
+    if (args[0] === 'Page.getNavigationHistory') {
+      await client.cdp.send('Target.detachFromTarget', { sessionId: first.session.id! });
+      adopted = await client.attachTarget(first.id);
+    }
+    return Reflect.apply(send, first.cdp, args);
+  }) as typeof send);
+  await assert.rejects(
+    client.defaultContext.clearSiteData({ origins: [origin], types: ['sessionStorage'] }),
+    /sessionStorage/,
+  );
+  assert.equal(adopted.closed, false);
+  assert.notEqual(adopted, first);
+  const result = await client.defaultContext.clearSiteData({
+    origins: [origin],
+    types: ['sessionStorage'],
+    openTabs: 'blank',
+  });
+  assert.deepEqual(result.tabs, [page.id]);
+  await adopted.goto(origin + '/');
+  assert.equal(await adopted.evaluate('sessionStorage.length'), 0);
+});
+
+test('a connected client clears the origins of tabs it found and pages it did not attach', async (t) => {
+  const origin = await storageSite(t);
+  const site = origin.replace('127.0.0.1', 'app.localhost');
+  await using browser = await Browser.launch({ headless: true, transport: 'websocket' });
+  const owned = await browser.newTab(site + '/?write');
+  const watcher = await Browser.connect({ endpoint: browser.endpoint! });
+  try {
+    const result = await watcher.defaultContext.clearSiteData({
+      domains: ['localhost'],
+      types: ['localStorage'],
+      openTabs: 'blank',
+    });
+    assert.ok(result.origins.includes(site));
+    await owned.goto(site + '/');
+    assert.equal(await owned.evaluate('localStorage.length'), 0);
+  } finally {
+    await watcher.close();
+  }
+  await owned.goto(site + '/?write');
+  const client = await Browser.connect({ endpoint: browser.endpoint!, attach: 'created' });
+  try {
+    const open = client.pageTargets.find((info) => info.targetId === owned.id);
+    assert.ok(open);
+    await assert.rejects(
+      client.defaultContext.clearSiteData({ domains: ['localhost'], types: ['localStorage'] }),
+      NodriverError,
+    );
+    assert.equal(await owned.evaluate('localStorage.length'), 1);
+  } finally {
+    await client.close();
   }
 });

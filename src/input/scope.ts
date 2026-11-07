@@ -13,8 +13,10 @@ export interface InputScopeOptions {
   policy?: InputPolicy;
   mac?: boolean;
   /**
-   * false never sends Page.enable. Navigation then stops a run only through your signal;
-   * compositions still check focus and document before every step. Defaults to true.
+   * false never sends Page.enable. Navigation then stops a run only if the Page domain is enabled
+   * on the session by other means; otherwise the run ends at its deadline, through your signal or
+   * with the session. Compositions still check focus and document before every step. Defaults to
+   * true.
    */
   pageEvents?: boolean;
 }

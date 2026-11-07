@@ -107,6 +107,7 @@ test('BFCache restores OOPIF ownership and nested trees omitted by the parent sn
     {
       configureSession: async () => {},
       reportError: (error: unknown) => errors.push(error),
+      noteOrigin: () => {},
     } as unknown as Tab,
     session,
   );

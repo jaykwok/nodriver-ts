@@ -444,6 +444,8 @@ export class FrameManager {
     frame.url = tree.frame.url + (tree.frame.urlFragment ?? '');
     frame.name = tree.frame.name ?? '';
     frame.loaderId = tree.frame.loaderId;
+    // Documents already loaded when the tab was attached, such as those of a connected browser.
+    this.tab.noteOrigin(frame.url);
     if (session === this.session && !parent) this.mainFrame = frame;
     for (const child of tree.childFrames ?? []) this.mergeTree(child, session, tree.frame.id);
   }

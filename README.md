@@ -133,7 +133,7 @@ sequenceDiagram
   Ctx-->>App: deleted cookies, cleared origins, handled tabs
 ```
 
-`clearSiteData()` refuses by default while a tab still shows the site, because the page could write the data back; `openTabs: 'close'` or `'blank'` handles those tabs first. `prepareProfile` works with temporary and persistent profiles, and `updateProfileSettings()` merges settings into `Local State` and `Preferences`, keeping other keys, and reads them back. That check covers the files, not whether a given browser version honours a setting.
+`clearSiteData()` refuses by default while a tab still shows the site, or still holds its sessionStorage after navigating away, because the page could keep or write the data back; `openTabs: 'close'` or `'blank'` handles those tabs first. Origins match exactly, port included; cookies match by host. `prepareProfile` works with temporary and persistent profiles, and `updateProfileSettings()` merges settings into `Local State` and `Preferences`, keeping other keys, and reads them back. That check covers the files, not whether a given browser version honours a setting. A persistent profile serves one browser at a time; see [Profiles](docs/api.md#profiles) for what a fixed profile does and does not change about Chrome's Windows password check.
 
 ## Browser lifecycle
 

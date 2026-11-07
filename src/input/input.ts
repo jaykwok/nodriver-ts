@@ -12,8 +12,10 @@ import type { InputRelease } from './action.ts';
 import { Composition, type CompositionOptions } from './composition.ts';
 export interface ComposeOptions extends InputOptions, CompositionOptions {
   /**
-   * false never sends Page.enable. Navigation then stops the action only through your signal;
-   * the composition still checks focus and document before every step. Defaults to true.
+   * false never sends Page.enable. Navigation then stops the action only if the Page domain is
+   * enabled on the session by other means; otherwise it ends at its deadline, through your signal
+   * or with the session. The composition still checks focus and document before every step.
+   * Defaults to true.
    */
   pageEvents?: boolean;
 }

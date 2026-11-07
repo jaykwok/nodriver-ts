@@ -76,9 +76,9 @@ export class Locator {
     return this.act('setChecked', options, (element, o) => element.setChecked(checked, o));
   }
   text(options: WaitOptions = {}): Promise<string> {
-    return this.act('text', options, (element) => element.text());
+    return this.act('text', options, (element, o) => element.text(o));
   }
   attribute(name: string, options: WaitOptions = {}): Promise<string | null> {
-    return this.act('attribute', options, (element) => element.attribute(name));
+    return this.act('attribute', options, (element, o) => element.attribute(name, o));
   }
 }

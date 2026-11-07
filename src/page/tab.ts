@@ -76,6 +76,8 @@ export class Tab {
   private readonly scriptWorld = randomUUID();
   private closing?: Promise<void>;
   private disposed = false;
+  /** HTTP(S) origins any frame of this tab has committed, whose sessionStorage the tab can hold. */
+  private readonly committedOrigins = new Set<string>();
   readonly browser: Browser;
   readonly context: BrowserContext;
   readonly id: string;
@@ -90,7 +92,7 @@ export class Tab {
     this.framesManager = new FrameManager(this, session);
     this.framesManager.changes.on(({ frame, sameDocument }) => {
       if (sameDocument) return;
-      context.noteOrigin(frame.url);
+      this.noteOrigin(frame.url);
       // A new document in the main frame replaces a crashed renderer.
       if (frame === this.mainFrame) this.crashed = false;
     });
@@ -190,6 +192,18 @@ export class Tab {
   }
   async withInput<T>(fn: () => Promise<T>): Promise<T> {
     return this.browser.input.run(fn);
+  }
+  /** @internal Records an origin a frame of this tab committed, here and in its context. */
+  noteOrigin(url: string): void {
+    if (!URL.canParse(url)) return;
+    const { protocol, origin } = new URL(url);
+    if (protocol !== 'http:' && protocol !== 'https:') return;
+    this.committedOrigins.add(origin);
+    this.context.noteOrigin(url);
+  }
+  /** @internal Origins any frame of this tab has committed since it was attached. */
+  get origins(): string[] {
+    return [...this.committedOrigins];
   }
   setInputPolicy(policy: InputPolicy): void {
     this.inputBehavior.configure(policy);

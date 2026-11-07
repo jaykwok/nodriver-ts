@@ -18,7 +18,11 @@ export class TabScope {
   /** Target IDs of every page the scope owned, to find popups that are still attaching. */
   private readonly ownedIds = new Set<string>();
   private readonly kept = new Set<Tab>();
+  /** Tabs being created through the scope, until they are owned or closed again. */
   private readonly opening = new Set<Promise<unknown>>();
+  /** Tabs that finished opening after close() started, and what closing them did. */
+  private readonly lateClosed: string[] = [];
+  private readonly lateErrors: unknown[] = [];
   private readonly off: () => void;
   private closing?: Promise<TabScopeCloseResult>;
   constructor(context: BrowserContext) {
@@ -39,22 +43,43 @@ export class TabScope {
     this.owned.add(tab);
     this.ownedIds.add(tab.id);
   }
-  /** Opens a tab in the scope's context. If close() starts meanwhile, the tab is closed too. */
-  async newTab(url?: string): Promise<Tab> {
+  /**
+   * Opens a tab in the scope's context. The tab is owned before it navigates to `url`, so popups
+   * its page opens while loading belong to the scope too. If close() starts while the tab is
+   * being created, close() closes it and this call rejects.
+   */
+  async newTab(url = 'about:blank'): Promise<Tab> {
     if (this.closing) throw new NodriverError('Tab scope is closed');
-    const opening = this.context.newTab(url);
-    this.opening.add(opening);
-    try {
-      const tab = await opening;
-      if (this.closing) {
+    const creating = this.create();
+    this.opening.add(creating);
+    void creating.then(
+      () => this.opening.delete(creating),
+      () => this.opening.delete(creating),
+    );
+    const tab = await creating;
+    if (url !== 'about:blank')
+      try {
+        await tab.goto(url);
+      } catch (error) {
+        // As Browser.newTab() does, a tab that cannot load its first page is closed.
         await tab.close().catch(() => {});
-        throw new NodriverError('Tab scope closed while the tab was opening');
+        throw error;
       }
+    return tab;
+  }
+  private async create(): Promise<Tab> {
+    const tab = await this.context.newTab();
+    if (!this.closing) {
       this.own(tab);
       return tab;
-    } finally {
-      this.opening.delete(opening);
     }
+    try {
+      await tab.close();
+      this.lateClosed.push(tab.id);
+    } catch (error) {
+      if (this.context.browser.targetInfo.has(tab.id)) this.lateErrors.push(error);
+    }
+    throw new NodriverError('Tab scope closed while the tab was opening');
   }
   /** Makes an existing tab, and popups it opens from now on, part of the scope. */
   adopt(tab: Tab): void {
@@ -73,15 +98,16 @@ export class TabScope {
     this.kept.add(tab);
   }
   /**
-   * Waits for tabs still opening through the scope, then closes every owned page, including popups
-   * that open meanwhile and popups that have not been attached yet. Idempotent.
+   * Waits for tabs still being created through the scope and closes them, then closes every owned
+   * page, including popups that open meanwhile and popups that have not been attached yet. Resolves
+   * once all of them are closed; failures reject together as an AggregateError. Idempotent.
    */
   close(): Promise<TabScopeCloseResult> {
     return (this.closing ??= (async () => {
       await Promise.allSettled(this.opening);
       const browser = this.context.browser;
-      const closed: string[] = [];
-      const errors: unknown[] = [];
+      const closed = this.lateClosed;
+      const errors = this.lateErrors;
       const done = new Set<string>();
       try {
         for (;;) {

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { Browser } from '../../src/index.ts';
+import { Browser, ProtocolError } from '../../src/index.ts';
 import { BrowserProcess } from '../../src/browser/launcher.ts';
 import { WebSocketTransport } from '../../src/transport/websocket.ts';
 import { ScriptedChrome } from '../../src/testing/index.ts';
@@ -28,6 +28,62 @@ test('a page that closes during the initial attachment does not fail connect()',
     ['page-1'],
   );
   assert.deepEqual(errors, []);
+});
+
+test('reattaching a detached page replaces its closed Tab and shares concurrent attaches', async () => {
+  await using chrome = await ScriptedChrome.start({ pages: [{ url: 'https://app.test/' }] });
+  await using browser = await chrome.connect();
+  const first = browser.tabs[0]!;
+  const frame = first.mainFrame;
+  assert.equal(await browser.attachTarget(first.id), first);
+  await browser.cdp.send('Target.detachFromTarget', { sessionId: first.session.id! });
+  assert.equal(first.closed, true);
+  assert.ok(browser.pageTargets.some((info) => info.targetId === first.id));
+  const before = chrome.commands.filter((c) => c.method === 'Target.attachToTarget').length;
+  chrome.attachReplyDelayMs = 30;
+
+  const [adopted, concurrent] = await Promise.all([
+    browser.attachTarget(first.id),
+    browser.attachTarget(first.id),
+  ]);
+  assert.equal(adopted.closed, false);
+  assert.notEqual(adopted, first);
+  assert.notEqual(adopted.session.id, first.session.id);
+  assert.equal(concurrent, adopted);
+  assert.equal(await browser.attachTarget(first.id), adopted);
+  assert.equal(adopted.context, first.context);
+  assert.equal(adopted.url, 'https://app.test/');
+  assert.deepEqual(browser.tabs, [adopted]);
+  assert.equal(frame.detached, true);
+  assert.deepEqual(first.frames, []);
+  assert.equal(
+    chrome.commands.filter((c) => c.method === 'Target.attachToTarget').length,
+    before + 1,
+  );
+  assert.ok(!chrome.commands.some((c) => c.method === 'Target.closeTarget'));
+  chrome.assertDone();
+});
+
+test('a failed reattach leaves the page available for another attempt', async () => {
+  await using chrome = await ScriptedChrome.start();
+  await using browser = await chrome.connect();
+  const first = browser.tabs[0]!;
+  await browser.cdp.send('Target.detachFromTarget', { sessionId: first.session.id! });
+  chrome.replyOnce('Target.attachToTarget', () => {
+    throw new ProtocolError('Target.attachToTarget', -32000, 'Injected reattach failure');
+  });
+  await assert.rejects(browser.attachTarget(first.id), /Injected reattach failure/);
+  assert.deepEqual(browser.tabs, []);
+  assert.deepEqual(first.frames, []);
+  assert.ok(browser.pageTargets.some((info) => info.targetId === first.id));
+
+  const adopted = await browser.attachTarget(first.id);
+  assert.equal(adopted.closed, false);
+  assert.notEqual(adopted, first);
+  assert.equal(adopted.id, first.id);
+  assert.notEqual(adopted.session.id, first.session.id);
+  assert.deepEqual(browser.tabs, [adopted]);
+  chrome.assertDone();
 });
 
 test('a failed close() can be retried, and release() stays refused once closing began', async (t) => {

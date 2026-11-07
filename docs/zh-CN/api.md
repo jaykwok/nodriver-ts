@@ -80,7 +80,8 @@
 - 文本匹配折叠空白，默认只返回可见、且不包含同样匹配子元素的最小元素。
 - `Frame.query()` 只查所选 frame，不跨 iframe；`Element.query()` 限定在该元素子树。
 - 查询在随机命名的隔离世界中一次遍历文档与 open shadow root。默认穿透时用 `DOM.getDocument` 识别 closed shadow root：没有发现时，同一文档在无结构变化的 1 秒内复用该结论；发现时缓存到 DOM 结构变化，再把这些根一并交给同一次遍历。
-- `tab.locator(selector, options?)` 与 `frame.locator()` 返回 `Locator`：每次操作（`click`、`hover`、`fill`、`type`、`setChecked`、`text`、`attribute`）之前都会重新查询，因此单页应用重新渲染元素后，操作仍作用于当前元素。一个超时同时覆盖查找元素和操作本身。若元素在操作发出按下、按键或文本之前被替换，操作会在新的匹配元素上重新执行；一旦这类输入已经发出，失败会直接报告，绝不重复执行。`element()` 等待第一个匹配元素，`count()` 统计当前匹配数。
+- `tab.locator(selector, options?)` 与 `frame.locator()` 返回 `Locator`：每次操作（`click`、`hover`、`fill`、`type`、`setChecked`、`text`、`attribute`）之前都会重新查询，因此单页应用重新渲染元素后，操作仍作用于当前元素。同一个超时和取消信号覆盖查找元素和操作本身，读取操作也不例外。若元素在操作发出按下、按键或文本之前被替换，操作会在新的匹配元素上重新执行；一旦这类输入已经发出，失败会直接报告，绝不重复执行。`element()` 等待第一个匹配元素，`count()` 统计当前匹配数。
+- `Element.text()`、`html()` 与 `attribute()` 接受 `{ timeout, signal }`。
 - `QueryOptions` 接受 `pierce`、`visible`、`limit`（默认最多 10,000 个匹配）、`timeout`、`signal`。轮询不适合对大页面做高频全量抓取。
 
 ## 求值与执行世界
@@ -100,7 +101,7 @@
 | `automationControlled`            | 默认 `false`：加入 `--disable-blink-features=AutomationControlled`（与调用者的其他禁用特性合并），webdriver getter 保持原生；`true` 不加该开关                                                                                                                                                                                  |
 | `preset: 'agent'`                 | 追加 `AGENT_ARGS`（`args` 已设置同一开关时以其为准）：关闭搜索引擎选择页、崩溃恢复气泡和后台节流，并设置 `--password-store=basic`。在 Linux 上，Chrome 随后改用内置密钥而不是系统密钥环来加密已保存的密码和 cookie，不会弹出密钥环提示；通过密钥环加密过数据的持久 profile 将无法读取这些数据。首次运行界面在任何启动中都已关闭 |
 | `userAgent`、`lang`、`windowSize` | 启动时设置 UA、BCP 47 语言和窗口尺寸                                                                                                                                                                                                                                                                                            |
-| `userDataDir`                     | 持久 profile，由 `acquireProfileLock()` 加锁（见下文）                                                                                                                                                                                                                                                                          |
+| `userDataDir`                     | 持久 profile，由 `acquireProfileLock()` 加锁（见 [Profile](#profile)）                                                                                                                                                                                                                                                          |
 | `prepareProfile`                  | 在 Chrome 启动之前调用，参数为 profile 目录，用于通过 `updateProfileSettings()` 写入或检查 `Local State` 等文件：临时 profile 在库准备好之后调用，`userDataDir` 在本进程持有其锁期间调用。受启动超时约束，它收到的取消信号在超时时也会中止。调用失败时启动终止                                                                  |
 | `inputPolicy`                     | 所有标签页的输入策略，包括启动时的标签页和弹出页；见[输入](input.md#新标签页的默认策略)                                                                                                                                                                                                                                         |
 | `handleSignals`                   | 默认不接管宿主信号。设为 `true` 时，SIGINT 和 SIGTERM 会关闭所有以该选项启动的浏览器；之后重新发出信号，使宿主按默认方式终止，除非宿主自己处理该信号                                                                                                                                                                            |
@@ -108,9 +109,19 @@
 | `supervised`                      | 配合 `detached: true`：宿主在 `release()` 前死亡时由辅助进程结束 Chrome，并保留有界的 stderr 尾部，见[监管启动](lifecycle-ownership-design.md)                                                                                                                                                                                  |
 | `trace`                           | 与 `connect` 相同：布尔值或回调，见[协议与追踪](#协议与追踪)                                                                                                                                                                                                                                                                    |
 
+### Profile
+
+未设置 `userDataDir` 时，每次启动都使用一个新的临时 profile，关闭时删除，除非浏览器通过 `release()` 移交。设置 `userDataDir` 时，profile 以及 Chrome 保存在其中的一切（Cookie、存储、设置、缓存）在多次启动之间保留。一个 profile 目录同一时间只能供一个浏览器使用：同时运行的浏览器需要使用不同的目录。
+
+`prepareProfile` 在每次启动前运行，临时 profile 和持久 profile 都是如此，因此通过 `updateProfileSettings()` 写入的设置会在每次 Chrome 启动时检查并恢复。`updateProfileSettings(dir, { localState, preferences })` 把值合并进 `Local State` 和某个 profile 的 `Preferences`（未指定时为 `Default`），并逐个读回文件检查；它无法判断 Chrome 是否采用某个值。
+
+在 Windows 上，Chrome 的密码管理器可能会以空密码尝试登录，以检查账户是否没有设置密码，失败的尝试会计入账户锁定策略。Chrome 把检查结果缓存在 `Local State` 中。固定的 `userDataDir` 会在多次启动之间保留这份缓存，从而减少检查次数，但不能杜绝检查：新的 profile、修改过的 Windows 密码或失效的缓存都会再次触发检查。按照 Chromium 源码（`password_manager_util_win.cc`），只有在缓存有效时，才会复用缓存的 `password_manager.os_password_blank` 值：`password_manager.os_password_last_changed` 大于零，且不早于 Windows 报告的该账户最近一次修改密码的时间。否则会再次检查，因此仅设置 `os_password_blank` 并不能阻止检查。本库不附带这类设置，也不声明哪些设置能在某个 Chrome 或 Edge 版本中避免这项检查。依赖某套配置之前，请在目标机器上验证，例如使用专门的测试账户并查看安全日志。
+
 持久 profile 的锁文件记录 PID 与主机名，只有确认本机持有进程已退出时才回收陈旧锁；回收过程由独立的 `.nodriver.lock.reclaim` 文件互斥。若回收期间进程被强杀而留下该文件，会明确报错，确认记录的进程已退出后再手动删除。profile 中残留的 `DevToolsActivePort`（Chrome 未正常退出时留下，例如 MCP 宿主强制结束了服务进程）会被探测：记录的浏览器仍在该端口上应答时拒绝启动，否则删除该文件后继续。启动失败且 Chrome 已退出时，错误包含退出码与 stderr。
 
 `Browser.connect({ endpoint, attach })` 连接已有浏览器：`'all'`（默认）附加全部标签页，`'created'` 只附加本客户端创建的标签页及其弹出页。启动参数对已连接的浏览器无效，`close()` 只断开连接，同时结束本连接用 `proxy` 创建的上下文（见[环境](environment.md#代理与-webrtc)）。
+
+`browser.attachTarget(targetId)` 附加 `pageTargets` 中已有的页面。如果旧会话已解除附加、页面仍然打开，它会返回一个完成初始化的新 `Tab`；旧对象保持关闭，应使用返回的新对象。同一页面的并发调用共用一次附加。
 
 确认同机 `.nodriver.lock` 持有进程仍存活、其他进程抢先回收了陈旧锁，或 `DevToolsActivePort` 仍由原浏览器提供服务时，抛出带 `profile` 路径的 `ProfileInUseError`。Windows 另探测 Chrome 原生 `lockfile` 的共享冲突（`EBUSY`），因此未开放调试端口的已运行 Chrome 也会得到该错误；未锁定的残留文件和权限错误都不算占用。Unix 不检查原生 `SingletonLock`/`SingletonSocket`，未开放调试端口时可能得到普通的启动退出错误。
 
@@ -142,7 +153,7 @@
 
 ## 标签页作用域
 
-`browser.tabScope()` 与 `context.tabScope()` 在与其他工作共享的浏览器中，把一个任务的页面归为一组。作用域拥有通过 `scope.newTab()` 打开的标签页、传给 `adopt()` 的标签页，以及它们（逐级）打开的弹出页。`keep(tab)` 把某个页面移出作用域，例如留给人工处理的页面；它之后打开的弹出页不归作用域所有。`close()`（也可通过 `await using` 调用）先等待仍在通过作用域打开的标签页，再关闭所有归属页面，包括期间新打开的弹出页和尚未附加的弹出页，其他标签页保持打开。在 `close()` 开始之后才完成的 `newTab()` 会关闭其标签页并拒绝。结果列出已关闭和已保留的标签页 ID；无法关闭的页面以 `AggregateError` 拒绝。用 `noopener` 打开的弹出页在 Chrome 中仍会报告其打开者；由已保留或无关标签页打开的弹出页永远不归作用域所有。
+`browser.tabScope()` 与 `context.tabScope()` 在与其他工作共享的浏览器中，把一个任务的页面归为一组。作用域拥有通过 `scope.newTab()` 打开的标签页、传给 `adopt()` 的标签页，以及它们（逐级）打开的弹出页。`keep(tab)` 把某个页面移出作用域，例如留给人工处理的页面；它之后打开的弹出页不归作用域所有。`close()`（也可通过 `await using` 调用）先等待仍在通过作用域打开的标签页，再关闭所有归属页面，包括期间新打开的弹出页和尚未附加的弹出页，其他标签页保持打开。页面在 `scope.newTab(url)` 加载期间打开的弹出页也归作用域所有。在 `close()` 开始之后才完成的 `newTab()` 会关闭其标签页并拒绝；`close()` 要等该标签页关闭后才完成，并把它列入结果。结果列出已关闭和已保留的标签页 ID；无法关闭的页面以 `AggregateError` 拒绝。用 `noopener` 打开的弹出页在 Chrome 中仍会报告其打开者；由已保留或无关标签页打开的弹出页永远不归作用域所有。
 
 ```ts
 await using scope = browser.tabScope();
@@ -166,10 +177,11 @@ const result = await context.clearSiteData({ domains: ['platform.example'], open
 // { cookies: [{ name, domain, path }], origins: [...], tabs: [...] }
 ```
 
-- **匹配**：`domains` 覆盖每个域名及其子域名；`origins` 指定精确的 HTTP(S) 源。Cookie 按其域名匹配：属于所列域名、源的主机名或它们的子域名的 Cookie 会被删除，分区在这些站点之下的 Cookie 也会被删除。父域名的 Cookie（例如 `platform.example` 的 `.example`）由同级站点共享，除非列出父域名，否则保留。
-- **类型**：`types` 可选 `cookies`、`localStorage`、`sessionStorage`、`indexedDB`、`cacheStorage` 和 `serviceWorkers`，默认全部。存储的清理范围为：所列的每个源、每个所列域名的 `http://` 与 `https://`，以及该上下文中任一 frame 提交过的、位于所列域名下的每个源。同一域名下的其他源（例如持久 profile 上一次运行留下的源）只有列入 `origins` 才会清理。sessionStorage 只存在于打开的标签页中，因此只在 `openTabs: 'blank'` 处理的标签页中清理。
-- **打开的标签页**：含有匹配站点 frame 的标签页可能把数据重新写回。`openTabs: 'fail'`（默认）在清理任何数据之前抛出错误并列出这些标签页；`'close'` 关闭它们；`'blank'` 将它们导航到 about:blank。调用期间新打开的标签页不在处理范围内。
-- **结果**：已删除的 Cookie（不含值）、已清理存储的源，以及被关闭或置空的标签页。删除后若仍存在匹配的 Cookie，调用抛出 `NodriverError`。
+- **匹配**：`domains` 覆盖每个域名及其子域名；`origins` 指定精确的 HTTP(S) 源，因此 `http://127.0.0.1:3000` 不会影响 `http://127.0.0.1:4000` 的页面和存储。Cookie 不区分端口和协议，按域名匹配：属于所列域名或其子域名、或恰好属于某个源的主机名的 Cookie 会被删除，分区在这些站点之下的 Cookie 也会被删除。父域名的 Cookie（例如 `platform.example` 的 `.example`）由同级站点共享，除非列出父域名，否则保留。
+- **类型**：`types` 可选 `cookies`、`localStorage`、`sessionStorage`、`indexedDB`、`cacheStorage` 和 `serviceWorkers`，默认全部。存储的清理范围为：所列的每个源、每个所列域名的 `http://` 与 `https://`，以及该上下文已知的、位于所列域名下的每个源：由 frame 提交过、出现在打开的标签页的历史记录中，或由该上下文的页面显示。这些源在任何标签页发生变化之前收集，包括连接浏览器时已经打开的标签页的源。同一域名下的其他源（例如持久 profile 上一次运行留下的源）只有列入 `origins` 才会清理。
+- **sessionStorage** 属于各个标签页；标签页离开某个源之后仍保留该源的 sessionStorage，直到返回该源或关闭。只有打开的标签页能清理它，因此选中 `sessionStorage` 时，显示过或曾经提交过匹配站点的标签页都算作该站点的打开标签页。`'blank'` 会在标签页中逐个加载这些源来清理：文档请求由本库以空页面应答，并绕过 Service Worker，因此不会联系站点，也不会运行站点脚本；`'close'` 则随标签页一并丢弃。本客户端未附加的页面只有在显示匹配站点时才会被发现；跨站 iframe 的分区 sessionStorage 不在处理范围内。
+- **打开的标签页**：含有匹配站点 frame 的标签页可能把数据重新写回。`openTabs: 'fail'`（默认）在清理任何数据之前抛出错误并列出这些标签页；`'close'` 关闭它们；`'blank'` 将它们导航到 about:blank。该上下文中本客户端未附加的页面（例如使用 `connect({ attach: 'created' })` 时）也计算在内：`'fail'` 和 `'blank'` 拒绝处理，`'close'` 关闭它们。调用处理的是开始时该上下文中已打开的页面，无论是否已附加；调用期间新打开的页面不予处理。仍在附加中的页面会等待其附加完成。收集完源之后，每个页面按本客户端此时是否已附加它来处理：期间被附加的页面按标签页处理，期间被解除附加的页面按本客户端未附加的页面处理。
+- **结果**：已删除的 Cookie（不含值）、已清理存储的源，以及被关闭或置空的标签页和页面的 target ID。删除后若仍存在匹配的 Cookie，调用抛出 `NodriverError`。
 
 Chrome 在 browser 会话上执行 `Storage.clearDataForOrigin` 会返回 `Internal error`，因此这些命令发往该上下文中某个已打开标签页的会话；没有打开的标签页时，使用一个临时空白标签页。这些命令不会改变该页面。
 
