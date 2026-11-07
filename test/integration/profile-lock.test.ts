@@ -103,7 +103,8 @@ test('prepareProfile prepares temporary and persistent profiles before Chrome st
       },
     });
     const tab = await browser.newTab();
-    assert.deepEqual(await tab.evaluate('navigator.languages'), ['fr-FR', 'fr']);
+    // The first language proves Chrome read the file; older versions add no base language.
+    assert.equal(await tab.evaluate('navigator.languages[0]'), 'fr-FR');
   }
   await assert.rejects(access(directory));
   // A failing hook ends the launch before Chrome starts and removes the directory.
@@ -132,7 +133,7 @@ test('prepareProfile prepares temporary and persistent profiles before Chrome st
         },
       });
       const tab = await browser.newTab();
-      assert.deepEqual(await tab.evaluate('navigator.languages'), ['de-DE', 'de']);
+      assert.equal(await tab.evaluate('navigator.languages[0]'), 'de-DE');
     }
     await access(persistent);
   } finally {
