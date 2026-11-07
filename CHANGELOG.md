@@ -4,6 +4,8 @@ All notable changes are recorded here. The project follows [Semantic Versioning]
 
 ## Unreleased
 
+## 0.8.0 — 2026-11-07
+
 ### Breaking changes
 
 - `setChecked()` failures are `InputActionError`s, as with `click()`, with the original error as `cause`; they used to be thrown directly.
