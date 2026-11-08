@@ -255,4 +255,4 @@ npm run format:check
 
 ## 许可
 
-AGPL-3.0-or-later，见 [LICENSE](LICENSE)。
+Apache-2.0，见 [LICENSE](LICENSE)。
