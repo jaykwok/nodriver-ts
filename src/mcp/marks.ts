@@ -113,7 +113,9 @@ export async function markedScreenshot(
     { interactiveOnly: marks === 'interactive', viewportOnly: true, limit: 500 },
     { signal },
   );
-  const bytes = await session.tab(tabId).screenshot({ format: 'png', scale });
+  // Always with a scale, hence a clip: without one the capture includes scrollbars, which the
+  // viewport size does not, and the factor below would be off.
+  const bytes = await session.tab(tabId).screenshot({ format: 'png', scale: scale ?? 1 });
   const image = decodePng(bytes);
   // Image pixels per CSS pixel: covers the device scale factor and `scale` alike.
   const factor = image.width / snapshot.viewport!.width;
