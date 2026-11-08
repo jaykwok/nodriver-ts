@@ -47,6 +47,7 @@ export type {
 } from './session.ts';
 export { BrowserSessionManager, LeaseError } from './manager.ts';
 export type { BrowserSessionManagerOptions, BrowserLease } from './manager.ts';
+export type { RemoteHandoffAudit, RemoteHandoffOptions, HandoffEndReason } from './handoff.ts';
 export interface BrowserMcpBinding {
   manager: BrowserSessionManager;
   principal: string;
