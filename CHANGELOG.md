@@ -8,6 +8,16 @@ All notable changes are recorded here. The project follows [Semantic Versioning]
 
 - `clearSiteData()` failures other than refusing open tabs are `ClearSiteDataError`s, with the original error, such as a `TimeoutError`, as `cause`; they used to be thrown directly. A cookie set again during the call is also reported as `ClearSiteDataError`, which extends `NodriverError` as before.
 - `TabScope.adopt(tab)` no longer owns popups the tab opened before it was adopted; popups it opens afterwards are owned as before. Whether a popup is owned is decided when Chrome reports it, by its opener's role at that moment, and roles belong to the page, so a page attached again keeps its role. `TabScopeCloseResult` has a `borrowed` list, and `closed` also lists tabs that did not finish opening through `scope.newTab()`.
+- MCP snapshot lines carry each node's layout box, `@x,y WxH` in CSS pixels of the tab viewport, and `offscreen` for nodes outside the viewport, after a `Viewport WxH` line. Structured nodes have `box` (`{ x, y, width, height }` or null), and snapshots have `viewport`. Code that parses snapshot text needs to allow the new fields.
+- `storageState()` takes an options object; `storageState(path)` becomes `storageState({ path })`. Its result has `version: 2`, and an export over `maxBytes` (64 MiB by default) fails with a `RangeError`.
+- While a remote handoff runs, MCP tools other than `browser_tabs` and `browser_handoff_wait` fail at once with `HandoffActiveError`. `browser_handoff` takes `mode` and `resumeCondition`, and its schema still rejects unknown fields.
+
+### MCP
+
+- `browser_handoff` has `mode: 'remote'`: with `remoteHandoff` (`--remote-handoff`), a user operates a tab through a one-time link to a loopback viewer, also in headless mode. The link goes through URL elicitation unless the host opts in to returning it. `browser_handoff_wait` waits for the end or cancels, `resumeCondition` ends it when the page reaches a URL or selector, and `browser://events` reports `handoff-*`.
+- `browser_storage_state` takes `include` to save sessionStorage or IndexedDB. With `stateKey` (`--state-key-env`), state files are encrypted and plain files are refused.
+- `browser_snapshot` takes `viewportOnly` to return only nodes visible in the viewport. Boxes come from one DOMSnapshot capture per snapshot; no page script runs.
+- `browser_screenshot` takes `marks: 'interactive' | 'all'` to draw each visible node's box and ref on a PNG of the viewport, and returns a `legend` of `{ ref, role, name, box }`.
 
 ### Pages and queries
 
@@ -20,11 +30,15 @@ All notable changes are recorded here. The project follows [Semantic Versioning]
 
 ### State and storage
 
+- `storageState({ include: ['sessionStorage', 'indexedDB'] })` also exports the sessionStorage of open tabs and IndexedDB databases with their structure and typed values. `restoreStorage(state, { sessionStorageTab })` restores them; replacing a database is refused while a tab shows its origin.
+- `encryptState()` and `decryptState()` seal a state with AES-256-GCM, using a 32-byte key or a passphrase.
 - `clearSiteData({ timeout, signal })` bounds the whole call. A call that stops, by timeout, abort or a failed step, throws `ClearSiteDataError`, whose `result` lists the cookies deleted, origins cleared and tabs handled so far. The request interception it sets on a tab stops when the call ends, also after it stops, and the Service Worker bypass is undone even when Chrome did not confirm it in time. A temporary tab the call opens is closed within its deadline, or after it returns once the deadline has passed. When undoing fails after the call has already failed, the call keeps its own error, so `cause` stays the original error, such as the abort reason.
 - `storageState()` and `restoreStorage()` keep the error of a failed visit when their temporary tab cannot be closed either; the close failure used to replace it.
 
 ### Browser and process lifecycle
 
+- `PresentationLease` takes `deliver`, which receives each frame and delays its acknowledgement until it settles.
+- `Browser.launch({ virtualDisplay: true })` runs headful Chrome on its own Xvfb server on Linux, with MIT-MAGIC-COOKIE access control and no TCP listener. The server ends with the browser, also under the guardian of `supervised: true`. `XvfbSession` runs one directly, and the MCP CLI has `--virtual-display`.
 - Cleanup the library does after an operation failed or after its caller stopped waiting, such as closing a tab that did not finish opening, never replaces the operation's own error. When such cleanup fails, the failure is reported through `onError` and `browser.errors`.
 - `prepareProfile(dir, options)` receives `temporary` and `empty` in its options (`ProfilePreparation`): whether the library created the profile for this launch, and whether the profile held nothing from earlier launches. `empty` is read under the profile lock and ignores only the library's lock files, `.nodriver.lock` and `.nodriver.lock.reclaim`.
 

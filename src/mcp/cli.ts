@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import type { RemoteHandoffOptions } from './handoff.ts';
 import { serveStdio } from '@modelcontextprotocol/server/stdio';
 import { createBrowserMcpServer, type BrowserMcpOptions } from './server.ts';
 import { startBrowserMcpHttpServer } from './http.ts';
@@ -18,6 +19,7 @@ interface Parsed {
   tokenEnv: string;
 }
 const LAUNCH_ONLY = [
+  '--virtual-display',
   '--transport',
   '--browser-transport',
   '--headful',
@@ -39,6 +41,9 @@ const LIMITS: Record<string, keyof BrowserSessionManagerOptions> = {
   '--operation-timeout': 'operationTimeout',
 };
 const FLAGS = [
+  '--remote-handoff',
+  '--remote-handoff-link-in-result',
+  '--virtual-display',
   '--headful',
   '--headless',
   '--read-only',
@@ -62,7 +67,14 @@ function parse(args: string[]): Parsed {
     const option = args[i]!;
     if (FLAGS.includes(option)) {
       if (option === '--mcp-compat') compatibility = true;
-      else if (option === '--headful' || option === '--headless') {
+      else if (option === '--virtual-display') launch.virtualDisplay = true;
+      else if (option === '--remote-handoff' || option === '--remote-handoff-link-in-result') {
+        options.remoteHandoff = {
+          ...(options.remoteHandoff as RemoteHandoffOptions | undefined),
+          audit: (entry) => console.error(`[nodriver-mcp] handoff ${JSON.stringify(entry)}`),
+          ...(option === '--remote-handoff' ? {} : { linkInResult: true }),
+        };
+      } else if (option === '--headful' || option === '--headless') {
         const headless = option === '--headless';
         if (launch.headless !== undefined && launch.headless !== headless)
           throw new TypeError('Choose --headful or --headless, not both');
@@ -101,7 +113,11 @@ function parse(args: string[]): Parsed {
     else if (option === '--upload-dir') options.uploadDir = value;
     else if (option === '--download-dir') options.downloadDir = value;
     else if (option === '--state-dir') options.stateDir = value;
-    else if (option === '--endpoint') endpoint = value;
+    else if (option === '--state-key-env' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(value)) {
+      const key = process.env[value];
+      if (!key) throw new TypeError(`Set ${value} to the passphrase of the state directory`);
+      options.stateKey = key;
+    } else if (option === '--endpoint') endpoint = value;
     else if (option === '--mcp-transport' && ['stdio', 'http', 'socket'].includes(value))
       transport = value as Parsed['transport'];
     else if (option === '--socket-path') socketPath = value;
@@ -123,6 +139,8 @@ function parse(args: string[]): Parsed {
     throw new TypeError('--port requires --mcp-transport http');
   if (args.includes('--socket-path') && transport !== 'socket')
     throw new TypeError('--socket-path requires --mcp-transport socket');
+  if (options.remoteHandoff && transport !== 'http')
+    throw new TypeError('--remote-handoff requires --mcp-transport http');
   if (compatibility && transport === 'socket')
     throw new TypeError('--mcp-compat supports standard stdio and HTTP transports');
   return {
@@ -147,6 +165,7 @@ MCP transport
 
 Browser
   --headful | --headless              default headful
+  --virtual-display                   run headful Chrome on its own Xvfb server (Linux)
   --browser-transport pipe|websocket  CDP transport (default pipe; --transport is an alias)
   --executable PATH                   Chrome/Chromium/Edge binary (default: auto-detect)
   --user-data-dir PATH                persistent profile (single browser, no per-lease contexts)
@@ -162,6 +181,9 @@ Tools
   --read-only                         observation, navigation and tab lifecycle tools only
   --disable-tool NAME[,NAME]          repeatable
   --upload-dir DIR | --download-dir DIR | --state-dir DIR   enable file tools within DIR
+  --state-key-env NAME                env var holding a passphrase that encrypts --state-dir files
+  --remote-handoff                    let a user operate a tab from a loopback viewer page (http)
+  --remote-handoff-link-in-result     also put its link in the tool result, visible to the model
   --allow-handoff                     allow browser_handoff without an explicit --headful
 
 Limits

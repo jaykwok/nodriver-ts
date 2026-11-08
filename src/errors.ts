@@ -2,6 +2,10 @@ import type { ClearSiteDataResult } from './browser/context.ts';
 export class NodriverError extends Error {
   override name = 'NodriverError';
 }
+/** A person is operating this lease's browser; other tools wait until browser_handoff_wait ends. */
+export class HandoffActiveError extends NodriverError {
+  override name = 'HandoffActiveError';
+}
 export class TimeoutError extends NodriverError {
   override name = 'TimeoutError';
 }

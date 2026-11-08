@@ -2,7 +2,13 @@ import { constants } from 'node:fs';
 import { lstat, mkdir, open, realpath, rename, rm } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
-import type { StorageState } from '../browser/context.ts';
+import type { SavedStorageState } from '../browser/context.ts';
+import {
+  decryptState,
+  encryptState,
+  isEncryptedState,
+  type StateKey,
+} from '../browser/state-crypto.ts';
 
 /** A principal's name when it is safe as a path segment; otherwise a digest, too long for a name. */
 function principalDirectory(principal: string): string {
@@ -41,14 +47,22 @@ export async function readState(
   directory: string,
   principal: string,
   name: string,
-): Promise<StorageState> {
+  key?: StateKey,
+): Promise<SavedStorageState> {
   try {
     const path = await statePath(directory, principal, name, false);
     const file = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
     try {
       const info = await file.stat();
       if (!info.isFile() || info.nlink !== 1) throw new TypeError('Invalid state file');
-      return JSON.parse(await file.readFile('utf8')) as StorageState;
+      const bytes = await file.readFile();
+      if (key === undefined && isEncryptedState(bytes))
+        throw new TypeError('This state is encrypted; the host must configure stateKey');
+      // With a key, a plain file is refused: replacing a file must not downgrade its protection.
+      if (key !== undefined && !isEncryptedState(bytes))
+        throw new TypeError('This state is not encrypted, and stateKey requires encrypted states');
+      if (key !== undefined) return await decryptState(bytes, key);
+      return JSON.parse(bytes.toString('utf8')) as SavedStorageState;
     } finally {
       await file.close();
     }
@@ -64,14 +78,16 @@ export async function writeState(
   directory: string,
   principal: string,
   name: string,
-  state: StorageState,
+  state: SavedStorageState,
+  key?: StateKey,
 ): Promise<void> {
   const path = await statePath(directory, principal, name, true);
+  const content = key === undefined ? JSON.stringify(state) : await encryptState(state, key);
   const temporary = join(dirname(path), `.state-${randomUUID()}.tmp`);
   const file = await open(temporary, 'wx', 0o600);
   try {
     try {
-      await file.writeFile(JSON.stringify(state));
+      await file.writeFile(content);
     } finally {
       await file.close();
     }

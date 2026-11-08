@@ -8,12 +8,30 @@ import type { LaunchOptions } from '../browser/launcher.ts';
 import type { Tab } from '../page/tab.ts';
 import type { Frame } from '../page/frames.ts';
 import { Element } from '../dom/element.ts';
-import { DisconnectedError, StaleElementError, TimeoutError } from '../errors.ts';
+import {
+  DisconnectedError,
+  HandoffActiveError,
+  StaleElementError,
+  TimeoutError,
+} from '../errors.ts';
 import { abortReason, delay, EventHub, type WaitOptions } from '../utils.ts';
 import { OperationQueue } from './queue.ts';
 import type { BrowserAllocation } from './pool.ts';
 import type { InputPolicy } from '../input/behavior.ts';
 import type { DiagnoseEnvironmentOptions, GeoIPResolver } from '../page/diagnostics.ts';
+import {
+  axProperty,
+  frameGeometry,
+  inViewport,
+  renderSnapshot,
+  selectNodes,
+  type Box,
+  type Snapshot,
+  type SnapshotNode,
+  type SnapshotOptions,
+} from './snapshot.ts';
+export type { Box, Snapshot, SnapshotNode, SnapshotOptions } from './snapshot.ts';
+import type { RemoteHandoff, RemoteHandoffOptions } from './handoff.ts';
 
 export interface BrowserMcpOptions {
   /** Lazy launch; mutually exclusive with connect. */
@@ -32,6 +50,11 @@ export interface BrowserMcpOptions {
   proxy?: string;
   /** Explicitly allow asking the user to operate an accessible browser window. */
   humanInteraction?: boolean;
+  /**
+   * Allows browser_handoff with mode "remote": a user operates a tab from a viewer page served by
+   * the HTTP service. Works without a visible window, including in headless mode.
+   */
+  remoteHandoff?: boolean | RemoteHandoffOptions;
   inputPolicy?: InputPolicy;
   /** Host-configured probes only; tools cannot supply arbitrary egress URLs. */
   environmentDiagnostics?: DiagnoseEnvironmentOptions;
@@ -45,6 +68,11 @@ export interface BrowserMcpOptions {
    * never reach the model.
    */
   stateDir?: string;
+  /**
+   * Encrypts the files of stateDir with this 32-byte key or passphrase; plain files are then
+   * refused. Never comes from a tool argument.
+   */
+  stateKey?: Uint8Array | string;
   /** Tool names that are not registered. */
   disabledTools?: string[];
   /**
@@ -59,23 +87,6 @@ interface SessionOptions extends BrowserMcpOptions {
   operationTimeout?: number;
 }
 export type WaitFor = 'none' | 'auto' | 'load';
-export interface SnapshotOptions {
-  frameId?: string;
-  limit: number;
-  offset?: number;
-  interactiveOnly?: boolean;
-  /** Ref of an element whose subtree is returned instead of the whole frame. */
-  root?: string;
-}
-export interface SnapshotNode {
-  ref: string | null;
-  role: string;
-  name: string;
-  depth: number;
-  states: Record<string, unknown>;
-  value?: string;
-  url?: string;
-}
 export interface DownloadEntry {
   guid: string;
   /** Increases with each download this session observes; see waitForDownload(). */
@@ -95,28 +106,6 @@ export interface NetworkEntry {
   mimeType: string;
   fromCache: boolean;
 }
-const INTERACTIVE = new Set([
-  'button',
-  'link',
-  'textbox',
-  'searchbox',
-  'combobox',
-  'checkbox',
-  'radio',
-  'switch',
-  'slider',
-  'spinbutton',
-  'menuitem',
-  'menuitemcheckbox',
-  'menuitemradio',
-  'tab',
-  'option',
-  'listbox',
-  'treeitem',
-  'ListBoxOption',
-  'MenuListOption',
-  'PopUpButton',
-]);
 const STATES = [
   'disabled',
   'focused',
@@ -131,8 +120,6 @@ const STATES = [
 ];
 const VALUED = new Set(['textbox', 'searchbox', 'combobox', 'spinbutton', 'slider']);
 const MAX_REFS = 2000;
-const MAX_SNAPSHOT_NODES = 20_000;
-const quote = (text: string) => JSON.stringify(text);
 
 /** One browser and short-ref registry per MCP connection or lease. */
 export class BrowserMcpSession {
@@ -157,6 +144,8 @@ export class BrowserMcpSession {
     time: number;
     error?: string;
   }> = [];
+  /** While set, tools that could interfere with the user are refused. */
+  remote?: RemoteHandoff;
   private handoffs = new Map<string, { tabId: string; expires: number; completed: boolean }>();
   private downloads: DownloadEntry[] = [];
   private downloadSequence = 0;
@@ -388,6 +377,12 @@ export class BrowserMcpSession {
       throw new StaleElementError('Unknown frame; refresh browser_tabs or browser_snapshot');
     return frame;
   }
+  assertNoRemoteHandoff(): void {
+    if (this.remote)
+      throw new HandoffActiveError(
+        `A person is operating this browser (handoff ${this.remote.id}); call browser_handoff_wait`,
+      );
+  }
   /** Short ref ("e12") for a node; the same live node keeps the same ref. */
   addRef(element: Element): string {
     const key = `${element.frame.tab.id}|${element.frame.id}|${element.session.id ?? ''}|${element.generation}|${element.backendNodeId}`;
@@ -466,7 +461,7 @@ export class BrowserMcpSession {
       ...dom,
     };
   }
-  async snapshot(tabId: string, options: SnapshotOptions, wait: WaitOptions) {
+  async snapshot(tabId: string, options: SnapshotOptions, wait: WaitOptions): Promise<Snapshot> {
     const rootElement = options.root ? this.element(tabId, options.root) : undefined;
     if (rootElement && options.frameId && rootElement.frame.id !== options.frameId)
       throw new StaleElementError('root ref belongs to a different frame');
@@ -475,46 +470,34 @@ export class BrowserMcpSession {
       generation = frame.generation;
     // Keep complete reads even for root: queryAXTree can stall on complex frame pages,
     // and partial/depth-limited reads omit descendants. See benchmarks/ax-subtree.ts.
-    const { nodes } = await session.sendWith('Accessibility.getFullAXTree', wait, {
-      frameId: frame.id,
-    });
+    const [{ nodes }, geometry] = await Promise.all([
+      session.sendWith('Accessibility.getFullAXTree', wait, { frameId: frame.id }),
+      frameGeometry(frame, wait).catch((error: unknown) => {
+        // Boxes are an addition to the tree; only a stopped wait or a viewport filter needs them.
+        if (wait.signal?.aborted || error instanceof TimeoutError || options.viewportOnly)
+          throw error;
+        return { boxes: new Map<number, Box>(), viewport: null };
+      }),
+    ]);
     if (frame.detached || frame.session !== session || frame.generation !== generation)
       throw new StaleElementError('Frame changed while taking snapshot');
-    const byId = new Map(nodes.map((n) => [n.nodeId, n]));
-    const starts = rootElement
-      ? nodes.filter((n) => n.backendDOMNodeId === rootElement.backendNodeId).slice(0, 1)
-      : nodes.filter((n) => !n.parentId || !byId.has(n.parentId));
-    if (rootElement && !starts.length)
+    const { selected, capped, rootFound } = selectNodes(nodes, {
+      root: rootElement?.backendNodeId,
+      interactiveOnly: options.interactiveOnly,
+    });
+    if (rootElement && !rootFound)
       throw new StaleElementError('root ref is not in the accessibility tree');
-    const out: Array<{ node: Protocol.Accessibility.AXNode; depth: number }> = [];
-    const seen = new Set<string>();
-    let capped = false;
-    const property = (node: Protocol.Accessibility.AXNode, name: string) =>
-      node.properties?.find((p) => p.name === name)?.value.value;
-    const visit = (node: Protocol.Accessibility.AXNode, depth: number, parentName: string) => {
-      if (seen.has(node.nodeId)) return;
-      if (out.length >= MAX_SNAPSHOT_NODES) {
-        capped = true;
-        return;
-      }
-      seen.add(node.nodeId);
-      const role = String(node.role?.value ?? '');
-      const name = String(node.name?.value ?? '');
-      let include = !node.ignored && role !== 'InlineTextBox';
-      // Unnamed wrappers add depth without information; text repeating its parent's name is noise.
-      if (include && ['generic', 'none', 'presentation', 'LineBreak'].includes(role) && !name)
-        include = false;
-      if (include && role === 'StaticText' && (!name.trim() || name === parentName))
-        include = false;
-      if (include && options.interactiveOnly)
-        include = INTERACTIVE.has(role) || property(node, 'focusable') === true;
-      if (include) out.push({ node, depth });
-      for (const id of node.childIds ?? []) {
-        const child = byId.get(id);
-        if (child) visit(child, include ? depth + 1 : depth, include ? name : parentName);
-      }
-    };
-    for (const start of starts) visit(start, 0, '');
+    const box = (node: Protocol.Accessibility.AXNode) =>
+      (node.backendDOMNodeId !== undefined && geometry.boxes.get(node.backendDOMNodeId)) || null;
+    let out = selected;
+    if (options.viewportOnly) {
+      const viewport = geometry.viewport;
+      if (!viewport) throw new Error('Chrome did not report the viewport; omit viewportOnly');
+      out = out.filter(({ node }) => {
+        const b = box(node);
+        return !!b && inViewport(b, viewport);
+      });
+    }
     const offset = options.offset ?? 0;
     const page = out.slice(offset, offset + options.limit);
     const items: SnapshotNode[] = await Promise.all(
@@ -532,8 +515,9 @@ export class BrowserMcpSession {
               .filter((p) => STATES.includes(p.name))
               .map((p) => [p.name, p.value.value]),
           ),
+          box: box(node),
         };
-        const url = property(node, 'url');
+        const url = axProperty(node, 'url');
         if (typeof url === 'string' && url) item.url = url.slice(0, 2000);
         const value = node.value?.value;
         if (VALUED.has(role) && value !== undefined && value !== '' && node.backendDOMNodeId) {
@@ -559,6 +543,7 @@ export class BrowserMcpSession {
       ...this.tabInfo(frame.tab),
       frameId: frame.id,
       generation,
+      viewport: geometry.viewport,
       nodes: items,
       offset,
       truncated: next < out.length || capped,
@@ -569,36 +554,8 @@ export class BrowserMcpSession {
     };
   }
   /** Indented, model-friendly rendering of snapshot() output. */
-  static snapshotText(snapshot: Awaited<ReturnType<BrowserMcpSession['snapshot']>>): string {
-    const lines = [`Tab ${snapshot.tabId} frame ${snapshot.frameId}: ${snapshot.url}`];
-    if (snapshot.dialog)
-      lines.push(`Dialog open (${snapshot.dialog.type}): ${quote(snapshot.dialog.message)}`);
-    for (const node of snapshot.nodes) {
-      let line = `${'  '.repeat(Math.min(node.depth, 40))}- ${node.role || 'node'}`;
-      if (node.name) line += ` ${quote(node.name)}`;
-      if (node.ref) line += ` [${node.ref}]`;
-      for (const [name, value] of Object.entries(node.states))
-        if (value === true || value === 'true') line += ` ${name}`;
-        else if (value !== false && value !== 'false' && value !== undefined && value !== '')
-          line += ` ${name}=${String(value)}`;
-      if (node.value !== undefined) line += ` value=${quote(node.value)}`;
-      if (node.url) line += ` url=${node.url}`;
-      lines.push(line);
-    }
-    const others = snapshot.frames.filter((f) => f.frameId !== snapshot.frameId);
-    if (others.length && !snapshot.offset)
-      lines.push(
-        `Other frames (snapshot with frameId): ${others.map((f) => `${f.frameId} ${f.url}`).join('; ')}`,
-      );
-    if (snapshot.nextOffset !== null)
-      lines.push(
-        `[${snapshot.offset + snapshot.nodes.length} of ${snapshot.totalNodes}${snapshot.capped ? '+' : ''} nodes; continue with offset=${snapshot.nextOffset}]`,
-      );
-    else if (snapshot.capped)
-      lines.push(
-        `[Stopped at the limit of ${snapshot.totalNodes} nodes; snapshot a root element or another frame for the rest]`,
-      );
-    return lines.join('\n');
+  static snapshotText(snapshot: Snapshot): string {
+    return renderSnapshot(snapshot);
   }
   /**
    * Runs an action, then optionally waits for a navigation it started: "auto" allows 250 ms
@@ -854,6 +811,7 @@ export class BrowserMcpSession {
     return { capturing: true, total: entries.length, entries: entries.slice(-limit) };
   }
   async release(): Promise<void> {
+    await this.remote?.end('released');
     this.refs.clear();
     this.refKeys.clear();
     this.dialogs.clear();

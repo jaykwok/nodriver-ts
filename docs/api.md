@@ -163,13 +163,25 @@ scope.borrow(startTab); // stays open; its popups close with the scope
 scope.keep(reviewTab); // left open for a person
 ```
 
+## Virtual display
+
+`Browser.launch({ virtualDisplay: true })` runs headful Chrome on its own Xvfb server, for Linux machines without a display. It needs the `Xvfb` program and is refused on other platforms and together with `headless: true`. Pass `{ screen: '1920x1080x24', timeout, executable }` to configure it.
+
+The server picks a free display and reports it through `-displayfd`, so concurrent launches do not compete for a number. It does not listen on TCP and requires an MIT-MAGIC-COOKIE, written to 0600 files in a temporary directory, so other local users cannot connect. It stops after Chrome exits and its files are removed. With `supervised: true` the guardian owns both processes, which end together if the host exits. `release()` leaves both running. `XvfbSession.start(options)` runs a server on its own; pass `session.env` to the program that should use it, and call `session.stop()`.
+
 ## State and storage
 
 Cookies and storage are isolated between BrowserContexts. That isolation does not extend to the operating system, GPU or fonts.
 
-`storageState(path?)` saves cookies, plus first-party localStorage for every HTTP(S) origin that any frame in the context has visited, including iframes and origins used by tabs that have since closed. Empty storage is not exported. Partitioned localStorage of cross-site iframes under other top-level sites, sessionStorage and IndexedDB are not in the snapshot. Main pages that are still open are read in place; other origins are read in one temporary tab.
+`storageState({ include, maxBytes, path })` saves cookies, plus first-party localStorage for every HTTP(S) origin that any frame in the context has visited, including iframes and origins used by tabs that have since closed. Empty storage is not exported. Partitioned localStorage of cross-site iframes under other top-level sites is not in the snapshot. Main pages that are still open are read in place; other origins are read in one temporary tab.
 
-`restoreStorage(state)` sets cookies first, then replaces the localStorage of each listed origin. If a main page for that origin is still open, it is written in place and readable once the call returns; other origins are written in one temporary tab. The temporary tab intercepts document requests, serves a blank page and bypasses Service Workers, so it never contacts the site, follows redirects or runs site scripts. Other open documents of the same origin receive the change asynchronously, just as with cross-tab writes in the browser.
+The result has `version: 2`. `include: ['sessionStorage']` adds the sessionStorage of the top-level documents of open tabs, one entry per origin, taken from the first tab that shows it. `include: ['indexedDB']` adds each origin's databases to its entry: version, object stores, indexes and all records, with Date, ArrayBuffer and typed arrays, Blob and File, Map, Set, BigInt, undefined, NaN and ±Infinity kept in a tagged JSON form. Databases are read in batches on an empty intercepted page, so a page writing at the same time can produce an export that mixes before and after. A value that cannot be represented, such as a cyclic one or a stored platform object like a `CryptoKey`, fails the export. An export larger than `maxBytes` (64 MiB by default) fails with a `RangeError`.
+
+`restoreStorage(state, { sessionStorageTab })` sets cookies first, then replaces the localStorage of each listed origin. If a main page for that origin is still open, it is written in place and readable once the call returns; other origins are written in one temporary tab. The temporary tab intercepts document requests, serves a blank page and bypasses Service Workers, so it never contacts the site, follows redirects or runs site scripts. Other open documents of the same origin receive the change asynchronously, just as with cross-tab writes in the browser.
+
+A state with sessionStorage needs `sessionStorageTab`, a tab of the context. It visits each origin on an empty intercepted page, receives the values and ends on about:blank; navigating it to the site afterwards shows them. Listed IndexedDB databases are deleted and rebuilt at their saved version with explicit keys; other databases of the origin are left alone. The call refuses, before changing anything, while a tab of the context shows such an origin, and names the tabs. If a worker or a page outside the context still holds a connection, it fails with a `NodriverError`; that database is then deleted once the connection closes. A key generator continues from the largest restored numeric key plus one, even if the original had handed out higher keys since deleted. States without `version`, from earlier releases, can be restored.
+
+`encryptState(state, key)` and `decryptState(bytes, key)` seal a state with AES-256-GCM. `key` is 32 bytes, or a passphrase that scrypt turns into a key, with its parameters in the file header. The header is authenticated together with the content, so a wrong key and a changed file both report `Cannot decrypt the state`.
 
 `clearSiteData({ domains, origins, types, openTabs })` deletes the data of some sites and keeps the rest of the context, for example to log out of one site while staying logged in to another:
 

@@ -45,6 +45,11 @@ export interface PresentationLeaseOptions {
   /** Independent stop and ACK cleanup budget. Defaults to 2000 ms. */
   stopTimeout?: number;
   signal?: AbortSignal;
+  /**
+   * Receives each frame. The frame is acknowledged once this settles, so Chrome sends no more
+   * frames than the receiver takes.
+   */
+  deliver?: (frame: EventParams<'Page.screencastFrame'>) => void | Promise<void>;
 }
 
 export interface PresentationReport {
@@ -133,8 +138,8 @@ function screencastOptions(
  */
 export class PresentationLease {
   readonly session: Session;
-  readonly options: Required<Omit<PresentationLeaseOptions, 'signal' | 'screencast'>> &
-    Pick<PresentationLeaseOptions, 'signal' | 'screencast'>;
+  readonly options: Required<Omit<PresentationLeaseOptions, 'signal' | 'screencast' | 'deliver'>> &
+    Pick<PresentationLeaseOptions, 'signal' | 'screencast' | 'deliver'>;
   readonly report: PresentationReport = {
     state: 'stopped',
     cleanup: 'pending',
@@ -183,6 +188,7 @@ export class PresentationLease {
       ackTimeout: timeoutValue(options.ackTimeout ?? DEFAULTS.ackTimeout, 'ackTimeout'),
       stopTimeout: timeoutValue(options.stopTimeout ?? DEFAULTS.stopTimeout, 'stopTimeout'),
       signal: options.signal,
+      deliver: options.deliver,
     };
   }
 
@@ -327,23 +333,24 @@ export class PresentationLease {
 
     this.report.frames++;
     this.report.encodedBytes += bytes;
-    const ack = this.session
-      .sendWith(
+    const acknowledge = () =>
+      this.session.sendWith(
         'Page.screencastFrameAck',
         { timeout: this.options.ackTimeout },
         { sessionId: event.sessionId },
-      )
-      .then(
-        () => {
-          if (!this.report.closed) this.report.acknowledgedFrames++;
-        },
-        (error: unknown) => {
-          if (!this.report.closed) {
-            this.report.ackErrors++;
-            if (error instanceof TimeoutError) this.requestClose('ack-timeout');
-          }
-        },
       );
+    const deliver = this.options.deliver;
+    const ack = (deliver ? (async () => deliver(event))().then(acknowledge) : acknowledge()).then(
+      () => {
+        if (!this.report.closed) this.report.acknowledgedFrames++;
+      },
+      (error: unknown) => {
+        if (!this.report.closed) {
+          this.report.ackErrors++;
+          if (error instanceof TimeoutError) this.requestClose('ack-timeout');
+        }
+      },
+    );
     this.inFlight.add(ack);
     this.report.inFlightAcks = this.inFlight.size;
     void ack.then(

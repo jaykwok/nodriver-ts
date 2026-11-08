@@ -11,6 +11,7 @@ import { MCP_PROTOCOL_VERSION } from './protocol.ts';
 import { requestPort, serveFetch } from './serve.ts';
 import { LeaseError } from './manager.ts';
 import { createCompatibleBrowserMcpHttpEndpoint } from './compat.ts';
+import { handoffResponse } from './handoff.ts';
 
 export interface BrowserMcpHttpOptions {
   /** Enable a separate stateful 2025-era /mcp/compat endpoint. /mcp stays modern-only. */
@@ -53,6 +54,8 @@ interface Endpoint {
   compatible?: ReturnType<typeof createCompatibleBrowserMcpHttpEndpoint>;
   off: () => void;
   pending: number;
+  /** Origin of the latest request, used in handoff links. */
+  origin?: string;
 }
 function integer(value: number, label: string): number {
   if (!Number.isSafeInteger(value) || value < 1) throw new RangeError(`Invalid ${label}`);
@@ -122,7 +125,13 @@ function httpService(options: BrowserMcpHttpOptions): {
     let endpoint = endpoints.get(id);
     if (endpoint) return endpoint;
     const session = manager.session(principal, id);
-    const factory = () => createBrowserMcpServer({}, { manager, principal, leaseId: id });
+    const binding = {
+      manager,
+      principal,
+      leaseId: id,
+      handoffOrigin: () => endpoints.get(id)?.origin,
+    };
+    const factory = () => createBrowserMcpServer({}, binding);
     const modern = createMcpHandler(factory, {
       legacy: 'reject',
       responseMode: options.responseMode ?? 'auto',
@@ -144,15 +153,12 @@ function httpService(options: BrowserMcpHttpOptions): {
       modern,
       ...(options.compatibility
         ? {
-            compatible: createCompatibleBrowserMcpHttpEndpoint(
-              { manager, principal, leaseId: id },
-              {
-                maxSessions: maxCompatibilitySessions,
-                maxBody,
-                idleMs: compatibilityIdleMs,
-                onerror: report,
-              },
-            ),
+            compatible: createCompatibleBrowserMcpHttpEndpoint(binding, {
+              maxSessions: maxCompatibilitySessions,
+              maxBody,
+              idleMs: compatibilityIdleMs,
+              onerror: report,
+            }),
           }
         : {}),
       pending: 0,
@@ -258,6 +264,13 @@ function httpService(options: BrowserMcpHttpOptions): {
       const origin = original.headers.get('origin');
       if (origin && ![url.origin, ...(options.allowedOrigins ?? [])].includes(origin))
         return error(403, 'Origin rejected');
+      try {
+        const viewer = await handoffResponse(original, url, manager.handoffs);
+        if (viewer) return viewer;
+      } catch (cause) {
+        report(cause);
+        return error(500, 'Handoff request failed');
+      }
       const authorization = original.headers.get('authorization');
       const token = Buffer.from(authorization?.startsWith('Bearer ') ? authorization.slice(7) : '');
       let principal: string | undefined;
@@ -366,6 +379,7 @@ function httpService(options: BrowserMcpHttpOptions): {
         return error(404, 'Unknown, unauthorized or expired browser lease');
       }
       const endpoint = endpointFor(principal, leaseId);
+      endpoint.origin = url.origin;
       if (!compatible && original.headers.has('mcp-session-id')) {
         release();
         return error(400, `MCP ${MCP_PROTOCOL_VERSION} uses Browser-Lease-Id, not MCP sessions`);

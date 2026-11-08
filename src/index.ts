@@ -6,9 +6,14 @@ export type {
   ClearSiteDataOptions,
   ClearSiteDataResult,
   ContextOptions,
+  RestoreStorageOptions,
+  SavedStorageState,
   SiteDataType,
   StorageState,
+  StorageStateOptions,
 } from './browser/context.ts';
+export type { IndexedDBDatabase, IndexedDBIndex, IndexedDBStore } from './browser/indexeddb.ts';
+export { encryptState, decryptState, type StateKey } from './browser/state-crypto.ts';
 export { findExecutable, acquireProfileLock, AGENT_ARGS } from './browser/launcher.ts';
 export type { LaunchOptions, ProfilePreparation } from './browser/launcher.ts';
 export { updateProfileSettings } from './browser/profile.ts';
@@ -20,6 +25,8 @@ export type {
   StartupDiagnostics,
   StartupProcessDiagnostics,
 } from './browser/startup.ts';
+export { XvfbSession } from './optional/xvfb.ts';
+export type { XvfbOptions, XvfbStartOptions } from './optional/xvfb.ts';
 export { Download } from './browser/download.ts';
 export { Tab } from './page/tab.ts';
 export type { Environment } from './page/tab.ts';

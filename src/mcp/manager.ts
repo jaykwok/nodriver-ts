@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { EventHub } from '../utils.ts';
 import { BrowserMcpSession, type BrowserMcpOptions } from './session.ts';
 import { BrowserPool } from './pool.ts';
+import { HandoffRegistry } from './handoff.ts';
 
 export interface BrowserSessionManagerOptions extends BrowserMcpOptions {
   maxLeases?: number;
@@ -51,6 +52,7 @@ export class BrowserSessionManager {
   private timer: ReturnType<typeof setInterval>;
   private sweeping?: Promise<void>;
   readonly retired = new EventHub<string>();
+  readonly handoffs = new HandoffRegistry();
   readonly limits;
   readonly options: BrowserSessionManagerOptions;
   constructor(options: BrowserSessionManagerOptions = {}) {

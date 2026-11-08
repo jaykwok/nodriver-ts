@@ -10,6 +10,12 @@ import { ProxyForwarder } from '../optional/proxy.ts';
 import { ClearSiteDataError, NodriverError } from '../errors.ts';
 import { bounded, budget, within, type WaitOptions } from '../utils.ts';
 import { TabScope } from './tab-scope.ts';
+import {
+  blockedDatabase,
+  exportIndexedDB,
+  importIndexedDB,
+  type IndexedDBDatabase,
+} from './indexeddb.ts';
 import { checkedInputPolicy, type InputPolicy } from '../input/behavior.ts';
 export interface ContextOptions {
   proxyServer?: string;
@@ -20,8 +26,28 @@ export interface ContextOptions {
   inputPolicy?: InputPolicy;
 }
 export interface StorageState {
+  version: 2;
   cookies: Protocol.Network.CookieParam[];
-  origins: Array<{ origin: string; localStorage: Record<string, string> }>;
+  origins: Array<{
+    origin: string;
+    localStorage: Record<string, string>;
+    indexedDB?: IndexedDBDatabase[];
+  }>;
+  sessionStorage?: Array<{ origin: string; values: Record<string, string> }>;
+}
+/** A state to restore; files saved before the format had a version have none. */
+export type SavedStorageState = Omit<StorageState, 'version'> & { version?: 2 };
+export interface StorageStateOptions {
+  /** Also export these; cookies and localStorage always are. */
+  include?: Array<'sessionStorage' | 'indexedDB'>;
+  /** Fails the export when its JSON would be larger; 64 MiB by default. */
+  maxBytes?: number;
+  /** Also writes the state to this file. */
+  path?: string;
+}
+export interface RestoreStorageOptions {
+  /** Receives the state's sessionStorage, and is left on about:blank. */
+  sessionStorageTab?: Tab;
 }
 export type SiteDataType =
   'cookies' | 'localStorage' | 'sessionStorage' | 'indexedDB' | 'cacheStorage' | 'serviceWorkers';
@@ -57,6 +83,7 @@ export interface ClearSiteDataResult {
 }
 /** Deadline of each step that restores a tab after visiting origins in it. */
 const RESTORE_TIMEOUT = 5_000;
+const DEFAULT_STATE_BYTES = 64 * 1024 * 1024;
 const STORAGE_TYPES: Partial<Record<SiteDataType, string>> = {
   localStorage: 'local_storage',
   indexedDB: 'indexeddb',
@@ -499,19 +526,39 @@ export class BrowserContext {
    * Cookies plus first-party localStorage of every HTTP(S) origin any frame of this context has
    * committed, including iframes and tabs closed since. Origins with empty storage are omitted.
    * Storage partitioned under another top-level site (third-party iframes) is not included.
+   * `include` adds the sessionStorage of open tabs, read from their top-level documents, and the
+   * IndexedDB databases of those origins. When several tabs show an origin, the first one's
+   * sessionStorage is exported.
    */
-  async storageState(path?: string): Promise<StorageState> {
+  async storageState(options: StorageStateOptions = {}): Promise<StorageState> {
+    if (typeof options !== 'object')
+      throw new TypeError('storageState() takes options; use { path } to write a file');
+    const maxBytes = options.maxBytes ?? DEFAULT_STATE_BYTES;
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 1)
+      throw new RangeError('maxBytes must be a positive integer');
+    const include = new Set(options.include);
     const origins = new Map<string, Record<string, string>>();
+    const databases = new Map<string, IndexedDBDatabase[]>();
+    const budget = { left: maxBytes };
     const pending = new Set(this.usedOrigins);
     for (const tab of this.tabs)
       for (const frame of tab.frames) {
         const origin = httpOrigin(frame.url);
         if (origin) pending.add(origin);
       }
+    const all = [...pending];
+    const sessionStorage = new Map<string, Record<string, string>>();
     // Live top-level documents hold their origin's first-party storage; read them in place.
     for (const tab of this.tabs) {
       const origin = httpOrigin(tab.url);
-      if (!origin || origins.has(origin) || tab.crashed) continue;
+      if (!origin || tab.crashed) continue;
+      if (include.has('sessionStorage') && !sessionStorage.has(origin))
+        try {
+          sessionStorage.set(origin, await tab.mainFrame.storage('session', origin));
+        } catch {
+          // Navigated, sandboxed or closed meanwhile: no document holds this tab's storage now.
+        }
+      if (origins.has(origin)) continue;
       try {
         origins.set(origin, await tab.mainFrame.storage('local', origin));
         pending.delete(origin);
@@ -519,10 +566,14 @@ export class BrowserContext {
         // Navigated, sandboxed or closed meanwhile: read it from the temporary tab instead.
       }
     }
-    await this.atOrigins(pending, async (frame, origin) => {
-      origins.set(origin, await frame.storage('local', origin));
+    await this.atOrigins(include.has('indexedDB') ? all : pending, async (frame, origin) => {
+      if (pending.has(origin)) origins.set(origin, await frame.storage('local', origin));
+      if (!include.has('indexedDB')) return;
+      const found = await exportIndexedDB(frame, origin, budget);
+      if (found.length) databases.set(origin, found);
     });
-    for (const [origin, values] of origins) if (!Object.keys(values).length) origins.delete(origin);
+    for (const [origin, values] of origins)
+      if (!Object.keys(values).length && !databases.has(origin)) origins.delete(origin);
     const cookies = (await this.cookies()).map((c) => ({
       name: c.name,
       value: c.value,
@@ -534,25 +585,63 @@ export class BrowserContext {
       expires: c.session ? undefined : c.expires,
       partitionKey: c.partitionKey,
     }));
-    const state = {
+    const state: StorageState = {
+      version: 2,
       cookies,
-      origins: [...origins].map(([origin, localStorage]) => ({ origin, localStorage })),
+      origins: [...origins].map(([origin, localStorage]) => {
+        const stored = databases.get(origin);
+        return { origin, localStorage, ...(stored ? { indexedDB: stored } : {}) };
+      }),
     };
-    if (path) await writeFile(path, JSON.stringify(state, null, 2));
+    if (include.has('sessionStorage'))
+      state.sessionStorage = [...sessionStorage]
+        .filter(([, values]) => Object.keys(values).length)
+        .map(([origin, values]) => ({ origin, values }));
+    const text = JSON.stringify(state, null, 2);
+    if (Buffer.byteLength(text) > maxBytes)
+      throw new RangeError(`Storage state exceeds maxBytes (${maxBytes})`);
+    if (options.path) await writeFile(options.path, text);
     return state;
   }
   /**
    * Sets the cookies, then replaces the localStorage of each listed origin. An open top-level
    * document of the origin sees the values on return; other open documents of that origin receive
-   * the change asynchronously, as with a write from another tab.
+   * the change asynchronously, as with a write from another tab. Listed IndexedDB databases are
+   * replaced, which is refused while a page shows their origin. A state's sessionStorage goes to
+   * `sessionStorageTab`, which is navigated through its origins on empty intercepted pages.
    */
-  async restoreStorage(state: StorageState): Promise<void> {
+  async restoreStorage(
+    state: SavedStorageState,
+    options: RestoreStorageOptions = {},
+  ): Promise<void> {
+    if (state.version !== undefined && state.version !== 2)
+      throw new TypeError(`Unsupported storage state version: ${String(state.version)}`);
     const entries = new Map<string, Record<string, string>>();
+    const databases = new Map<string, IndexedDBDatabase[]>();
     for (const entry of state.origins) {
       const origin = httpOrigin(entry.origin);
       if (!origin) throw new TypeError('Storage restore requires HTTP(S) origins');
       entries.set(origin, entry.localStorage);
+      if (entry.indexedDB?.length) databases.set(origin, entry.indexedDB);
     }
+    const session = new Map<string, Record<string, string>>();
+    for (const entry of state.sessionStorage ?? []) {
+      const origin = httpOrigin(entry.origin);
+      if (!origin) throw new TypeError('Storage restore requires HTTP(S) origins');
+      session.set(origin, entry.values);
+    }
+    const target = options.sessionStorageTab;
+    if (session.size && !target)
+      throw new TypeError('This state has sessionStorage; pass sessionStorageTab to receive it');
+    if (target && target.context !== this)
+      throw new TypeError('sessionStorageTab must belong to this context');
+    const holders = this.tabs.filter((tab) =>
+      tab.frames.some((frame) => databases.has(httpOrigin(frame.url) ?? '')),
+    );
+    if (holders.length)
+      throw new NodriverError(
+        `Pages of these origins may hold their IndexedDB databases open; close them before restoring: ${holders.map((tab) => tab.url).join(', ')}`,
+      );
     await this.setCookies(state.cookies);
     // Write through a live top-level document of the origin where one exists: a write from the
     // temporary tab reaches other renderers asynchronously, after this method has returned.
@@ -567,9 +656,26 @@ export class BrowserContext {
         // Navigated, sandboxed or closed meanwhile: write it from the temporary tab instead.
       }
     }
-    await this.atOrigins(entries.keys(), (frame, origin) =>
-      frame.setStorage(entries.get(origin)!, 'local', true, origin),
-    );
+    const visits = new Set([...entries.keys(), ...databases.keys()]);
+    await this.atOrigins(visits, async (frame, origin) => {
+      const values = entries.get(origin);
+      if (values) await frame.setStorage(values, 'local', true, origin);
+      const stored = databases.get(origin);
+      if (!stored) return;
+      await importIndexedDB(frame, origin, stored).catch((error: unknown) => {
+        const name = blockedDatabase(error);
+        throw name === undefined
+          ? error
+          : new NodriverError(
+              `Another page or worker of ${origin} keeps IndexedDB database ${name} open; it was not restored, and is deleted when that connection closes`,
+              { cause: error },
+            );
+      });
+    });
+    if (target && session.size)
+      await this.visitOrigins(target, [...session.keys()], (frame, origin) =>
+        frame.setStorage(session.get(origin)!, 'session', true, origin),
+      );
   }
   close(): Promise<void> {
     if (!this.id)

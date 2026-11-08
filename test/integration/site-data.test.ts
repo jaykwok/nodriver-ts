@@ -200,17 +200,17 @@ test('a reattach during origin collection reads sessionStorage origins from the 
   await page.goto(other + '/');
   await using client = await Browser.connect({ endpoint: owner.endpoint! });
   const first = client.tabs.find((tab) => tab.id === page.id)!;
-  const send = first.cdp.send;
+  const sendWith = first.cdp.sendWith;
   let adopted!: typeof first;
   // Delay this real command until the old session has been replaced; the page and its
   // navigation history remain in Chrome throughout.
-  t.mock.method(first.cdp, 'send', (async (...args: Parameters<typeof send>) => {
+  t.mock.method(first.cdp, 'sendWith', (async (...args: Parameters<typeof sendWith>) => {
     if (args[0] === 'Page.getNavigationHistory') {
       await client.cdp.send('Target.detachFromTarget', { sessionId: first.session.id! });
       adopted = await client.attachTarget(first.id);
     }
-    return Reflect.apply(send, first.cdp, args);
-  }) as typeof send);
+    return Reflect.apply(sendWith, first.cdp, args);
+  }) as typeof sendWith);
   await assert.rejects(
     client.defaultContext.clearSiteData({ origins: [origin], types: ['sessionStorage'] }),
     /sessionStorage/,
