@@ -8,7 +8,12 @@ import type { LaunchOptions } from '../browser/launcher.ts';
 import type { Tab } from '../page/tab.ts';
 import type { Frame } from '../page/frames.ts';
 import { Element } from '../dom/element.ts';
-import { DisconnectedError, StaleElementError, TimeoutError } from '../errors.ts';
+import {
+  DisconnectedError,
+  HandoffActiveError,
+  StaleElementError,
+  TimeoutError,
+} from '../errors.ts';
 import { abortReason, delay, EventHub, type WaitOptions } from '../utils.ts';
 import { OperationQueue } from './queue.ts';
 import type { BrowserAllocation } from './pool.ts';
@@ -26,6 +31,7 @@ import {
   type SnapshotOptions,
 } from './snapshot.ts';
 export type { Box, Snapshot, SnapshotNode, SnapshotOptions } from './snapshot.ts';
+import type { RemoteHandoff, RemoteHandoffOptions } from './handoff.ts';
 
 export interface BrowserMcpOptions {
   /** Lazy launch; mutually exclusive with connect. */
@@ -44,6 +50,11 @@ export interface BrowserMcpOptions {
   proxy?: string;
   /** Explicitly allow asking the user to operate an accessible browser window. */
   humanInteraction?: boolean;
+  /**
+   * Allows browser_handoff with mode "remote": a user operates a tab from a viewer page served by
+   * the HTTP service. Works without a visible window, including in headless mode.
+   */
+  remoteHandoff?: boolean | RemoteHandoffOptions;
   inputPolicy?: InputPolicy;
   /** Host-configured probes only; tools cannot supply arbitrary egress URLs. */
   environmentDiagnostics?: DiagnoseEnvironmentOptions;
@@ -133,6 +144,8 @@ export class BrowserMcpSession {
     time: number;
     error?: string;
   }> = [];
+  /** While set, tools that could interfere with the user are refused. */
+  remote?: RemoteHandoff;
   private handoffs = new Map<string, { tabId: string; expires: number; completed: boolean }>();
   private downloads: DownloadEntry[] = [];
   private downloadSequence = 0;
@@ -363,6 +376,12 @@ export class BrowserMcpSession {
     if (!frame)
       throw new StaleElementError('Unknown frame; refresh browser_tabs or browser_snapshot');
     return frame;
+  }
+  assertNoRemoteHandoff(): void {
+    if (this.remote)
+      throw new HandoffActiveError(
+        `A person is operating this browser (handoff ${this.remote.id}); call browser_handoff_wait`,
+      );
   }
   /** Short ref ("e12") for a node; the same live node keeps the same ref. */
   addRef(element: Element): string {
@@ -792,6 +811,7 @@ export class BrowserMcpSession {
     return { capturing: true, total: entries.length, entries: entries.slice(-limit) };
   }
   async release(): Promise<void> {
+    await this.remote?.end('released');
     this.refs.clear();
     this.refKeys.clear();
     this.dialogs.clear();

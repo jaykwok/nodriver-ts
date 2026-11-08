@@ -137,6 +137,20 @@ SSE 断流会取消对应请求，但不释放租约，也不影响其他请求�
 
 `/mcp` 的人工交互使用 2026-07-28 的 InputRequiredResult/MRTR；兼容入口启用 SDK 的 legacy elicitation shim。requestState 是五分钟后过期的随机标识，服务端保存其标签页、租约和阶段。篡改、跨租约或未知的状态被拒绝，已完成的状态不会再执行前面的步骤。完成后只返回当前页面状态，调用者应重新 snapshot。秘密应由用户直接在浏览器中输入。
 
+## 远程人工接管
+
+`browser_handoff({ tabId, mode: "remote", resumeCondition })` 让用户在本 HTTP 服务提供的查看页面上操作标签页，例如在没有屏幕的服务器上完成登录步骤。需要开启 `--remote-handoff`（嵌入时为 `remoteHandoff: true` 或选项对象），在无头模式下也能使用。stdio 和 socket 传输不支持。
+
+工具通过 URL 型 elicitation 把私密链接交给客户端，链接不进入模型上下文，需要客户端声明 `elicitation.url` 能力。用户拒绝时接管结束。只有开启 `--remote-handoff-link-in-result`（`linkInResult: true`）时，链接才出现在工具结果里，模型可以读到。调用返回 `{ handoffId, expiresAt }`；之后反复调用 `browser_handoff_wait({ handoffId, timeout })`，直到 `state` 为 `ended`，也可以传 `cancel: true` 取消。`browser://events` 会发出 `handoff-started`、`handoff-connected` 和 `handoff-ended`。
+
+`resumeCondition` 满足、用户点击完成、取消、标签页关闭或过期，任一发生即结束接管。`resumeCondition` 为 `{ url?, selector?, timeout }`：`url` 是主 frame 的完整 URL，`*` 匹配任意字符；`selector` 在 isolated world 中查询；同时给出时两者都要满足。`reason` 的取值为 `condition`、`completed`、`cancelled`、`expired`、`tab-closed` 或 `released`。除非主机设置 `maxDuration`，接管最长 15 分钟。
+
+接管期间，该租约的其他工具立即以 `HandoffActiveError` 失败，不会排队，`browser_tabs` 和 `browser_handoff_wait` 除外。闲置清理不会回收该租约。结束后请重新读取快照，原有 ref 可能已失效。
+
+服务仍只监听本机回环地址，并保留 Host 和 Origin 校验；需要从其他机器访问时，请自行建立隧道，例如 `ssh -L 3100:127.0.0.1:3100 host`，并保持本地端口相同。链接包含 256 位令牌，只能使用一次，5 分钟后过期（`tokenTtl`），并绑定认证主体、租约和标签页。打开链接时，令牌被换成 `HttpOnly; SameSite=Strict`、路径限定在该次接管的 cookie，地址栏里不再保留令牌。页面发出的请求必须同源。页面的 CSP 为 `default-src 'self'` 并设置 `frame-ancestors 'none'`，没有内联脚本。未打开的链接落到谁手里谁就能使用，请按密钥对待。跨机器的传输加密由隧道提供，而不是本服务。
+
+画面通过 server-sent events 传输 `Page.startScreencast` 的帧，每帧在查看页读取之后才确认，所以连接较慢时帧率会自动降低。输入通过 POST 回传并转成 CDP 输入：鼠标、滚轮和按键；输入法的合成文本和粘贴走 `Input.insertText`。`audit` 选项接收 `started`、`connected`、`ended` 记录和输入次数，不包含输入内容；CLI 把它们写到 stderr。
+
 ## 测试覆盖
 
 测试覆盖 JSON 与 SSE、旧协议拒绝、跨请求与跨连接复用、认证与请求头、标签页与引用权限、取消、超时与配额、订阅过滤、人工交互、profile 归属，以及真实 CDP 流量中的禁止命令。HTTP 与真实 stdio 子进程运行同一套行为断言。平台与版本见[支持范围](support.md)。

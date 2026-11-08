@@ -32,6 +32,7 @@ import { evaluateScript, MAX_SCRIPT_LENGTH, MAX_ARGUMENT_LENGTH } from './evalua
 import { BrowserSessionManager, type BrowserSessionManagerOptions } from './manager.ts';
 import { readState, writeState } from './state.ts';
 import { markedScreenshot } from './marks.ts';
+import { waitForHandoff, type RemoteHandoffOptions } from './handoff.ts';
 import type { Tab } from '../page/tab.ts';
 import { PACKAGE } from '../version.ts';
 export type {
@@ -50,6 +51,8 @@ export interface BrowserMcpBinding {
   manager: BrowserSessionManager;
   principal: string;
   leaseId: string;
+  /** Origin that serves handoff viewers; set by the HTTP service. */
+  handoffOrigin?: () => string | undefined;
 }
 
 const tabId = z
@@ -296,7 +299,14 @@ export function createBrowserMcpServer(
         // Dialogs may be blocking a prior action's CDP response. They must be
         // answerable while that action is still holding the operation queue.
         // A download wait must not hold the queue the triggering click needs.
-        const run = ['browser_dialog', 'browser_tabs', 'browser_downloads'].includes(name)
+        const exempt = name === 'browser_tabs' || name === 'browser_handoff_wait';
+        if (!exempt) session.assertNoRemoteHandoff();
+        const run = [
+          'browser_dialog',
+          'browser_tabs',
+          'browser_downloads',
+          'browser_handoff_wait',
+        ].includes(name)
           ? session.interrupt.bind(session)
           : session.run.bind(session);
         const token = context.mcpReq._meta?.progressToken;
@@ -314,6 +324,8 @@ export function createBrowserMcpServer(
           run(
             context.mcpReq.signal,
             async (signal) => {
+              // It may have started while this call waited in the queue.
+              if (!exempt) session.assertNoRemoteHandoff();
               await progress(1, 'Running');
               return handler(args, signal);
             },
@@ -1057,33 +1069,156 @@ export function createBrowserMcpServer(
       return result({ connected: false });
     },
   );
+  const remoteOptions: RemoteHandoffOptions | undefined =
+    config.remoteHandoff === true ? {} : config.remoteHandoff || undefined;
+  if (remoteOptions && enabled('browser_handoff'))
+    tool(
+      'browser_handoff_wait',
+      'Wait for a remote handoff from browser_handoff to end, up to timeout, then report its state; state active means call again. cancel ends it. Other browser tools except browser_tabs fail while a handoff is active.',
+      {
+        handoffId: z.string().uuid(),
+        timeout,
+        cancel: z.boolean().default(false).describe('End the handoff now'),
+      },
+      read,
+      async (args, signal) => {
+        const handoff = manager.handoffs.get(args.handoffId, principal, leaseId);
+        if (!handoff) throw new Error('Unknown or expired handoff');
+        if (args.cancel) await handoff.end('cancelled');
+        else if (handoff.active) await waitForHandoff(handoff, args.timeout, signal);
+        const status = handoff.status();
+        return result(
+          status.state === 'ended' && !handoff.tab.closed
+            ? { ...status, ...session.tabInfo(handoff.tab) }
+            : { ...status },
+        );
+      },
+    );
   if (!enabled('browser_handoff')) return server;
-  const humanSchema = z.strictObject({ tabId });
+  const humanSchema = z.strictObject({
+    tabId,
+    mode: z
+      .enum(['elicit', 'remote'])
+      .default('elicit')
+      .describe('elicit: confirm a step done in a visible window; remote: operate through a link'),
+    resumeCondition: z
+      .strictObject({
+        url: z.string().min(1).max(8192).optional().describe('Whole URL; * matches anything'),
+        selector: z.string().min(1).max(2000).optional().describe('CSS, in the main frame'),
+        timeout: z.number().int().min(1).max(86_400_000).describe('Milliseconds until it expires'),
+      })
+      .refine((c) => c.url !== undefined || c.selector !== undefined, 'Give url or selector')
+      .optional()
+      .describe('remote only: end the handoff when the page reaches this state'),
+  });
+  /** Modern capabilities belong to the request, never the legacy connection cache. */
+  function clientCapabilities(context: {
+    mcpReq: { envelope?: unknown };
+  }): ClientCapabilities | undefined {
+    const envelope = context.mcpReq.envelope as
+      { 'io.modelcontextprotocol/clientCapabilities'?: ClientCapabilities } | undefined;
+    return profile === 'modern'
+      ? envelope?.['io.modelcontextprotocol/clientCapabilities']
+      : server.server.getClientCapabilities();
+  }
+  async function remoteHandoff(
+    args: z.output<typeof humanSchema>,
+    context: Parameters<ToolCallback<typeof humanSchema>>[1],
+    previous: string | undefined,
+  ): Promise<CallToolResult | InputRequiredResult> {
+    const failed = (error: unknown): CallToolResult => ({
+      ...result({
+        error: error instanceof Error ? error.name : 'Error',
+        message: error instanceof Error ? error.message : String(error),
+      }),
+      isError: true,
+    });
+    try {
+      return await inLease(async () => {
+        if (previous) {
+          // The second round only reads the answer; the handoff itself is already running.
+          const handoff = manager.handoffs.get(previous, principal, leaseId);
+          if (!handoff || handoff.tab.id !== args.tabId)
+            throw new Error('Invalid or expired handoff state');
+          const answer = context.mcpReq.inputResponses?.link as { action?: string } | undefined;
+          if (answer?.action !== 'accept') {
+            await handoff.end('cancelled');
+            return result({
+              completed: false,
+              reason: 'Human interaction declined, cancelled or incomplete',
+            });
+          }
+          const { handoffId, expiresAt } = handoff.status();
+          return result({ handoffId, expiresAt });
+        }
+        session.assertNoRemoteHandoff();
+        return session.run(context.mcpReq.signal, async () => {
+          session.assertNoRemoteHandoff();
+          if (!remoteOptions)
+            throw new Error('Remote handoff is off; the host must enable remoteHandoff');
+          const origin = binding?.handoffOrigin?.();
+          if (!origin) throw new Error('Remote handoff requires the HTTP service');
+          const linkInResult = remoteOptions.linkInResult === true;
+          if (!linkInResult && !clientCapabilities(context)?.elicitation?.url)
+            throw new Error('Remote handoff requires the client elicitation.url capability');
+          const tab = session.tab(args.tabId);
+          await tab.bringToFront();
+          session.forgetFrontTab();
+          const { handoff, token } = manager.handoffs.create({
+            tab,
+            principal,
+            leaseId,
+            options: remoteOptions,
+            resume: args.resumeCondition,
+            release: manager.retain(principal, leaseId),
+            changed: (type) => session.changed(type, tab.id),
+            onEnded: () => {
+              if (session.remote === handoff) session.remote = undefined;
+            },
+          });
+          if (handoff.active) session.remote = handoff;
+          const url = `${origin}/handoff/${handoff.id}?token=${token}`;
+          const { handoffId, expiresAt } = handoff.status();
+          if (linkInResult) return result({ handoffId, expiresAt, url });
+          return inputRequired({
+            requestState: handoff.id,
+            inputRequests: {
+              link: inputRequired.elicitUrl({
+                message: 'Open this private link to operate the browser tab. It works once.',
+                url,
+              }),
+            },
+          });
+        });
+      });
+    } catch (error) {
+      return failed(error);
+    }
+  }
   server.registerTool(
     'browser_handoff',
     {
       description:
-        'Ask the user to finish manual work in an accessible browser window, then read fresh state. Does not collect login secrets or replay actions. Requires elicitation support.',
+        'Ask the user to finish manual work, then read fresh state. Does not collect login secrets or replay actions. mode elicit asks them to use an accessible browser window and needs elicitation support. mode remote, when the host allows it, gives them a private link to operate the tab, returns handoffId and expiresAt at once, and is followed by browser_handoff_wait.',
       inputSchema: humanSchema,
       annotations: write,
     },
     async (args, context): Promise<CallToolResult | InputRequiredResult> => {
       const previous = context.mcpReq.requestState<string>();
+      if (args.mode === 'elicit' && args.resumeCondition)
+        return {
+          ...result({ error: 'TypeError', message: 'resumeCondition applies to mode remote' }),
+          isError: true,
+        };
+      if (args.mode === 'remote') return remoteHandoff(args, context, previous);
       // The first round takes its turn to move focus. The answer must arrive whatever holds the
       // queue meanwhile, because the operations waiting there do not end the user's manual work.
       const run = previous ? session.interrupt.bind(session) : session.run.bind(session);
       try {
         return await inLease(() =>
           run(context.mcpReq.signal, async () => {
-            // Modern capabilities belong to this request, never the legacy
-            // connection cache (which may be absent or reflect another call).
-            const envelope = context.mcpReq.envelope as
-              { 'io.modelcontextprotocol/clientCapabilities'?: ClientCapabilities } | undefined;
-            const capabilities =
-              profile === 'modern'
-                ? envelope?.['io.modelcontextprotocol/clientCapabilities']
-                : server.server.getClientCapabilities();
-            const elicitation = capabilities?.elicitation;
+            if (!previous) session.assertNoRemoteHandoff();
+            const elicitation = clientCapabilities(context)?.elicitation;
             const legacyForm =
               profile === '2025' &&
               elicitation &&

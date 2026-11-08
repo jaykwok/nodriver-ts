@@ -137,6 +137,20 @@ When a request carries a progressToken, tools report three stages in order: Queu
 
 On `/mcp`, human interaction uses the 2026-07-28 InputRequiredResult/MRTR; the compatibility route enables the SDK's legacy elicitation shim. requestState is a random identifier that expires after five minutes; the server stores its tab, lease and stage. Tampered, cross-lease or unknown states are rejected, and a completed state never reruns earlier steps. On completion only the current page state is returned, and the caller should take a new snapshot. Secrets should be typed by the user directly in the browser.
 
+## Remote handoff
+
+`browser_handoff({ tabId, mode: "remote", resumeCondition })` lets a person operate a tab from a viewer page served by this HTTP service, for example to solve a sign-in step on a server without a screen. It needs `--remote-handoff` (`remoteHandoff: true` or options when embedding) and works in headless mode as well. It is not available over stdio or the socket transport.
+
+The tool gives the client a private link through URL elicitation, so the link does not enter the model's context, and needs the client's `elicitation.url` capability. A declined prompt ends the handoff. Only with `--remote-handoff-link-in-result` (`linkInResult: true`) is the link returned in the tool result, where the model can read it. The call returns `{ handoffId, expiresAt }`; call `browser_handoff_wait({ handoffId, timeout })` repeatedly until `state` is `ended`, or pass `cancel: true`. `browser://events` reports `handoff-started`, `handoff-connected` and `handoff-ended`.
+
+A handoff ends when `resumeCondition` holds, when the user presses Done, on cancellation, when the tab closes, or at expiry. `resumeCondition` is `{ url?, selector?, timeout }`: `url` is the whole main-frame URL where `*` matches anything, `selector` is looked up in an isolated world, and both must hold when both are given. `reason` is `condition`, `completed`, `cancelled`, `expired`, `tab-closed` or `released`. A handoff lasts at most 15 minutes unless the host sets `maxDuration`.
+
+While it runs, the lease's other tools fail at once with `HandoffActiveError` instead of queueing, except `browser_tabs` and `browser_handoff_wait`. Idle cleanup does not reclaim the lease. Read a fresh snapshot afterwards: refs may have expired.
+
+The service stays on the loopback interface with its Host and Origin checks; to reach it from another machine, create a tunnel such as `ssh -L 3100:127.0.0.1:3100 host`, keeping the same local port. The link holds a 256-bit token that works once and expires after 5 minutes (`tokenTtl`), bound to one principal, lease and tab. Opening it exchanges the token for an `HttpOnly; SameSite=Strict` cookie limited to that handoff's path, and leaves the token out of the address bar. Requests from the page must be same-origin. The page runs under a CSP of `default-src 'self'` with `frame-ancestors 'none'`, without inline script. Anyone holding the unopened link can use it, so treat it as a secret. The tunnel, not this service, provides encryption between machines.
+
+The picture is a `Page.startScreencast` stream over server-sent events, and each frame is acknowledged after the viewer has read it, so a slow connection lowers the frame rate. Input is sent as POST requests and dispatched as CDP input: mouse, wheel and keys, with composed text and paste through `Input.insertText`. The `audit` option receives `started`, `connected` and `ended` entries with the input count, never the input; the CLI writes them to stderr.
+
 ## Test coverage
 
 The tests cover JSON and SSE, rejection of older protocols, reuse across requests and connections, authentication and headers, tab and ref permissions, cancellation, timeouts and quotas, subscription filtering, human interaction, profile ownership, and forbidden commands in the real CDP traffic. HTTP and a real stdio subprocess run the same behavioural assertions. Platforms and versions are listed in [Support](support.md).

@@ -10,9 +10,11 @@ All notable changes are recorded here. The project follows [Semantic Versioning]
 - `TabScope.adopt(tab)` no longer owns popups the tab opened before it was adopted; popups it opens afterwards are owned as before. Whether a popup is owned is decided when Chrome reports it, by its opener's role at that moment, and roles belong to the page, so a page attached again keeps its role. `TabScopeCloseResult` has a `borrowed` list, and `closed` also lists tabs that did not finish opening through `scope.newTab()`.
 - MCP snapshot lines carry each node's layout box, `@x,y WxH` in CSS pixels of the tab viewport, and `offscreen` for nodes outside the viewport, after a `Viewport WxH` line. Structured nodes have `box` (`{ x, y, width, height }` or null), and snapshots have `viewport`. Code that parses snapshot text needs to allow the new fields.
 - `storageState()` takes an options object; `storageState(path)` becomes `storageState({ path })`. Its result has `version: 2`, and an export over `maxBytes` (64 MiB by default) fails with a `RangeError`.
+- While a remote handoff runs, MCP tools other than `browser_tabs` and `browser_handoff_wait` fail at once with `HandoffActiveError`. `browser_handoff` takes `mode` and `resumeCondition`, and its schema still rejects unknown fields.
 
 ### MCP
 
+- `browser_handoff` has `mode: 'remote'`: with `remoteHandoff` (`--remote-handoff`), a user operates a tab through a one-time link to a loopback viewer, also in headless mode. The link goes through URL elicitation unless the host opts in to returning it. `browser_handoff_wait` waits for the end or cancels, `resumeCondition` ends it when the page reaches a URL or selector, and `browser://events` reports `handoff-*`.
 - `browser_storage_state` takes `include` to save sessionStorage or IndexedDB. With `stateKey` (`--state-key-env`), state files are encrypted and plain files are refused.
 - `browser_snapshot` takes `viewportOnly` to return only nodes visible in the viewport. Boxes come from one DOMSnapshot capture per snapshot; no page script runs.
 - `browser_screenshot` takes `marks: 'interactive' | 'all'` to draw each visible node's box and ref on a PNG of the viewport, and returns a `legend` of `{ ref, role, name, box }`.
@@ -35,6 +37,7 @@ All notable changes are recorded here. The project follows [Semantic Versioning]
 
 ### Browser and process lifecycle
 
+- `PresentationLease` takes `deliver`, which receives each frame and delays its acknowledgement until it settles.
 - `Browser.launch({ virtualDisplay: true })` runs headful Chrome on its own Xvfb server on Linux, with MIT-MAGIC-COOKIE access control and no TCP listener. The server ends with the browser, also under the guardian of `supervised: true`. `XvfbSession` runs one directly, and the MCP CLI has `--virtual-display`.
 - Cleanup the library does after an operation failed or after its caller stopped waiting, such as closing a tab that did not finish opening, never replaces the operation's own error. When such cleanup fails, the failure is reported through `onError` and `browser.errors`.
 - `prepareProfile(dir, options)` receives `temporary` and `empty` in its options (`ProfilePreparation`): whether the library created the profile for this launch, and whether the profile held nothing from earlier launches. `empty` is read under the profile lock and ignores only the library's lock files, `.nodriver.lock` and `.nodriver.lock.reclaim`.
