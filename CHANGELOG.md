@@ -8,6 +8,12 @@ All notable changes are recorded here. The project follows [Semantic Versioning]
 
 - `clearSiteData()` failures other than refusing open tabs are `ClearSiteDataError`s, with the original error, such as a `TimeoutError`, as `cause`; they used to be thrown directly. A cookie set again during the call is also reported as `ClearSiteDataError`, which extends `NodriverError` as before.
 - `TabScope.adopt(tab)` no longer owns popups the tab opened before it was adopted; popups it opens afterwards are owned as before. Whether a popup is owned is decided when Chrome reports it, by its opener's role at that moment, and roles belong to the page, so a page attached again keeps its role. `TabScopeCloseResult` has a `borrowed` list, and `closed` also lists tabs that did not finish opening through `scope.newTab()`.
+- MCP snapshot lines carry each node's layout box, `@x,y WxH` in CSS pixels of the tab viewport, and `offscreen` for nodes outside the viewport, after a `Viewport WxH` line. Structured nodes have `box` (`{ x, y, width, height }` or null), and snapshots have `viewport`. Code that parses snapshot text needs to allow the new fields.
+
+### MCP
+
+- `browser_snapshot` takes `viewportOnly` to return only nodes visible in the viewport. Boxes come from one DOMSnapshot capture per snapshot; no page script runs.
+- `browser_screenshot` takes `marks: 'interactive' | 'all'` to draw each visible node's box and ref on a PNG of the viewport, and returns a `legend` of `{ ref, role, name, box }`.
 
 ### Pages and queries
 
