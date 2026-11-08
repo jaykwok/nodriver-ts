@@ -43,7 +43,7 @@ test('a remote handoff shows real frames and clicks the real page', async () => 
         script:
           "const r = document.querySelector('#button').getBoundingClientRect(); return { x: (r.left + r.width / 2) / innerWidth, y: (r.top + r.height / 2) / innerHeight };",
       })
-    ).result as { x: number; y: number };
+    ).value as { x: number; y: number };
     const { url, handoffId } = await call('browser_handoff', { tabId, mode: 'remote' });
     const opened = await fetch(url);
     expect(opened.status).toBe(200);
@@ -75,7 +75,7 @@ test('a remote handoff shows real frames and clicks the real page', async () => 
     });
     await poll(
       async () =>
-        (await call('browser_evaluate', { tabId, script: 'return globalThis.clicks' })).result === 1
+        (await call('browser_evaluate', { tabId, script: 'return globalThis.clicks' })).value === 1
           ? true
           : undefined,
       { timeout: 5000 },

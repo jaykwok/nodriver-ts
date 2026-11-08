@@ -38,7 +38,7 @@ test('MCP snapshot boxes match the page layout across scrolled, same-process and
     );
     await call('browser_evaluate', { tabId, script: 'scrollTo(0, 100)' });
     const evaluate = (frameId: string | undefined, script: string) =>
-      call('browser_evaluate', { tabId, frameId, script }).then((r) => r.result);
+      call('browser_evaluate', { tabId, frameId, script }).then((r) => r.value);
     /** Top-left of a frame's viewport in the tab viewport, from the page's own layout. */
     const origin = async (frameId: string): Promise<{ x: number; y: number }> => {
       const frame = frames.find((f) => f.frameId === frameId)!;
