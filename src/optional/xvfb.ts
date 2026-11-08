@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { rmSync } from 'node:fs';
-import { mkdtemp, open, readFile, rm, writeFile } from 'node:fs/promises';
+import { closeSync, openSync, rmSync } from 'node:fs';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Readable } from 'node:stream';
@@ -92,7 +92,9 @@ export class XvfbSession {
       const serverAuth = join(directory, 'server');
       await writeFile(serverAuth, xauthRecord('', cookie), { mode: 0o600 });
       // A file, not a pipe: the server may outlive this process and must not get SIGPIPE.
-      const output = await open(log, 'a', 0o600);
+      // Nothing may yield between spawn() and the listeners below: a failed spawn reports on the
+      // next tick, and with nobody listening that is an uncaught exception.
+      const output = openSync(log, 'a', 0o600);
       try {
         child = spawn(
           options.executable ?? 'Xvfb',
@@ -107,10 +109,10 @@ export class XvfbSession {
             '0',
             options.screen ?? '1920x1080x24',
           ],
-          { stdio: ['ignore', 'ignore', output.fd, 'pipe'], detached: true },
+          { stdio: ['ignore', 'ignore', output, 'pipe'], detached: true },
         );
       } finally {
-        await output.close();
+        closeSync(output);
       }
       const started = child;
       const exited = new Promise<void>((resolve) => {
