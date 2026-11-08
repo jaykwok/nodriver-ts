@@ -995,19 +995,27 @@ export function createBrowserMcpServer(
   if (config.stateDir)
     tool(
       'browser_storage_state',
-      'Save or load cookies and localStorage under a name in the host-configured state directory; names are private to the authenticated principal. Contents never enter the conversation. Covers first-party localStorage of every origin used by frames of the context, including closed tabs; a temporary tab reads and writes it on an empty intercepted page, so sites are not contacted.',
+      'Save or load cookies and localStorage under a name in the host-configured state directory; names are private to the authenticated principal. Contents never enter the conversation. Covers first-party localStorage of every origin used by frames of the context, including closed tabs; a temporary tab reads and writes it on an empty intercepted page, so sites are not contacted. include adds sessionStorage of open tabs or IndexedDB when saving. Loading a state with sessionStorage needs tabId; that tab receives it and is left on about:blank. Loading IndexedDB replaces the saved databases and fails while a page of that origin is open.',
       {
         action: z.enum(['save', 'load']),
         name: z.string().regex(/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$/),
         tabId: tabId.optional().describe('Context of this tab; defaults to the session context'),
+        include: z
+          .array(z.enum(['sessionStorage', 'indexedDB']))
+          .max(2)
+          .optional()
+          .describe('save only: storage to add to cookies and localStorage'),
       },
       write,
       async (args, signal) => {
-        const context = session.context(args.tabId ? session.tab(args.tabId) : undefined);
+        const tab = args.tabId ? session.tab(args.tabId) : undefined;
+        const context = session.context(tab);
         if (args.action === 'save') {
-          const state = await step(signal, 'Reading storage', () => context.storageState());
+          const state = await step(signal, 'Reading storage', () =>
+            context.storageState({ include: args.include }),
+          );
           await step(signal, 'Writing storage state', () =>
-            writeState(config.stateDir!, principal, args.name, state),
+            writeState(config.stateDir!, principal, args.name, state, config.stateKey),
           );
           return result({
             saved: args.name,
@@ -1015,10 +1023,13 @@ export function createBrowserMcpServer(
             origins: state.origins.length,
           });
         }
+        if (args.include) throw new TypeError('include applies to save only');
         const state = await step(signal, 'Reading storage state', () =>
-          readState(config.stateDir!, principal, args.name),
+          readState(config.stateDir!, principal, args.name, config.stateKey),
         );
-        await step(signal, 'Restoring storage', () => context.restoreStorage(state));
+        await step(signal, 'Restoring storage', () =>
+          context.restoreStorage(state, { sessionStorageTab: tab }),
+        );
         return result({
           loaded: args.name,
           cookies: state.cookies.length,

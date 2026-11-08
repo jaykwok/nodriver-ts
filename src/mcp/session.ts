@@ -57,6 +57,11 @@ export interface BrowserMcpOptions {
    * never reach the model.
    */
   stateDir?: string;
+  /**
+   * Encrypts the files of stateDir with this 32-byte key or passphrase; plain files are then
+   * refused. Never comes from a tool argument.
+   */
+  stateKey?: Uint8Array | string;
   /** Tool names that are not registered. */
   disabledTools?: string[];
   /**

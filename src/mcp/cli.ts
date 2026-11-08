@@ -101,7 +101,11 @@ function parse(args: string[]): Parsed {
     else if (option === '--upload-dir') options.uploadDir = value;
     else if (option === '--download-dir') options.downloadDir = value;
     else if (option === '--state-dir') options.stateDir = value;
-    else if (option === '--endpoint') endpoint = value;
+    else if (option === '--state-key-env' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(value)) {
+      const key = process.env[value];
+      if (!key) throw new TypeError(`Set ${value} to the passphrase of the state directory`);
+      options.stateKey = key;
+    } else if (option === '--endpoint') endpoint = value;
     else if (option === '--mcp-transport' && ['stdio', 'http', 'socket'].includes(value))
       transport = value as Parsed['transport'];
     else if (option === '--socket-path') socketPath = value;
@@ -162,6 +166,7 @@ Tools
   --read-only                         observation, navigation and tab lifecycle tools only
   --disable-tool NAME[,NAME]          repeatable
   --upload-dir DIR | --download-dir DIR | --state-dir DIR   enable file tools within DIR
+  --state-key-env NAME                env var holding a passphrase that encrypts --state-dir files
   --allow-handoff                     allow browser_handoff without an explicit --headful
 
 Limits

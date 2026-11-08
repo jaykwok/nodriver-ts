@@ -167,9 +167,15 @@ scope.keep(reviewTab); // 留给人工处理
 
 BrowserContext 之间的 Cookie 与存储相互隔离；这不等于独立的操作系统、GPU 或字体环境。
 
-`storageState(path?)` 保存 Cookie，以及该上下文中任一 frame 访问过的 HTTP(S) 源的第一方 localStorage，包括 iframe 和已关闭标签页用过的源；空存储不导出。跨站 iframe 在其他顶层站点下的分区 localStorage、sessionStorage 和 IndexedDB 不在快照内。仍打开的主页面原地读取，其余源在一个临时标签页中读取。
+`storageState({ include, maxBytes, path })` 保存 Cookie，以及该上下文中任一 frame 访问过的 HTTP(S) 源的第一方 localStorage，包括 iframe 和已关闭标签页用过的源；空存储不导出。跨站 iframe 在其他顶层站点下的分区 localStorage 不在快照内。仍打开的主页面原地读取，其余源在一个临时标签页中读取。
 
-`restoreStorage(state)` 先设置 Cookie，再替换列出的各源的 localStorage：该源仍打开的主页面原地写入，返回时即可读到；其余源在一个临时标签页中写入。临时标签页拦截文档请求、返回空白页并绕过 Service Worker，因此不访问站点、不跟随重定向、不运行站点脚本。同一源的其他已打开文档与浏览器中跨标签页写入一样，异步收到变更。
+结果带有 `version: 2`。`include: ['sessionStorage']` 会加入打开的标签页顶层文档的 sessionStorage，每个源一条，取自第一个显示该源的标签页。`include: ['indexedDB']` 会把各源的数据库加入对应条目：版本、对象仓库、索引和全部记录；Date、ArrayBuffer 与类型化数组、Blob 与 File、Map、Set、BigInt、undefined、NaN 和 ±Infinity 以带类型标签的 JSON 形式保存。数据库在拦截后的空白页上分批读取，页面同时写入时，导出内容可能混有写入前后的数据。无法表示的值（如循环引用，或 `CryptoKey` 这类存储的平台对象）会让导出失败。导出超过 `maxBytes`（默认 64 MiB）时抛出 `RangeError`。
+
+`restoreStorage(state, { sessionStorageTab })` 先设置 Cookie，再替换列出的各源的 localStorage：该源仍打开的主页面原地写入，返回时即可读到；其余源在一个临时标签页中写入。临时标签页拦截文档请求、返回空白页并绕过 Service Worker，因此不访问站点、不跟随重定向、不运行站点脚本。同一源的其他已打开文档与浏览器中跨标签页写入一样，异步收到变更。
+
+带 sessionStorage 的状态需要传 `sessionStorageTab`，即该上下文的一个标签页。它会在拦截后的空白页上依次访问各源、写入数据，最后停在 about:blank；之后导航到站点即可看到这些数据。列出的 IndexedDB 数据库会被删除，再按保存的版本用显式键重建；该源的其他数据库不受影响。上下文中有标签页显示这些源时，调用在改动任何内容之前报错，并列出这些标签页。如果 worker 或上下文之外的页面仍占着连接，调用以 `NodriverError` 失败，该数据库会在连接关闭后被删除。键生成器从恢复的最大数字键加一继续，即使原库曾分配过更大、后来被删除的键。早期版本保存的无 `version` 状态仍可恢复。
+
+`encryptState(state, key)` 和 `decryptState(bytes, key)` 用 AES-256-GCM 加密状态。`key` 是 32 字节密钥，或由 scrypt 派生密钥的口令，派生参数写在文件头里。文件头与内容一起参与认证，因此密钥错误和文件被改动都报告 `Cannot decrypt the state`。
 
 `clearSiteData({ domains, origins, types, openTabs })` 删除部分站点的数据，保留上下文中的其他数据，例如退出某个站点的登录，同时保持另一个站点的登录：
 

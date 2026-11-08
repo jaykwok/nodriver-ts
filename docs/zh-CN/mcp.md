@@ -100,7 +100,7 @@ HTTP 与 socket 服务只接受本机连接，并要求 `NODRIVER_MCP_TOKEN`（�
 
 - **`browser_upload`**（`--upload-dir`）：文件名必须解析到该目录内。离开该目录的文件名在访问文件系统之前就被拒绝，解析后离开该目录的链接同样被拒绝。错误信息只提及调用者给出的文件名，不包含宿主路径。
 - **`browser_downloads`**（`--download-dir`）：列出或等待最近 100 条下载记录，文件以 GUID 命名保存在该目录。每条记录带递增的 `sequence`，list 返回 `latestSequence`。wait 不占用操作队列，因此可在触发下载的点击之前或之后调用；它等待序号大于 `after` 的第一条记录完成或取消，`after` 默认为该标签页上次 wait 返回的序号（初始为 0）。超时会报错且不推进游标，再次 wait 继续等待同一个下载。
-- **`browser_storage_state`**（`--state-dir`）：按名称保存或加载 Cookie 与第一方 localStorage，范围是该上下文中任一 frame 用过的 HTTP(S) 源，包括已关闭的标签页。空存储不导出，跨站 iframe 的分区 localStorage 也不导出。读写在拦截文档请求的临时空白页中进行，因此不会访问站点，也不跟随重定向。状态文件拒绝已有的符号链接与硬链接，经临时文件原子替换保存，POSIX 权限为 0600。文件内容不进入对话，只返回计数。文件位于 `<state-dir>/<principal>/<name>.json`，因此名称归已认证的主体私有。认证主体符合 `[a-z0-9_-]{1,64}` 时目录名就是它本身，否则为 `p-` 加上认证主体的 SHA-256 十六进制值；未传 binding 的服务使用 `private`，CLI 的 HTTP 和 socket 服务使用 `local-operator`。认证主体目录位置上的链接会被拒绝。加载未知名称时报告 `No saved state named <name>`，与其他认证主体是否保存过该名称无关。
+- **`browser_storage_state`**（`--state-dir`）：按名称保存或加载 Cookie 与第一方 localStorage，范围是该上下文中任一 frame 用过的 HTTP(S) 源，包括已关闭的标签页。空存储不导出，跨站 iframe 的分区 localStorage 也不导出。读写在拦截文档请求的临时空白页中进行，因此不会访问站点，也不跟随重定向。状态文件拒绝已有的符号链接与硬链接，经临时文件原子替换保存，POSIX 权限为 0600。文件内容不进入对话，只返回计数。文件位于 `<state-dir>/<principal>/<name>.json`，因此名称归已认证的主体私有。保存时用 `include` 可加入 `sessionStorage` 或 `indexedDB`，含义同 [`storageState`](api.md#状态与存储)；加载带 sessionStorage 的状态需要 `tabId`，该标签页最后停在 about:blank。使用 `--state-key-env NAME`（嵌入时为 `stateKey`：32 字节密钥或口令）后，文件用 AES-256-GCM 加密，并拒绝读取明文文件，因此把文件换成明文也无法降级。密钥只由主机配置，工具参数里没有密钥。认证主体符合 `[a-z0-9_-]{1,64}` 时目录名就是它本身，否则为 `p-` 加上认证主体的 SHA-256 十六进制值；未传 binding 的服务使用 `private`，CLI 的 HTTP 和 socket 服务使用 `local-operator`。认证主体目录位置上的链接会被拒绝。加载未知名称时报告 `No saved state named <name>`，与其他认证主体是否保存过该名称无关。
 
 ### 只读模式
 
