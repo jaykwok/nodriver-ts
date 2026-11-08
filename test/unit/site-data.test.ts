@@ -2,11 +2,26 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { Protocol } from 'devtools-protocol';
-import { NodriverError, ProtocolError, type Browser, type Tab } from '../../src/index.ts';
+import {
+  ClearSiteDataError,
+  NodriverError,
+  ProtocolError,
+  TimeoutError,
+  type Browser,
+  type Tab,
+} from '../../src/index.ts';
 import { NO_REPLY, ScriptedChrome } from '../../src/testing/index.ts';
 
 const one = 'http://127.0.0.1:1000';
 const two = 'http://127.0.0.1:2000';
+
+function gate() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((r) => {
+    resolve = r;
+  });
+  return { resolve, promise };
+}
 
 /** Scripts the commands of clearSiteData() and records what reached each tab. */
 function scriptSiteData(chrome: ScriptedChrome, browser: () => Browser) {
@@ -494,4 +509,302 @@ test('a visit restores the service worker bypass when its route fails to start o
     assert.equal(tab.closed, false);
     assert.deepEqual(log.bypass, [true, false], failing);
   }
+});
+
+test('a call that stops reports what it did, and a refusal still did nothing', async () => {
+  await using chrome = await ScriptedChrome.start({
+    pages: [{ url: `${one}/a` }, { url: `${one}/b` }],
+  });
+  let browser!: Browser;
+  scriptSiteData(chrome, () => browser);
+  await using connected = await chrome.connect();
+  browser = connected;
+  const [first, second] = browser.tabs;
+  const refused = await browser.defaultContext
+    .clearSiteData({ origins: [one], types: ['localStorage'] })
+    .catch((error: unknown) => error);
+  assert.ok(refused instanceof NodriverError && !(refused instanceof ClearSiteDataError));
+
+  // The second tab never finishes leaving the site.
+  chrome.handle('Page.navigate', ({ url }, command) => {
+    if (command.sessionId === second!.session.id) return NO_REPLY;
+    const frameId = first!.mainFrame.id;
+    setImmediate(() => {
+      chrome.emit(
+        'Page.frameNavigated',
+        {
+          type: 'Navigation',
+          frame: {
+            id: frameId,
+            loaderId: 'blank',
+            url,
+            domainAndRegistry: '',
+            securityOrigin: '://',
+            mimeType: 'text/html',
+            secureContextType: 'InsecureScheme',
+            crossOriginIsolatedContextType: 'NotIsolated',
+            gatedAPIFeatures: [],
+          },
+        },
+        command.sessionId,
+      );
+      chrome.emit(
+        'Page.lifecycleEvent',
+        { frameId, loaderId: 'blank', name: 'load', timestamp: 0 },
+        command.sessionId,
+      );
+    });
+    return { frameId, loaderId: 'blank' };
+  });
+  const started = performance.now();
+  const error = await browser.defaultContext
+    .clearSiteData({ origins: [one], types: ['localStorage'], openTabs: 'blank', timeout: 300 })
+    .catch((error: unknown) => error);
+  assert.ok(performance.now() - started < 1500);
+  assert.ok(error instanceof ClearSiteDataError, String(error));
+  assert.ok(error.cause instanceof TimeoutError);
+  assert.deepEqual(error.result, { cookies: [], origins: [], tabs: [first!.id] });
+  assert.equal(clears(chrome), 0);
+});
+
+test('a call stops on its signal between storage commands', async () => {
+  await using chrome = await ScriptedChrome.start({ pages: [] });
+  let browser!: Browser;
+  const log = scriptSiteData(chrome, () => browser);
+  await using connected = await chrome.connect();
+  browser = connected;
+  const controller = new AbortController();
+  chrome.handle('Storage.clearDataForOrigin', ({ origin }) => {
+    log.cleared.push({ origin, storageTypes: '' });
+    if (origin === `http://${'app.test'}`) controller.abort(new Error('stop'));
+  });
+  log.cookies = [jarCookie('sid', 'app.test')];
+  const error = await browser.defaultContext
+    .clearSiteData({ domains: ['app.test'], signal: controller.signal })
+    .catch((error: unknown) => error);
+  assert.ok(error instanceof ClearSiteDataError, String(error));
+  assert.match(String(error.cause), /stop/);
+  // https:// was cleared first; http:// was sent when the signal fired, so it is not listed.
+  assert.deepEqual(error.result, { cookies: [], origins: ['https://app.test'], tabs: [] });
+  assert.deepEqual(log.deleted, []);
+});
+
+test('a cookie set again is reported with the cookies that were deleted', async () => {
+  await using chrome = await ScriptedChrome.start({ pages: [] });
+  let browser!: Browser;
+  const log = scriptSiteData(chrome, () => browser);
+  await using connected = await chrome.connect();
+  browser = connected;
+  log.cookies = [jarCookie('sid', 'app.test')];
+  chrome.handle('Network.deleteCookies', ({ name, domain }) => {
+    log.deleted.push(`${name}@${domain}`);
+  });
+  const error = await browser.defaultContext
+    .clearSiteData({ domains: ['app.test'], types: ['cookies'] })
+    .catch((error: unknown) => error);
+  assert.ok(error instanceof ClearSiteDataError, String(error));
+  assert.match(error.message, /set again/);
+  assert.deepEqual(error.result.cookies, [{ name: 'sid', domain: 'app.test', path: '/' }]);
+});
+
+test('a visit route is taken out when the call stops, also while Chrome installs it', async () => {
+  await using chrome = await ScriptedChrome.start({ pages: [{ url: `${one}/` }] });
+  let browser!: Browser;
+  const log = scriptSiteData(chrome, () => browser);
+  await using connected = await chrome.connect();
+  browser = connected;
+  const tab = browser.tabs[0]!;
+  await tab.goto('about:blank');
+  const enable = gate();
+  chrome.handle('Fetch.enable', async () => {
+    await enable.promise;
+    log.fetch.push('enable');
+  });
+  const answered: string[] = [];
+  chrome.handle('Fetch.continueRequest', () => void answered.push('continued'));
+  chrome.handle('Fetch.failRequest', () => void answered.push('failed'));
+  const error = await browser.defaultContext
+    .clearSiteData({ origins: [one], types: ['sessionStorage'], openTabs: 'blank', timeout: 100 })
+    .catch((error: unknown) => error);
+  assert.ok(error instanceof ClearSiteDataError && error.cause instanceof TimeoutError);
+  assert.deepEqual(log.bypass, [true, false]);
+  // Chrome applies a session's commands in the order they were sent, so Fetch ends disabled.
+  assert.deepEqual(
+    chrome.commands.flatMap(({ method }) => (method.startsWith('Fetch.') ? [method] : [])),
+    ['Fetch.enable', 'Fetch.disable'],
+  );
+  // A request that Chrome pauses meanwhile is no longer answered by the route.
+  chrome.emit(
+    'Fetch.requestPaused',
+    {
+      requestId: 'later',
+      frameId: tab.mainFrame.id,
+      resourceType: 'Document',
+      request: {
+        url: 'https://unrelated.test/',
+        method: 'GET',
+        headers: {},
+        initialPriority: 'High',
+        referrerPolicy: 'no-referrer',
+      },
+    },
+    tab.session.id,
+  );
+  for (let i = 0; i < 50 && !answered.length; i++) await sleep(10);
+  assert.deepEqual(answered, ['continued']);
+  enable.resolve();
+});
+
+test('a service worker bypass Chrome does not confirm in time is still undone', async () => {
+  await using chrome = await ScriptedChrome.start({ pages: [{ url: `${one}/` }] });
+  let browser!: Browser;
+  const log = scriptSiteData(chrome, () => browser);
+  await using connected = await chrome.connect();
+  browser = connected;
+  await browser.tabs[0]!.goto('about:blank');
+  chrome.handle('Network.setBypassServiceWorker', ({ bypass }) => {
+    log.bypass.push(bypass);
+    return bypass ? NO_REPLY : undefined;
+  });
+  const error = await browser.defaultContext
+    .clearSiteData({ origins: [one], types: ['sessionStorage'], openTabs: 'blank', timeout: 100 })
+    .catch((error: unknown) => error);
+  assert.ok(error instanceof ClearSiteDataError && error.cause instanceof TimeoutError);
+  assert.deepEqual(log.bypass, [true, false]);
+});
+
+test('a call that stops between closing pages closes no further page', async () => {
+  await using chrome = await ScriptedChrome.start({
+    pages: [{ url: `${one}/a` }, { url: `${one}/b` }],
+  });
+  const controller = new AbortController();
+  let browser!: Browser;
+  scriptSiteData(chrome, () => browser);
+  await using connected = await chrome.connect({
+    observe: {
+      onResponse({ method }) {
+        if (method === 'Target.closeTarget') controller.abort(new Error('stop'));
+      },
+    },
+  });
+  browser = connected;
+  const [first, second] = browser.tabs;
+  const error = await browser.defaultContext
+    .clearSiteData({
+      origins: [one],
+      types: ['localStorage'],
+      openTabs: 'close',
+      signal: controller.signal,
+    })
+    .catch((error: unknown) => error);
+  assert.ok(error instanceof ClearSiteDataError, String(error));
+  assert.deepEqual(error.result.tabs, [first!.id]);
+  // Commands arrive in order: one sent before this round trip has been recorded by now.
+  await browser.cdp.send('Browser.getVersion');
+  assert.equal(chrome.commands.filter(({ method }) => method === 'Target.closeTarget').length, 1);
+  assert.equal(second!.closed, false);
+});
+
+test('a temporary tab that is slow to close does not hold up a call that stopped', async () => {
+  await using chrome = await ScriptedChrome.start({ pages: [] });
+  let browser!: Browser;
+  scriptSiteData(chrome, () => browser);
+  await using connected = await chrome.connect();
+  browser = connected;
+  const release = gate();
+  chrome.handle('Storage.clearDataForOrigin', () => NO_REPLY);
+  chrome.handle('Target.closeTarget', async ({ targetId }) => {
+    await release.promise;
+    chrome.destroyTarget(targetId);
+    return { success: true };
+  });
+  const started = performance.now();
+  const error = await browser.defaultContext
+    .clearSiteData({ origins: [one], types: ['localStorage'], timeout: 100 })
+    .catch((error: unknown) => error);
+  assert.ok(performance.now() - started < 600);
+  assert.ok(error instanceof ClearSiteDataError && error.cause instanceof TimeoutError);
+  // The temporary tab still closes, after the call returned.
+  const closing = () => chrome.commands.some(({ method }) => method === 'Target.closeTarget');
+  for (let i = 0; i < 50 && !closing(); i++) await sleep(10);
+  assert.ok(closing());
+  release.resolve();
+  for (let i = 0; i < 50 && browser.tabs.length; i++) await sleep(10);
+  assert.deepEqual(browser.tabs, []);
+});
+
+test('a visit that stops keeps its own error when undoing it fails as well', async () => {
+  await using chrome = await ScriptedChrome.start({ pages: [{ url: `${one}/` }] });
+  let browser!: Browser;
+  const log = scriptSiteData(chrome, () => browser);
+  await using connected = await chrome.connect();
+  browser = connected;
+  await browser.tabs[0]!.goto('about:blank');
+  const reported: unknown[] = [];
+  browser.errors.on((error) => void reported.push(error));
+  const controller = new AbortController();
+  const stop = new Error('stop');
+  chrome.handle('Network.setBypassServiceWorker', ({ bypass }) => {
+    log.bypass.push(bypass);
+    if (!bypass)
+      throw new ProtocolError('Network.setBypassServiceWorker', -32000, 'Injected undo failure');
+    controller.abort(stop);
+    return NO_REPLY;
+  });
+  const error = await browser.defaultContext
+    .clearSiteData({
+      origins: [one],
+      types: ['sessionStorage'],
+      openTabs: 'blank',
+      signal: controller.signal,
+    })
+    .catch((error: unknown) => error);
+  assert.ok(error instanceof ClearSiteDataError, String(error));
+  assert.equal(error.cause, stop);
+  assert.deepEqual(log.bypass, [true, false]);
+  assert.equal(reported.length, 1);
+  assert.match(String(reported[0]), /Injected undo failure/);
+});
+
+test('a temporary tab that cannot be closed after the call failed is reported', async () => {
+  await using chrome = await ScriptedChrome.start({ pages: [] });
+  let browser!: Browser;
+  scriptSiteData(chrome, () => browser);
+  await using connected = await chrome.connect();
+  browser = connected;
+  const reported: unknown[] = [];
+  browser.errors.on((error) => void reported.push(error));
+  chrome.handle('Storage.clearDataForOrigin', () => {
+    throw new ProtocolError('Storage.clearDataForOrigin', -32000, 'Injected clear failure');
+  });
+  chrome.handle('Target.closeTarget', () => {
+    throw new ProtocolError('Target.closeTarget', -32000, 'Injected close failure');
+  });
+  const error = await browser.defaultContext
+    .clearSiteData({ origins: [one], types: ['localStorage'] })
+    .catch((error: unknown) => error);
+  assert.ok(error instanceof ClearSiteDataError, String(error));
+  assert.match(String(error.cause), /Injected clear failure/);
+  assert.equal(reported.length, 1);
+  assert.match(String(reported[0]), /Injected close failure/);
+});
+
+test('storageState keeps the error of a visit whose temporary tab cannot be closed either', async () => {
+  await using chrome = await ScriptedChrome.start({ pages: [] });
+  let browser!: Browser;
+  scriptSiteData(chrome, () => browser);
+  await using connected = await chrome.connect();
+  browser = connected;
+  const reported: unknown[] = [];
+  browser.errors.on((error) => void reported.push(error));
+  chrome.handle('Fetch.enable', () => {
+    throw new ProtocolError('Fetch.enable', -32000, 'Injected route failure');
+  });
+  chrome.handle('Target.closeTarget', () => {
+    throw new ProtocolError('Target.closeTarget', -32000, 'Injected close failure');
+  });
+  browser.defaultContext.noteOrigin(`${one}/`);
+  await assert.rejects(browser.defaultContext.storageState(), /Injected route failure/);
+  assert.equal(reported.length, 1);
+  assert.match(String(reported[0]), /Injected close failure/);
 });

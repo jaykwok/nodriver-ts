@@ -10,7 +10,7 @@ export type {
   StorageState,
 } from './browser/context.ts';
 export { findExecutable, acquireProfileLock, AGENT_ARGS } from './browser/launcher.ts';
-export type { LaunchOptions } from './browser/launcher.ts';
+export type { LaunchOptions, ProfilePreparation } from './browser/launcher.ts';
 export { updateProfileSettings } from './browser/profile.ts';
 export type { ProfileSettings, ProfileSettingsUpdate } from './browser/profile.ts';
 export { ReleaseUncertainError } from './browser/guardian.ts';

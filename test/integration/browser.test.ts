@@ -251,6 +251,42 @@ describe('browser and page', () => {
       await destination.stop();
     }
   });
+  test('goto follows a sign-in chain that replaces each document before DOMContentLoaded', async () => {
+    const html = (body: string) => new Response(body, { headers: { 'content-type': 'text/html' } });
+    // A parser-blocking script that never loads in time keeps each page from DOMContentLoaded.
+    const blocked = '<script src="/slow.js"></script>';
+    const server = await serve({
+      hostname: '127.0.0.1',
+      port: 0,
+      async fetch(request) {
+        const { pathname } = new URL(request.url);
+        if (pathname === '/slow.js') {
+          await sleep(5000);
+          return new Response('', { headers: { 'content-type': 'text/javascript' } });
+        }
+        if (pathname === '/login')
+          return html(
+            `<form method="post" action="/callback"></form><script>document.forms[0].submit()</script>${blocked}`,
+          );
+        if (pathname === '/callback')
+          return html(`<script>location.replace('/landing')</script>${blocked}`);
+        return html('<p id="landing">landing');
+      },
+    });
+    const origin = `http://127.0.0.1:${server.port}`;
+    const tab = await browser.newTab();
+    try {
+      const url = await tab.goto(origin + '/login', {
+        waitUntil: 'domcontentloaded',
+        timeout: 4000,
+      });
+      expect(url).toBe(origin + '/landing');
+      expect(await tab.evaluate('document.readyState')).not.toBe('loading');
+    } finally {
+      await tab.close();
+      await server.stop();
+    }
+  });
   test('storageState covers iframes and closed tabs, but not partitioned storage', async () => {
     const html = (body: string) => new Response(body, { headers: { 'content-type': 'text/html' } });
     const child = await serve({ hostname: '0.0.0.0', port: 0, fetch: () => html('<p>child') });

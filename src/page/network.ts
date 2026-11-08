@@ -255,35 +255,43 @@ export class Network {
       throw error;
     }
   }
-  route(
+  async route(
     pattern: RegExp,
     handler: (route: Route) => Promise<void> | void,
   ): Promise<() => Promise<void>> {
-    return this.addRoute(pattern, handler, false);
+    const { installed, remove } = this.addRoute(pattern, handler, false);
+    await installed;
+    return remove;
   }
-  /** @internal Like route(), but ahead of the caller's routes, so it sees every request first. */
+  /**
+   * @internal Like route(), but ahead of the caller's routes, so it sees every request first. The
+   * route applies at once and `installed` settles once Fetch is enabled; `remove()` takes the
+   * route out at once, also while it is being installed, and then updates Fetch.
+   */
   routeFirst(
     pattern: RegExp,
     handler: (route: Route) => Promise<void> | void,
-  ): Promise<() => Promise<void>> {
+  ): { installed: Promise<void>; remove: () => Promise<void> } {
     return this.addRoute(pattern, handler, true);
   }
-  private async addRoute(
+  private addRoute(
     pattern: RegExp,
     handler: (route: Route) => Promise<void> | void,
     first: boolean,
-  ): Promise<() => Promise<void>> {
+  ): { installed: Promise<void>; remove: () => Promise<void> } {
     const item = { pattern: matcher(pattern), handler };
-    const remove = () => {
+    const take = () => {
       this.routes = this.routes.filter((r) => r !== item);
     };
     if (first) this.routes.unshift(item);
     else this.routes.push(item);
-    await this.applyFetch(remove);
-    return async () => {
-      remove();
-      if (!this.routes.length && !this.credentials)
-        await this.eachSession((s) => this.updateFetch(s));
+    return {
+      installed: this.applyFetch(take),
+      remove: async () => {
+        take();
+        if (!this.routes.length && !this.credentials)
+          await this.eachSession((s) => this.updateFetch(s));
+      },
     };
   }
   async authenticate(credentials?: { username: string; password: string }): Promise<void> {

@@ -102,3 +102,60 @@ test('go() completes a same-document history navigation only at its entry', asyn
   });
   assert.equal(await tab.go(-1), 'about:blank#one');
 });
+
+test('goto() follows a document that replaces the one it loaded before the awaited event', async () => {
+  await using chrome = await ScriptedChrome.start();
+  await using browser = await chrome.connect();
+  const tab = browser.tabs[0]!;
+  const events = page(chrome, tab);
+  chrome.handle('Page.navigate', () => {
+    setImmediate(() => {
+      // A sign-in page that posts a form, then redirects by script, before DOMContentLoaded.
+      events.commit('sso', 'https://sso.test/login');
+      events.commit('post', 'https://app.test/callback');
+      events.lifecycle('sso', 'DOMContentLoaded');
+      events.commit('landing', 'https://app.test/landing');
+      events.lifecycle('landing', 'DOMContentLoaded');
+    });
+    return { frameId: tab.mainFrame.id, loaderId: 'sso' };
+  });
+  assert.equal(
+    await tab.goto('https://sso.test/login', { waitUntil: 'domcontentloaded', timeout: 2000 }),
+    'https://app.test/landing',
+  );
+  assert.equal(chrome.commands.filter(({ method }) => method === 'Page.navigate').length, 1);
+});
+
+test('goto() follows replacements that commit before Page.navigate answers', async () => {
+  await using chrome = await ScriptedChrome.start();
+  await using browser = await chrome.connect();
+  const tab = browser.tabs[0]!;
+  const events = page(chrome, tab);
+  chrome.handle('Page.navigate', async () => {
+    events.commit('first', 'https://a.test/');
+    events.commit('second', 'https://a.test/next');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    setImmediate(() => events.lifecycle('second', 'load'));
+    return { frameId: tab.mainFrame.id, loaderId: 'first' };
+  });
+  assert.equal(await tab.goto('https://a.test/', { timeout: 2000 }), 'https://a.test/next');
+});
+
+test('goto() completes with its document when that reaches the event before being replaced', async () => {
+  await using chrome = await ScriptedChrome.start();
+  await using browser = await chrome.connect();
+  const tab = browser.tabs[0]!;
+  const events = page(chrome, tab);
+  chrome.handle('Page.navigate', () => {
+    setImmediate(() => {
+      // A commit of an earlier navigation does not count for this one.
+      events.commit('stale', 'https://old.test/');
+      events.lifecycle('stale', 'load');
+      events.commit('mine', 'https://a.test/');
+      events.lifecycle('mine', 'load');
+      events.commit('later', 'https://a.test/after-load');
+    });
+    return { frameId: tab.mainFrame.id, loaderId: 'mine' };
+  });
+  assert.equal(await tab.goto('https://a.test/', { timeout: 2000 }), 'https://a.test/');
+});

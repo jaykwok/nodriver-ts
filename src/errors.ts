@@ -1,3 +1,4 @@
+import type { ClearSiteDataResult } from './browser/context.ts';
 export class NodriverError extends Error {
   override name = 'NodriverError';
 }
@@ -57,6 +58,19 @@ export class ProtocolError extends NodriverError {
 }
 export class EvaluationError extends NodriverError {
   override name = 'EvaluationError';
+}
+/**
+ * clearSiteData() stopped after it started changing pages or data: by timeout, signal, a failed
+ * step, or a cookie that was set again. `result` lists what was done; a step in progress when it
+ * stopped is not listed and may still take effect.
+ */
+export class ClearSiteDataError extends NodriverError {
+  override name = 'ClearSiteDataError';
+  readonly result: ClearSiteDataResult;
+  constructor(message: string, result: ClearSiteDataResult, options?: ErrorOptions) {
+    super(message, options);
+    this.result = result;
+  }
 }
 /** The caller stopped waiting for a page fetch, by timeout or signal; see `aborted`. */
 export class FetchCancelledError extends NodriverError {

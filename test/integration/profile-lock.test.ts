@@ -95,6 +95,7 @@ test('prepareProfile prepares temporary and persistent profiles before Chrome st
       prepareProfile: async (dir, options) => {
         directory = dir;
         assert.ok(options.timeout! > 0);
+        assert.deepEqual([options.temporary, options.empty], [true, true]);
         await mkdir(join(dir, 'Default'), { recursive: true });
         await writeFile(
           join(dir, 'Default', 'Preferences'),
@@ -119,13 +120,16 @@ test('prepareProfile prepares temporary and persistent profiles before Chrome st
   await assert.rejects(access(directory));
   // A persistent profile is prepared while this process holds its lock, and kept.
   const persistent = await mkdtemp(join(tmpdir(), 'nodriver-prepared-'));
+  const seen: boolean[] = [];
   try {
     {
       await using browser = await Browser.launch({
         headless: true,
         userDataDir: persistent,
-        prepareProfile: async (dir) => {
+        prepareProfile: async (dir, { temporary, empty }) => {
           assert.equal(dir, persistent);
+          assert.equal(temporary, false);
+          seen.push(empty);
           await access(join(dir, '.nodriver.lock'));
           await updateProfileSettings(dir, {
             preferences: { intl: { accept_languages: 'de-DE,de' } },
@@ -136,6 +140,16 @@ test('prepareProfile prepares temporary and persistent profiles before Chrome st
       assert.equal(await tab.evaluate('navigator.languages[0]'), 'de-DE');
     }
     await access(persistent);
+    // Chrome has written the profile, so a later launch is told it holds earlier data.
+    {
+      await using browser = await Browser.launch({
+        headless: true,
+        userDataDir: persistent,
+        prepareProfile: (_dir, { empty }) => void seen.push(empty),
+      });
+      await browser.newTab();
+    }
+    assert.deepEqual(seen, [true, false]);
   } finally {
     await removeTree(persistent);
   }

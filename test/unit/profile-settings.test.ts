@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile, mkdir } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { NodriverError, updateProfileSettings } from '../../src/index.ts';
+import { Browser, NodriverError, updateProfileSettings } from '../../src/index.ts';
 
 test('updateProfileSettings merges into Local State and Preferences and keeps other keys', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'nodriver-settings-'));
@@ -49,4 +49,45 @@ test('updateProfileSettings refuses to rewrite a damaged file or leave the profi
     updateProfileSettings(directory, { profile: 'a/b', preferences: {} }),
     TypeError,
   );
+});
+
+test('prepareProfile is told whether the profile is temporary and holds earlier data', async () => {
+  const seen: Array<{ temporary: boolean; empty: boolean; files: string[] }> = [];
+  const launch = (userDataDir?: string) =>
+    Browser.launch({
+      // Never started: preparation ends the launch first.
+      executablePath: process.execPath,
+      userDataDir,
+      prepareProfile: async (dir, { temporary, empty }) => {
+        seen.push({ temporary, empty, files: await readdir(dir) });
+        throw new Error('stop before Chrome starts');
+      },
+    }).catch((error: unknown) => assert.match(String(error), /stop before Chrome starts/));
+  const root = await mkdtemp(join(tmpdir(), 'nodriver-preparation-'));
+  try {
+    await launch();
+    const persistent = join(root, 'missing');
+    await launch(persistent);
+    await launch(persistent); // after a failed launch
+    await writeFile(join(persistent, 'Local State'), '{}');
+    await launch(persistent);
+    // Only the library's lock files are ignored, not other names that start the same way.
+    const prefixed = join(root, 'prefixed');
+    await mkdir(join(prefixed, '.nodriver.lock.data'), { recursive: true });
+    await launch(prefixed);
+    assert.deepEqual(
+      seen.map(({ temporary, empty }) => ({ temporary, empty })),
+      [
+        { temporary: true, empty: true },
+        { temporary: false, empty: true },
+        { temporary: false, empty: true },
+        { temporary: false, empty: false },
+        { temporary: false, empty: false },
+      ],
+    );
+    // The lock is held while preparing, and its file does not count as data.
+    assert.ok(seen[1]!.files.includes('.nodriver.lock'));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

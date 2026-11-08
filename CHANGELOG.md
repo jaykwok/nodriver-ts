@@ -4,6 +4,30 @@ All notable changes are recorded here. The project follows [Semantic Versioning]
 
 ## Unreleased
 
+### Breaking changes
+
+- `clearSiteData()` failures other than refusing open tabs are `ClearSiteDataError`s, with the original error, such as a `TimeoutError`, as `cause`; they used to be thrown directly. A cookie set again during the call is also reported as `ClearSiteDataError`, which extends `NodriverError` as before.
+- `TabScope.adopt(tab)` no longer owns popups the tab opened before it was adopted; popups it opens afterwards are owned as before. Whether a popup is owned is decided when Chrome reports it, by its opener's role at that moment, and roles belong to the page, so a page attached again keeps its role. `TabScopeCloseResult` has a `borrowed` list, and `closed` also lists tabs that did not finish opening through `scope.newTab()`.
+
+### Pages and queries
+
+- Navigation waits follow documents that replace the one being loaded before it reaches the awaited event, such as a sign-in page that submits a form or calls `location.replace()` while loading, and complete when one of them reaches the event, within the same deadline. Only the first navigation is sent, and the wait resolves with the URL of the document that completed it. Such a `goto(url, { waitUntil: 'domcontentloaded' })` used to time out although the final page had loaded.
+
+### Tabs
+
+- `browser.newTab(url, context, options)`, `context.newTab(url, options)` and `scope.newTab(url, options)` take a `timeout` and `signal` that cover creating the tab, attaching it and the first navigation together. A tab that does not finish opening is closed, including one Chrome creates after the caller stopped waiting or after the connection's command timeout; once the deadline has passed or the signal has aborted, the call does not wait for that close. `scope.close()` waits for such tabs and reports them. One deadline, the connection's command timeout, covers the waiting and closing of `scope.close()`: a page not closed by then is reported as a `TimeoutError` in its `AggregateError` and closes in the background.
+- `TabScope.borrow(tab)` lends the scope a tab that outlives it, such as a reused start page: popups it opens from now on close with the scope, and the tab itself stays open.
+
+### State and storage
+
+- `clearSiteData({ timeout, signal })` bounds the whole call. A call that stops, by timeout, abort or a failed step, throws `ClearSiteDataError`, whose `result` lists the cookies deleted, origins cleared and tabs handled so far. The request interception it sets on a tab stops when the call ends, also after it stops, and the Service Worker bypass is undone even when Chrome did not confirm it in time. A temporary tab the call opens is closed within its deadline, or after it returns once the deadline has passed. When undoing fails after the call has already failed, the call keeps its own error, so `cause` stays the original error, such as the abort reason.
+- `storageState()` and `restoreStorage()` keep the error of a failed visit when their temporary tab cannot be closed either; the close failure used to replace it.
+
+### Browser and process lifecycle
+
+- Cleanup the library does after an operation failed or after its caller stopped waiting, such as closing a tab that did not finish opening, never replaces the operation's own error. When such cleanup fails, the failure is reported through `onError` and `browser.errors`.
+- `prepareProfile(dir, options)` receives `temporary` and `empty` in its options (`ProfilePreparation`): whether the library created the profile for this launch, and whether the profile held nothing from earlier launches. `empty` is read under the profile lock and ignores only the library's lock files, `.nodriver.lock` and `.nodriver.lock.reclaim`.
+
 ## 0.8.0 — 2026-11-07
 
 ### Breaking changes

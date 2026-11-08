@@ -18,13 +18,19 @@ export class NavigationWatcher {
   private cleanups: Array<() => void> = [];
   private expected?: string;
   private committed?: { loader: string; url: string; same: boolean; restored?: boolean };
+  /** The main frame's cross-document commits, in order. */
+  private commits: Array<{ loader: string; url: string; restored?: boolean }> = [];
+  /** Loaders whose document a later commit replaced; their late lifecycle events do not count. */
+  private replaced = new Set<string>();
   private lifecycle = new Map<string, Set<string>>();
   private armed = false;
   private settled = false;
   private options: NavigationOptions;
   /**
-   * Cross-document commits of the main frame always count. `sameDocument` decides which
-   * same-document navigations count before one; after one, they only update its URL.
+   * Cross-document commits of the main frame always count: the wait completes with the first of
+   * them, from the expected one on, that reaches the awaited event before a later commit replaces
+   * it. `sameDocument` decides which same-document navigations count before one; after one, they
+   * only update the URL of the latest document.
    */
   constructor(
     tab: Tab,
@@ -46,9 +52,14 @@ export class NavigationWatcher {
     this.cleanups.push(
       tab.framesManager.changes.on(({ frame, sameDocument: same, restored }) => {
         if (frame !== tab.mainFrame) return;
-        if (!same) this.committed = { loader: frame.loaderId, url: frame.url, same, restored };
+        if (!same) {
+          const previous = this.commits.at(-1);
+          if (previous) this.replaced.add(previous.loader);
+          this.committed = { loader: frame.loaderId, url: frame.url, same, restored };
+          this.commits.push({ loader: frame.loaderId, url: frame.url, restored });
+        }
         // For example history.replaceState() while the new document loads.
-        else if (this.committed && !this.committed.same) this.committed.url = frame.url;
+        else if (this.committed && !this.committed.same) this.commits.at(-1)!.url = frame.url;
         else if (sameDocument(frame.url))
           this.committed = { loader: frame.loaderId, url: frame.url, same };
         else return;
@@ -57,7 +68,7 @@ export class NavigationWatcher {
     );
     this.cleanups.push(
       tab.session.on('Page.lifecycleEvent', (event) => {
-        if (event.frameId !== tab.mainFrame.id) return;
+        if (event.frameId !== tab.mainFrame.id || this.replaced.has(event.loaderId)) return;
         let events = this.lifecycle.get(event.loaderId);
         if (!events) {
           events = new Set();
@@ -91,6 +102,10 @@ export class NavigationWatcher {
     }
     this.armed = autoArm;
   }
+  /**
+   * Waits for the document of `loaderId`, or for a document that replaced it in the main frame
+   * before it reached the awaited event, as a page that redirects by script or form does.
+   */
   expect(loaderId?: Protocol.Network.LoaderId): void {
     this.expected = loaderId;
     this.armed = true;
@@ -98,19 +113,28 @@ export class NavigationWatcher {
   }
   private check(): void {
     if (!this.armed || !this.committed || this.settled) return;
-    const { loader, same, url } = this.committed;
-    if (this.expected && loader !== this.expected) return;
-    const until = this.options.waitUntil ?? 'load';
-    if (
-      same ||
-      this.committed.restored ||
-      until === 'commit' ||
-      this.lifecycle.get(loader)?.has(lifecycleName[until])
-    ) {
-      this.settled = true;
-      this.cleanup();
-      this.resolve(url);
+    if (this.committed.same) {
+      if (!this.expected || this.committed.loader === this.expected)
+        this.finish(this.committed.url);
+      return;
     }
+    const start = this.expected ? this.commits.findIndex((c) => c.loader === this.expected) : 0;
+    if (start < 0) return;
+    const until = this.options.waitUntil ?? 'load';
+    const done = this.commits
+      .slice(start)
+      .find(
+        (commit) =>
+          until === 'commit' ||
+          commit.restored ||
+          this.lifecycle.get(commit.loader)?.has(lifecycleName[until]),
+      );
+    if (done) this.finish(done.url);
+  }
+  private finish(url: string): void {
+    this.settled = true;
+    this.cleanup();
+    this.resolve(url);
   }
   cancel(error: Error): void {
     if (this.settled) return;

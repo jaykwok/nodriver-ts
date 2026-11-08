@@ -88,6 +88,30 @@ export function bounded<T>(
     );
   });
 }
+/**
+ * Waits for `work`, such as closing a temporary tab, for what remains of `step`'s budget, and
+ * throws its failure. Once the budget is spent, it returns while the work continues without the
+ * caller; a failure after that goes to `late`.
+ */
+export async function within(
+  work: Promise<unknown>,
+  step: () => WaitOptions,
+  late: (error: unknown) => void = () => {},
+): Promise<void> {
+  const outcome = work.then(
+    () => undefined,
+    (error: unknown) => ({ error }),
+  );
+  let failure: { error: unknown } | undefined;
+  try {
+    failure = await bounded(outcome, step());
+  } catch {
+    // Only the budget ends the wait early, as `outcome` never rejects.
+    void outcome.then((failure) => failure && late(failure.error));
+    return;
+  }
+  if (failure) throw failure.error;
+}
 /** Calls `fn` until it returns a value; each attempt receives the remaining time and signal. */
 export async function poll<T>(
   fn: (step: WaitOptions) => Promise<T | undefined>,

@@ -19,8 +19,10 @@ import {
   bounded,
   CONNECT_TIMEOUT,
   EventHub,
+  MAX_TIMEOUT,
   poll,
   timeoutValue,
+  within,
   type WaitOptions,
 } from '../utils.ts';
 import { DisconnectedError, NodriverError, ProtocolError, TimeoutError } from '../errors.ts';
@@ -32,6 +34,7 @@ import {
 } from '../input/behavior.ts';
 import { InputScope, type InputScopeOptions } from '../input/scope.ts';
 import { PresentationLease, type PresentationLeaseOptions } from '../page/presentation.ts';
+import type { NavigationOptions } from '../page/navigation.ts';
 /**
  * Which page targets a Browser attaches to. "all" adopts every page; "created" adopts only tabs
  * opened through this client and popups they open. "none" discovers targets only and forbids Tabs.
@@ -434,22 +437,87 @@ export class Browser {
     void task.finally(() => this.attaching.delete(info.targetId)).catch(() => {});
     return task;
   }
-  async newTab(url = 'about:blank', context = this.defaultContext): Promise<Tab> {
+  /**
+   * Opens a tab and navigates it to `url`. `timeout` and `signal` cover creating the tab, attaching
+   * it and the navigation together. A tab that does not finish opening is closed again, including
+   * one Chrome creates after the caller stopped waiting; once the deadline has passed or the signal
+   * has aborted, the call does not wait for that.
+   */
+  async newTab(
+    url = 'about:blank',
+    context = this.defaultContext,
+    options: NavigationOptions = {},
+  ): Promise<Tab> {
     this.requireHighLevel();
-    const { targetId } = await this.cdp.send('Target.createTarget', {
-      url: 'about:blank',
-      browserContextId: context.id,
-    });
+    const step = budget(options, 'Opening a tab');
+    const wait = { timeout: this.connection.timeout, ...step() };
+    const created = this.createPage(context);
+    let targetId: string;
     try {
-      const { targetInfo } = await this.cdp.send('Target.getTargetInfo', { targetId });
-      this.targetInfo.set(targetId, targetInfo);
-      const tab = await this.attach(targetInfo);
-      if (url !== 'about:blank') await tab.goto(url);
-      return tab;
-    } catch (e) {
-      await this.cdp.send('Target.closeTarget', { targetId }).catch(() => {});
-      throw e;
+      targetId = await bounded(created, wait, 'Opening a tab');
+    } catch (error) {
+      void created.then(
+        (targetId) =>
+          this.closeCreated(targetId).catch((failure: unknown) =>
+            this.reportCloseFailure(targetId, failure),
+          ),
+        () => {},
+      );
+      throw error;
     }
+    try {
+      return await this.openPage(targetId, url, options, step);
+    } catch (error) {
+      const report = (failure: unknown) => this.reportCloseFailure(targetId, failure);
+      await within(this.closeCreated(targetId), step, report).catch(report);
+      throw error;
+    }
+  }
+  /**
+   * @internal Reports a failure to close a page that no caller hears of, as the caller has an error
+   * of its own or stopped waiting. A page that is gone needed no closing.
+   */
+  reportCloseFailure(targetId: string, error: unknown): void {
+    if (!this.closed && this.targetInfo.has(targetId) && !targetGone(error))
+      this.reportError(error);
+  }
+  /**
+   * @internal Closes a page from createPage(). One still being attached is closed through its Tab
+   * once attached, so that the Tab ends with the page.
+   */
+  async closeCreated(targetId: string): Promise<void> {
+    const tab =
+      (await this.attachInProgress(targetId)?.catch(() => undefined)) ?? this.tabMap.get(targetId);
+    if (tab && !tab.closed) await tab.close();
+    else await this.cdp.send('Target.closeTarget', { targetId });
+  }
+  /**
+   * @internal Creates a blank page in `context` and resolves with its target ID. The command has no
+   * deadline of its own, so that a page Chrome creates after its caller stopped waiting is still
+   * reported and can be closed.
+   */
+  async createPage(context: BrowserContext): Promise<string> {
+    this.requireHighLevel();
+    const { targetId } = await this.cdp.sendWith(
+      'Target.createTarget',
+      { timeout: MAX_TIMEOUT },
+      { url: 'about:blank', browserContextId: context.id },
+    );
+    return targetId;
+  }
+  /** @internal Attaches a page from createPage() and loads `url`, within `step`'s budget. */
+  async openPage(
+    targetId: string,
+    url: string,
+    options: NavigationOptions,
+    step: () => WaitOptions,
+  ): Promise<Tab> {
+    const { targetInfo } = await this.cdp.sendWith('Target.getTargetInfo', step(), { targetId });
+    this.targetInfo.set(targetId, targetInfo);
+    const wait = step();
+    const tab = await bounded(this.attach(targetInfo, step), wait, 'Opening a tab');
+    if (url !== 'about:blank') await tab.goto(url, { ...options, ...step() });
+    return tab;
   }
   /** A scope for the pages of one task in the default context; see TabScope. */
   tabScope(): TabScope {

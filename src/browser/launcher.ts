@@ -32,6 +32,17 @@ import {
   timeoutValue,
   type WaitOptions,
 } from '../utils.ts';
+/** What `prepareProfile` is called with besides the profile directory. */
+export interface ProfilePreparation extends WaitOptions {
+  /** A temporary profile the library created for this launch and deletes on close. */
+  temporary: boolean;
+  /**
+   * The profile holds nothing from before this launch: always true for a temporary profile; for a
+   * userDataDir, true when the directory was missing or held only the library's lock files,
+   * `.nodriver.lock` and `.nodriver.lock.reclaim`.
+   */
+  empty: boolean;
+}
 export interface LaunchOptions extends WaitOptions, ConnectionOptions {
   executablePath?: string;
   /** False by default. Set true when running without a graphical desktop. */
@@ -42,10 +53,11 @@ export interface LaunchOptions extends WaitOptions, ConnectionOptions {
   /**
    * Called with the profile directory before Chrome starts, to write or check files such as
    * `Local State` (see updateProfileSettings()): for a temporary profile after the library has
-   * prepared it, for a userDataDir while this process holds its lock. Bounded by the launch
+   * prepared it, for a userDataDir while this process holds its lock. `options` says which kind
+   * of profile it is and whether it holds data from before this launch. Bounded by the launch
    * timeout; its signal also aborts at that deadline, so stop writing when it does.
    */
-  prepareProfile?: (directory: string, options: WaitOptions) => void | Promise<void>;
+  prepareProfile?: (directory: string, options: ProfilePreparation) => void | Promise<void>;
   args?: string[];
   transport?: 'websocket' | 'pipe';
   /** Defaults to all. none discovers targets without constructing Tab/Frame models. */
@@ -355,6 +367,7 @@ export class BrowserProcess {
       : resolve(options.userDataDir!);
     let lock: FileHandle | undefined;
     let processHandle: BrowserProcess | undefined;
+    let empty = temporary;
     try {
       if (options.webRtcIPHandlingPolicy) {
         await mkdir(join(profile, 'Default'), { recursive: true });
@@ -366,6 +379,8 @@ export class BrowserProcess {
       if (!temporary) {
         await mkdir(profile, { recursive: true });
         lock = await acquireProfileLock(profile);
+        // Read under the lock, before anything in the profile changes.
+        empty = (await readdir(profile)).every((name) => name === LOCK || name === RECLAIM);
         // Never accidentally connect to a different Chrome already using this profile.
         await removeStaleActivePort(profile);
         await checkNativeProfileLock(profile);
@@ -376,7 +391,9 @@ export class BrowserProcess {
           [AbortSignal.timeout(timeout), options.signal].filter((s): s is AbortSignal => !!s),
         );
         await bounded(
-          Promise.resolve().then(() => options.prepareProfile!(profile, { timeout, signal })),
+          Promise.resolve().then(() =>
+            options.prepareProfile!(profile, { timeout, signal, temporary, empty }),
+          ),
           { timeout, signal: options.signal },
           'Profile preparation',
         );
@@ -709,6 +726,8 @@ async function checkNativeProfileLock(profile: string): Promise<void> {
 }
 
 const LOCK = '.nodriver.lock';
+/** Exists while a process checks whether the lock's owner has exited. */
+const RECLAIM = `${LOCK}.reclaim`;
 function alive(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -750,7 +769,7 @@ export async function acquireProfileLock(profile: string): Promise<FileHandle> {
   };
   // Serialize stale-lock deletion. Checking a PID and then unlinking without this guard lets
   // two contenders both read the stale owner and one delete the other's newly acquired lock.
-  const recoveryPath = `${path}.reclaim`;
+  const recoveryPath = join(profile, RECLAIM);
   let recovery: FileHandle;
   try {
     recovery = await open(recoveryPath, 'wx');
