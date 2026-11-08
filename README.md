@@ -31,7 +31,7 @@ Your code and the MCP server use the same objects. Every command goes through on
 
 - Node.js 24.22.0 or newer.
 - A local Chrome, Chromium or Edge. It is found automatically on Windows, macOS and Linux, including on `PATH`; otherwise set `CHROME_PATH` or `executablePath`.
-- A display for the default headful mode. On servers and in CI, pass `headless: true` (`--headless` for the MCP server). On Linux, run as a normal user with Chrome's shared libraries installed: the library never adds `--no-sandbox`. Headful mode on WSL needs WSLg or another display server.
+- A display for the default headful mode. On servers and in CI, pass `headless: true` (`--headless` for the MCP server); on Linux, `virtualDisplay: true` (`--virtual-display`) runs headful Chrome on its own Xvfb server instead. On Linux, run as a normal user with Chrome's shared libraries installed: the library never adds `--no-sandbox`. Headful mode on WSL needs WSLg or another display server.
 
 Supported platforms are listed in [docs/support.md](docs/support.md).
 
@@ -182,19 +182,21 @@ nodriver-mcp --mcp-transport http --port 3100
 
 `nodriver-mcp --help` lists every flag. Commonly used:
 
-- `--headless`, `--user-data-dir`, `--endpoint http://127.0.0.1:9222`, `--proxy URL`
+- `--headless`, `--virtual-display`, `--user-data-dir`, `--endpoint http://127.0.0.1:9222`, `--proxy URL`
 - `--lang`, `--window-size 1280x800`, `--user-agent`
 - `--input-policy human`, `--read-only`, `--disable-tool NAME`
 - `--upload-dir`, `--download-dir`, `--state-dir`: each enables the matching file tool, restricted to that directory
+- `--state-key-env NAME`: encrypts the files of `--state-dir` with the passphrase in that environment variable
+- `--remote-handoff` (HTTP only): lets a user operate a tab through a private viewer link; see [remote handoff](docs/mcp-http.md#remote-handoff)
 
 The 26 default tools:
 
 - **Tabs and navigation:** `browser_tabs`, `browser_open`, `browser_navigate`, `browser_history`, `browser_close_tab`, `browser_close`
 - **Observation:** `browser_snapshot`, `browser_find` (CSS, XPath or text), `browser_wait`, `browser_screenshot`, `browser_network`
 - **Actions:** `browser_click`, `browser_click_at`, `browser_hover`, `browser_drag`, `browser_fill`, `browser_type`, `browser_press_key`, `browser_select`, `browser_check`, `browser_scroll`, `browser_dialog`
-- **Other:** `browser_evaluate`, `browser_input_policy`, `browser_environment`, `browser_handoff` (asks the user to finish a step by hand)
+- **Other:** `browser_evaluate`, `browser_input_policy`, `browser_environment`, `browser_handoff` (asks the user to finish a step by hand, in the browser window or through a remote viewer link)
 
-`browser_upload`, `browser_downloads` and `browser_storage_state` appear only when their directory flag is set.
+`browser_upload`, `browser_downloads` and `browser_storage_state` appear only when their directory flag is set, and `browser_handoff_wait` only with `--remote-handoff`.
 
 Actions other than `browser_scroll` and `browser_dialog` accept `waitFor: "auto" | "load" | "none"` and `snapshot: true`, and return what happened (`navigated`, `newTabs`, `dialog`, `tabClosed`), so an agent needs no extra round trip after each step. An action that a JavaScript dialog interrupts returns at once with `pending: true`; answer the dialog with `browser_dialog`.
 

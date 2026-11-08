@@ -7,7 +7,7 @@
 - **运行时**：包、开发工具与测试统一要求 Node.js ≥ 24.22.0。测试使用 `node:test` 与 `expect`，直接运行 TypeScript 源码。包管理使用 npm。
 - **浏览器**：本机 Chrome、Chromium 或 Edge。Windows、macOS、Linux 的常见安装位置与 `PATH` 自动探测，也可用 `CHROME_PATH` 或 `executablePath` 指定。
 - **协议**：CDP 类型固定为 devtools-protocol 0.0.1718299；默认 MCP 2026-07-28，可显式启用 [2025 协议兼容](agent-compatibility.md)。
-- **Linux**：以普通用户运行，安装 Chrome 所需共享库（如 libnspr4、libnss3）。框架不添加 `--no-sandbox`，也不关闭站点隔离。WSL 的有界面模式需要 WSLg 或其他显示服务。
+- **Linux**：以普通用户运行，安装 Chrome 所需共享库（如 libnspr4、libnss3）。框架不添加 `--no-sandbox`，也不关闭站点隔离。WSL 的有界面模式需要 WSLg 或其他显示服务；没有显示器的机器上，可以用 `virtualDisplay: true` 让有界面的 Chrome 运行在专属的 Xvfb 服务器上（见[虚拟显示](api.md#虚拟显示)）。
 - **macOS**：Chrome 运行在 macOS 上时，按键事件附带 Chrome 的编辑命令，`Meta+A`、`Meta+C/X/V/Z`、`Shift+Meta+Z` 及 Alt/Meta 组合的方向键与删除键与物理键盘行为一致；跨平台脚本的全选应按平台使用 `Meta+A` 或 `Control+A`。GitHub 托管的 macOS 虚拟机无法解析 mDNS（`.local`）主机候选，本地 WebRTC 会停在 ICE `new`；平台矩阵在该环境中以 `--disable-features=WebRtcHideLocalIpsWithMdns` 启动 WebRTC 测试的浏览器，本项目不会自动添加此参数。
 - **WebSocket**：使用固定版本 npm `ws` 8.22.0 的 JS 协议解析器，关闭 per-message compression。通过标准 Node ESM 入口导入。
 
@@ -37,19 +37,19 @@
 | DOM      | CSS、XPath、最小文本、open/closed shadow root、元素作用域；隔离世界 DOM 辅助与主世界用户脚本                                                                                                                                                       |
 | 输入     | 滚动、稳定/可见/启用/命中检查、遮挡与父 iframe 命中、变换后的 quad、悬停投递确认；中文/emoji、焦点与选择区、物理按键、文件输入、select/checkbox、指针拖动；可选 human 策略                                                                         |
 | 求值     | Promise、exceptionDetails、顶层特殊数值/BigInt/undefined、JSHandle、对象释放、导航与崩溃失效、不重放副作用                                                                                                                                         |
-| 状态     | Cookie 保存与恢复、local/sessionStorage、Cookie + localStorage 快照（含 iframe 与已关闭标签页的源）、权限、20 个 BrowserContext 隔离与订阅回收                                                                                                     |
+| 状态     | Cookie 保存与恢复、local/sessionStorage、Cookie + localStorage 快照（含 iframe 与已关闭标签页的源）、按需导出的 sessionStorage 与 IndexedDB、已保存状态的 AES-256-GCM 加密、权限、20 个 BrowserContext 隔离与订阅回收                              |
 | 文件     | PNG/JPEG/WebP、全页与元素截图、PDF、GUID 命名下载及完成/取消、saveAs、上传                                                                                                                                                                         |
 | 网络     | Fetch 拦截/替换/失败、认证、响应与响应体、请求头/缓存/离线；覆盖页面及递归 OOPIF session                                                                                                                                                           |
 | 代理     | Chrome 直接代理、每个上下文独立代理、经 proxy-chain 转发的认证 HTTP(S)/SOCKS 上游                                                                                                                                                                  |
 | 环境     | 显式视口/DPR、时区、locale、UA 与 Client Hints、地理位置；结构化诊断与显式对齐，见 [环境](environment.md)                                                                                                                                          |
-| MCP      | stdio、本地 HTTP、socket、InMemory 共用 26 个默认工具与 3 个目录受限的可选文件工具；租约、受控浏览器池、状态资源与订阅、进度、取消和人工确认，见 [MCP](mcp.md)                                                                                     |
+| MCP      | stdio、本地 HTTP、socket、InMemory 共用 26 个默认工具与 3 个目录受限的可选文件工具；租约、受控浏览器池、状态资源与订阅、进度、取消、人工确认和 HTTP 上的远程人工接管，见 [MCP](mcp.md)                                                             |
 
 ## 限制
 
 - **浏览器版本**：以当前稳定版 Chrome 为主要目标，预览通道运行部分检查。主世界发现依赖经严格校验的 V8 objectId 内部格式；不兼容时明确报错，不退回 `Runtime.enable`。
 - **检测**：从不自动发送 `Runtime.enable`，并以原生启动开关关闭 AutomationControlled。隔离世界仍共享 DOM，headless 的屏幕尺寸等特征仍可观察；没有任何外部挑战必过的承诺，见 [自动化痕迹审计](automation-audit.md)。
 - **查询**：XPath 不穿越 shadow root，frame 查询不隐式跨 frame。识别 closed shadow root 需要全量 DOM，因此在大页面上高频轮询有一定成本。
-- **状态**：快照不含跨站 iframe 的分区 localStorage、sessionStorage、IndexedDB 和 Service Worker。第三方分区 Cookie 没有独立的端到端用例。
+- **状态**：快照不含跨站 iframe 的分区 localStorage 和 Service Worker。sessionStorage 和 IndexedDB 只在指定时导出，其中 sessionStorage 只取自打开的标签页的顶层文档。第三方分区 Cookie 没有独立的端到端用例。
 - **几何与截图**：覆盖嵌套、边框、滚动、scale/rotate、DPR 和父层遮挡；复杂 CSS 透视、pinch zoom、极端裁剪没有跨平台矩阵。元素截图适用于轴对齐元素。
 - **句柄**：JSHandle/Element 在文档失效后抛错，不自动重新定位。取消用户脚本只停止等待，不回滚已执行的 JS；用户脚本死循环会占用渲染进程，需要协议执行期限或关闭页面。
 - **注入时机**：已经开始运行的页面和弹出页不保证首段脚本前注入。新 OOPIF 的暂停初始化有看门狗，超时后恢复页面并报告初始化错误。

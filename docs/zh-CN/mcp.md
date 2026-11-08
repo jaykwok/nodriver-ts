@@ -62,7 +62,7 @@ HTTP 与 socket 服务只接受本机连接，并要求 `NODRIVER_MCP_TOKEN`（�
 | `--upload-dir`、`--download-dir`、`--state-dir`            | 启用对应的文件工具，路径限定在该目录内                                                                                                                                                                                                                  |
 | `--state-key-env`                                          | 存放口令的环境变量，用于加密 `--state-dir` 中的文件                                                                                                                                                                                                     |
 | `--allow-handoff`                                          | 未显式 `--headful` 时也允许 `browser_handoff`                                                                                                                                                                                                           |
-| `--remote-handoff`、`--remote-handoff-link-in-result`      | 允许用户通过回环地址上的查看链接操作标签页，详见 [HTTP 上的 MCP](mcp-http.md#远程人工接管)。仅限 HTTP 传输                                                                                                                                              |
+| `--remote-handoff`、`--remote-handoff-link-in-result`      | 允许用户通过回环地址上的查看链接操作标签页，详见 [HTTP 接入](mcp-http.md#远程人工接管)。仅限 HTTP 传输                                                                                                                                                  |
 | `--max-browsers`、`--contexts-per-browser`、`--max-leases` | 资源上限                                                                                                                                                                                                                                                |
 | `--lease-idle-ms`、`--queue-limit`、`--operation-timeout`  | 租约闲置期限、队列长度、操作期限                                                                                                                                                                                                                        |
 
@@ -105,6 +105,8 @@ HTTP 与 socket 服务只接受本机连接，并要求 `NODRIVER_MCP_TOKEN`（�
 - **`browser_downloads`**（`--download-dir`）：列出或等待最近 100 条下载记录，文件以 GUID 命名保存在该目录。每条记录带递增的 `sequence`，list 返回 `latestSequence`。wait 不占用操作队列，因此可在触发下载的点击之前或之后调用；它等待序号大于 `after` 的第一条记录完成或取消，`after` 默认为该标签页上次 wait 返回的序号（初始为 0）。超时会报错且不推进游标，再次 wait 继续等待同一个下载。
 - **`browser_storage_state`**（`--state-dir`）：按名称保存或加载 Cookie 与第一方 localStorage，范围是该上下文中任一 frame 用过的 HTTP(S) 源，包括已关闭的标签页。空存储不导出，跨站 iframe 的分区 localStorage 也不导出。读写在拦截文档请求的临时空白页中进行，因此不会访问站点，也不跟随重定向。状态文件拒绝已有的符号链接与硬链接，经临时文件原子替换保存，POSIX 权限为 0600。文件内容不进入对话，只返回计数。文件位于 `<state-dir>/<principal>/<name>.json`，因此名称归已认证的主体私有。保存时用 `include` 可加入 `sessionStorage` 或 `indexedDB`，含义同 [`storageState`](api.md#状态与存储)；加载带 sessionStorage 的状态需要 `tabId`，该标签页最后停在 about:blank。使用 `--state-key-env NAME`（嵌入时为 `stateKey`：32 字节密钥或口令）后，文件用 AES-256-GCM 加密，并拒绝读取明文文件，因此把文件换成明文也无法降级。密钥只由主机配置，工具参数里没有密钥。认证主体符合 `[a-z0-9_-]{1,64}` 时目录名就是它本身，否则为 `p-` 加上认证主体的 SHA-256 十六进制值；未传 binding 的服务使用 `private`，CLI 的 HTTP 和 socket 服务使用 `local-operator`。认证主体目录位置上的链接会被拒绝。加载未知名称时报告 `No saved state named <name>`，与其他认证主体是否保存过该名称无关。
 
+开启 `--remote-handoff`（仅限 HTTP）时还会出现 `browser_handoff_wait`，用于等待远程人工接管结束，或将其取消，见[远程人工接管](mcp-http.md#远程人工接管)。
+
 ### 只读模式
 
 `--read-only`（嵌入时为 `readOnly`）注册 `browser_tabs`、`browser_open`、`browser_navigate`、`browser_history`、`browser_close_tab`、`browser_snapshot`、`browser_find`、`browser_wait`、`browser_screenshot`、`browser_network` 和 `browser_close`，不注册页面输入、脚本、输入策略、环境更改、上传、下载、存储状态、对话框和人工接管工具。浏览器并不会保持不变：导航会加载页面，两个关闭工具会结束该租约的标签页和浏览器（使用 `--expose-existing-tabs` 时也包括暴露的标签页；外部浏览器只断开连接）。保留它们是为了让 agent 能自行清理；如需一并移除，再加 `--disable-tool browser_close_tab,browser_close`。
@@ -121,7 +123,7 @@ HTTP 与 socket 服务只接受本机连接，并要求 `NODRIVER_MCP_TOKEN`（�
 
 标签页上打开 JS 对话框期间，Chrome 不会回复动作的输入命令。对话框打开时尚未结束的动作会立即返回：结果设置 `dialog` 并带 `pending: true`，不含完成时才报告的字段（如 `clicked`），也不附带快照。动作在该结果之后继续运行，最长到其 `timeout`：
 
-- 租约的操作队列和其浏览器进程的队列一直被占用，直到动作结束。其他工具在后面等待，各自保有操作期限和取消能力；`browser_dialog`、`browser_tabs` 与 `browser_downloads` 不进入队列。
+- 租约的操作队列和其浏览器进程的队列一直被占用，直到动作结束。其他工具在后面等待，各自保有操作期限和取消能力；`browser_dialog`、`browser_tabs`、`browser_downloads` 与 `browser_handoff_wait` 不进入队列。
 - `browser_dialog` 回答对话框后动作继续，下一个工具在动作结束后运行。
 - 结果写入 `browser://events`（`action-completed`，或带 `error` 信息的 `action-failed`）和该标签页的 `lastInput`。
 - 到达 `timeout` 时动作失败并释放队列，因此没有人回答对话框时可以用 `browser_close_tab` 或 `browser_close` 结束该标签页。此后该浏览器上的输入会等到对话框被回答或标签页关闭，各工具受自身期限约束。
@@ -139,7 +141,7 @@ HTTP 与 socket 服务只接受本机连接，并要求 `NODRIVER_MCP_TOKEN`（�
 
 每个节点行带有布局框 `@x,y WxH`：左上角坐标和尺寸，单位是标签页视口的 CSS 像素，iframe 里的节点也换算到标签页视口，例如 `- button "提交" [e12] @412,300 96x32 disabled`。视口外的节点标 `offscreen`；没有布局的节点（如隐藏元素）没有框（`box: null`）。响应还包含 `viewport`，即视口的 CSS 像素尺寸。`viewportOnly: true` 只返回与视口有重叠的节点，此时分页和 `totalNodes` 只计这些节点。布局框来自该 frame 所在 session 的一次 `DOMSnapshot.captureSnapshot`，加上 `Page.getLayoutMetrics`，iframe 还要加上各级 `<iframe>` 元素的内容框，不在页面里执行脚本。布局框描述的是布局而不是绘制：被其他元素遮住、被滚动容器裁掉的元素仍有布局框。iframe 内不考虑双指缩放。Chrome 没有报告布局时，节点没有布局框，`viewport` 为 null，`viewportOnly` 会报错。
 
-`browser_screenshot` 传 `marks: "interactive"`（只标控件，同 `interactiveOnly`）或 `marks: "all"`（标所有带 ref 的节点）时，截取视口 PNG，并在每个可见节点上画出边框和 ref 编号（`e12`），最多 500 个。结果还以文本和结构化形式附带图例 `legend`：`{ ref, role, name, box }`，其中 box 与快照一样使用 CSS 像素；可见节点超过上限时 `truncated` 为 true。marks 不能和 `ref`、`fullPage`、png 以外的 `format` 或 `quality` 同时使用，`scale` 可以。快照在截图前读取，两者之间页面若有移动，标注会偏移。标注时拒绝超过 16,777,216 像素（4096 × 4096）的截图。
+`browser_screenshot` 传 `marks: "interactive"`（只标控件，同 `interactiveOnly`）或 `marks: "all"`（标所有带 ref 的节点）时，截取视口 PNG，并在主 frame 的每个可见节点上画出边框和 ref 编号（`e12`），最多 500 个。结果还以文本和结构化形式附带图例 `legend`：`{ ref, role, name, box }`，其中 box 与快照一样使用 CSS 像素；可见节点超过上限时 `truncated` 为 true。marks 不能和 `ref`、`fullPage`、png 以外的 `format` 或 `quality` 同时使用，`scale` 可以。快照在截图前读取，两者之间页面若有移动，标注会偏移。标注时拒绝超过 16,777,216 像素（4096 × 4096）的截图。
 
 引用是 `e1`、`e2` 这样的短 ID，保存在服务端，绑定实际元素、session 与文档代次，不向 DOM 写入标记。同一文档中的同一节点保持同一引用。导航、换进程、节点删除或标签页关闭后，旧引用会报错，不会被替换成相似的新元素。每个租约最多保留 2000 个引用，淘汰最久未使用的引用；遇到这种情况时重新快照或查找。
 
@@ -198,7 +200,7 @@ const handle = serveStdio(() => createBrowserMcpServer({ launch: { transport: 'p
 
 ## 并发、取消与边界
 
-- **串行**：同一租约的浏览器操作串行执行，输入、导航和引用观察互不干扰。`browser_tabs`、`browser_dialog` 与 `browser_downloads` 不进入操作队列：前两者用于发现并回答阻塞动作的 JS 对话框，下载等待则可与触发它的点击同时进行。`browser_handoff` 的应答轮次同样不进入队列；其第一轮在队列中排队，以便移动焦点。
+- **串行**：同一租约的浏览器操作串行执行，输入、导航和引用观察互不干扰。`browser_tabs`、`browser_dialog`、`browser_downloads` 与 `browser_handoff_wait` 不进入操作队列：前两者用于发现并回答阻塞动作的 JS 对话框，下载等待可与触发它的点击同时进行，`browser_handoff_wait` 只等待远程人工接管，不操作页面。`browser_handoff` 的应答轮次同样不进入队列；其第一轮在队列中排队，以便移动焦点。
 - **取消**：取消信号传递到导航、等待、查询、快照和支持取消的动作。已发出的 CDP 命令和输入不能撤销；队列不会因为客户端停止等待就提前放行下一个写操作。
 - **错误**：工具错误返回 `isError: true` 及错误名称与信息，不自动重放点击、提交或其他动作。输入 schema 拒绝多余字段；对于参数本会被忽略的组合，工具以 `TypeError` 拒绝：`browser_environment` 的 inspect 模式搭配 `environment` 或 `geoip`；`browser_drag` 的 `to` 搭配 `toX` 或 `toY`（须给出 `to`，或同时给出两个坐标）；`browser_scroll` 的 `ref` 搭配非零增量或坐标；`browser_screenshot` 的 `ref` 搭配 `fullPage`，或 PNG 搭配 `quality`；`marks` 搭配 `ref`、`fullPage`、非 PNG 格式或 `quality`。导航只接受 HTTP(S) 与 about:blank；这不是网络隔离，页面重定向、链接和浏览器自身请求仍按 Chrome 的行为进行。
 - **范围**：不提供远程多租户、任意 CDP 或宿主脚本执行。文件工具只在宿主配置目录后出现，并限定在该目录内。工具描述与 annotations 供客户端展示，不是访问控制。

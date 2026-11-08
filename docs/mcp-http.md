@@ -153,4 +153,4 @@ The picture is a `Page.startScreencast` stream over server-sent events, and each
 
 ## Test coverage
 
-The tests cover JSON and SSE, rejection of older protocols, reuse across requests and connections, authentication and headers, tab and ref permissions, cancellation, timeouts and quotas, subscription filtering, human interaction, profile ownership, and forbidden commands in the real CDP traffic. HTTP and a real stdio subprocess run the same behavioural assertions. Platforms and versions are listed in [Support](support.md).
+The tests cover JSON and SSE, rejection of older protocols, reuse across requests and connections, authentication and headers, tab and ref permissions, cancellation, timeouts and quotas, subscription filtering, human interaction, remote handoff with a click on a real page, profile ownership, and forbidden commands in the real CDP traffic. HTTP and a real stdio subprocess run the same behavioural assertions. Platforms and versions are listed in [Support](support.md).

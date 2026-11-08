@@ -31,7 +31,7 @@ flowchart LR
 
 - Node.js 24.22.0 或更高版本。
 - 本机安装的 Chrome、Chromium 或 Edge。在 Windows、macOS 和 Linux 上会自动查找，包括 `PATH`；否则请设置 `CHROME_PATH` 或 `executablePath`。
-- 默认的有界面模式需要显示环境。在服务器和 CI 上请传入 `headless: true`（MCP 服务使用 `--headless`）。Linux 上应以普通用户运行并安装 Chrome 所需的共享库：库从不添加 `--no-sandbox`。WSL 上的有界面模式需要 WSLg 或其他显示服务。
+- 默认的有界面模式需要显示环境。在服务器和 CI 上请传入 `headless: true`（MCP 服务使用 `--headless`）；在 Linux 上也可以用 `virtualDisplay: true`（`--virtual-display`）让有界面的 Chrome 运行在专属的 Xvfb 服务器上。Linux 上应以普通用户运行并安装 Chrome 所需的共享库：库从不添加 `--no-sandbox`。WSL 上的有界面模式需要 WSLg 或其他显示服务。
 
 支持的平台见 [docs/zh-CN/support.md](docs/zh-CN/support.md)。
 
@@ -182,19 +182,21 @@ nodriver-mcp --mcp-transport http --port 3100
 
 `nodriver-mcp --help` 列出所有参数。常用的有：
 
-- `--headless`、`--user-data-dir`、`--endpoint http://127.0.0.1:9222`、`--proxy URL`
+- `--headless`、`--virtual-display`、`--user-data-dir`、`--endpoint http://127.0.0.1:9222`、`--proxy URL`
 - `--lang`、`--window-size 1280x800`、`--user-agent`
 - `--input-policy human`、`--read-only`、`--disable-tool NAME`
 - `--upload-dir`、`--download-dir`、`--state-dir`：各自启用对应的文件工具，并限定在该目录内
+- `--state-key-env NAME`：用该环境变量中的口令加密 `--state-dir` 中的文件
+- `--remote-handoff`（仅限 HTTP）：让用户通过私密的查看链接操作标签页，见[远程人工接管](docs/zh-CN/mcp-http.md#远程人工接管)
 
 默认的 26 个工具：
 
 - **标签页与导航：** `browser_tabs`、`browser_open`、`browser_navigate`、`browser_history`、`browser_close_tab`、`browser_close`
 - **观察：** `browser_snapshot`、`browser_find`（CSS、XPath 或文本）、`browser_wait`、`browser_screenshot`、`browser_network`
 - **动作：** `browser_click`、`browser_click_at`、`browser_hover`、`browser_drag`、`browser_fill`、`browser_type`、`browser_press_key`、`browser_select`、`browser_check`、`browser_scroll`、`browser_dialog`
-- **其他：** `browser_evaluate`、`browser_input_policy`、`browser_environment`、`browser_handoff`（请用户手动完成某一步）
+- **其他：** `browser_evaluate`、`browser_input_policy`、`browser_environment`、`browser_handoff`（请用户在浏览器窗口中或通过远程查看链接手动完成某一步）
 
-`browser_upload`、`browser_downloads` 和 `browser_storage_state` 只在设置对应目录参数时出现。
+`browser_upload`、`browser_downloads` 和 `browser_storage_state` 只在设置对应目录参数时出现，`browser_handoff_wait` 只在开启 `--remote-handoff` 时出现。
 
 除 `browser_scroll` 和 `browser_dialog` 外，动作工具接受 `waitFor: "auto" | "load" | "none"` 和 `snapshot: true`，并返回发生了什么（`navigated`、`newTabs`、`dialog`、`tabClosed`），agent 不必在每一步后再多查询一次。被 JavaScript 对话框打断的动作立即返回 `pending: true`；用 `browser_dialog` 应答该对话框。
 
