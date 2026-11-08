@@ -4,6 +4,8 @@ All notable changes are recorded here. The project follows [Semantic Versioning]
 
 ## Unreleased
 
+## 0.9.0 — 2026-11-08
+
 ### Breaking changes
 
 - `clearSiteData()` failures other than refusing open tabs are `ClearSiteDataError`s, with the original error, such as a `TimeoutError`, as `cause`; they used to be thrown directly. A cookie set again during the call is also reported as `ClearSiteDataError`, which extends `NodriverError` as before.
