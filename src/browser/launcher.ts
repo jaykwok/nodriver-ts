@@ -21,6 +21,7 @@ import type { AttachPolicy } from './browser.ts';
 import type { InputPolicy } from '../input/behavior.ts';
 import { StartupTracker, type StartupProcessDiagnostics } from './startup.ts';
 import { Guardian, ReleaseUncertainError } from './guardian.ts';
+import { checkXvfbOptions, XvfbSession, type XvfbOptions } from '../optional/xvfb.ts';
 import { DisconnectedError, NodriverError, ProfileInUseError } from '../errors.ts';
 import {
   abortReason,
@@ -77,6 +78,11 @@ export interface LaunchOptions extends WaitOptions, ConnectionOptions {
    */
   supervised?: boolean;
   env?: NodeJS.ProcessEnv;
+  /**
+   * Runs headful Chrome on its own Xvfb server, ended with the browser, for Linux machines without
+   * a display. Cannot be combined with headless: true.
+   */
+  virtualDisplay?: boolean | XvfbOptions;
   handleSignals?: boolean;
   proxyServer?: string;
   proxyBypassList?: string;
@@ -257,6 +263,7 @@ export class BrowserProcess {
   readonly detached: boolean;
   private lock?: FileHandle;
   private readonly guardian?: Guardian;
+  private readonly display?: XvfbSession;
   private constructor(
     child: ChildProcess,
     profile: string,
@@ -264,7 +271,9 @@ export class BrowserProcess {
     detached: boolean,
     lock?: FileHandle,
     guardian?: Guardian,
+    display?: XvfbSession,
   ) {
+    this.display = display;
     this.child = child;
     this.profile = profile;
     this.temporary = temporary;
@@ -335,6 +344,13 @@ export class BrowserProcess {
       throw new TypeError(
         'detached requires WebSocket transport; Chrome exits when CDP pipes close',
       );
+    const virtualDisplay =
+      options.virtualDisplay === true ? {} : options.virtualDisplay || undefined;
+    if (virtualDisplay) {
+      if (options.headless === true)
+        throw new TypeError('virtualDisplay runs headful Chrome; do not set headless: true');
+      checkXvfbOptions(virtualDisplay);
+    }
     const executable = await findExecutable(options.executablePath);
     if (
       options.webRtcIPHandlingPolicy &&
@@ -367,6 +383,7 @@ export class BrowserProcess {
       : resolve(options.userDataDir!);
     let lock: FileHandle | undefined;
     let processHandle: BrowserProcess | undefined;
+    let display: XvfbSession | undefined;
     let empty = temporary;
     try {
       if (options.webRtcIPHandlingPolicy) {
@@ -444,12 +461,22 @@ export class BrowserProcess {
       );
       args.push(...extraArgs, 'about:blank');
       startup.enter('process-launch');
+      // Under a guardian the display belongs to it, so that it ends even if this process dies.
+      display =
+        virtualDisplay && !options.supervised
+          ? await XvfbSession.start({
+              ...virtualDisplay,
+              signal: options.signal,
+              bound: options.detached !== true,
+            })
+          : undefined;
       const guardian = options.supervised
         ? await Guardian.create(
             executable,
             args,
             options.env ? { ...process.env, ...options.env } : process.env,
             options,
+            virtualDisplay,
           )
         : undefined;
       const child =
@@ -458,7 +485,7 @@ export class BrowserProcess {
           stdio: pipe
             ? ['ignore', 'ignore', 'pipe', 'pipe', 'pipe']
             : ['ignore', 'ignore', options.detached ? 'ignore' : 'pipe'],
-          env: options.env ? { ...process.env, ...options.env } : process.env,
+          env: { ...process.env, ...options.env, ...display?.env },
           windowsHide: true,
           detached: options.detached === true || process.platform !== 'win32',
         });
@@ -469,6 +496,7 @@ export class BrowserProcess {
         options.detached === true,
         lock,
         guardian,
+        display,
       );
       startup.process = () => processHandle!.diagnostics;
       if (guardian) await guardian.waitReady(options);
@@ -522,6 +550,7 @@ export class BrowserProcess {
       // Cleanup failures must not replace the startup error and its diagnostics.
       if (processHandle) await processHandle.close().catch(() => {});
       else {
+        await display?.stop().catch(() => {});
         if (lock) {
           await lock.close().catch(() => {});
           await rm(join(profile, LOCK), { force: true }).catch(() => {});
@@ -569,6 +598,7 @@ export class BrowserProcess {
     this.handedOff = true;
     unwatchSignals(this);
     this.child.unref();
+    this.display?.detach();
     return (this.releasing = this.unlock());
   }
   private async releaseGuardian(guardian: Guardian): Promise<void> {
@@ -662,6 +692,7 @@ export class BrowserProcess {
       if (!(await this.waitForExit(15_000)))
         throw new DisconnectedError(`Owned Chrome PID ${this.pid} did not exit`);
     }
+    await this.display?.stop();
     await this.unlock();
     if (this.temporary) await removeTree(this.profile);
     else await rm(join(this.profile, 'DevToolsActivePort'), { force: true });

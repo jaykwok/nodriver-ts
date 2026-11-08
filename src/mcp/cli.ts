@@ -18,6 +18,7 @@ interface Parsed {
   tokenEnv: string;
 }
 const LAUNCH_ONLY = [
+  '--virtual-display',
   '--transport',
   '--browser-transport',
   '--headful',
@@ -39,6 +40,7 @@ const LIMITS: Record<string, keyof BrowserSessionManagerOptions> = {
   '--operation-timeout': 'operationTimeout',
 };
 const FLAGS = [
+  '--virtual-display',
   '--headful',
   '--headless',
   '--read-only',
@@ -62,6 +64,7 @@ function parse(args: string[]): Parsed {
     const option = args[i]!;
     if (FLAGS.includes(option)) {
       if (option === '--mcp-compat') compatibility = true;
+      else if (option === '--virtual-display') launch.virtualDisplay = true;
       else if (option === '--headful' || option === '--headless') {
         const headless = option === '--headless';
         if (launch.headless !== undefined && launch.headless !== headless)
@@ -151,6 +154,7 @@ MCP transport
 
 Browser
   --headful | --headless              default headful
+  --virtual-display                   run headful Chrome on its own Xvfb server (Linux)
   --browser-transport pipe|websocket  CDP transport (default pipe; --transport is an alias)
   --executable PATH                   Chrome/Chromium/Edge binary (default: auto-detect)
   --user-data-dir PATH                persistent profile (single browser, no per-lease contexts)

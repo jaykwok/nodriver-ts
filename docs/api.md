@@ -163,6 +163,12 @@ scope.borrow(startTab); // stays open; its popups close with the scope
 scope.keep(reviewTab); // left open for a person
 ```
 
+## Virtual display
+
+`Browser.launch({ virtualDisplay: true })` runs headful Chrome on its own Xvfb server, for Linux machines without a display. It needs the `Xvfb` program and is refused on other platforms and together with `headless: true`. Pass `{ screen: '1920x1080x24', timeout, executable }` to configure it.
+
+The server picks a free display and reports it through `-displayfd`, so concurrent launches do not compete for a number. It does not listen on TCP and requires an MIT-MAGIC-COOKIE, written to 0600 files in a temporary directory, so other local users cannot connect. It stops after Chrome exits and its files are removed. With `supervised: true` the guardian owns both processes, which end together if the host exits. `release()` leaves both running. `XvfbSession.start(options)` runs a server on its own; pass `session.env` to the program that should use it, and call `session.stop()`.
+
 ## State and storage
 
 Cookies and storage are isolated between BrowserContexts. That isolation does not extend to the operating system, GPU or fonts.

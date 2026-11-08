@@ -1,4 +1,5 @@
 import { spawn, execFile, type ChildProcess } from 'node:child_process';
+import type { XvfbOptions } from '../optional/xvfb.ts';
 import { lstat, mkdtemp, open, readdir, rm } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { tmpdir } from 'node:os';
@@ -72,6 +73,7 @@ export class Guardian {
     args: string[],
     env: NodeJS.ProcessEnv,
     options: WaitOptions = {},
+    virtualDisplay?: XvfbOptions,
   ): Promise<Guardian> {
     if (options.signal?.aborted) throw abortReason(options.signal);
     const windows = process.platform === 'win32';
@@ -143,7 +145,7 @@ export class Guardian {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: helperEnv,
     });
-    return new Guardian(child, executable, args, env, buildDirectory);
+    return new Guardian(child, executable, args, env, buildDirectory, virtualDisplay);
   }
   private constructor(
     child: ChildProcess,
@@ -151,6 +153,7 @@ export class Guardian {
     args: string[],
     env: NodeJS.ProcessEnv,
     buildDirectory?: string,
+    virtualDisplay?: XvfbOptions,
   ) {
     this.child = child;
     let ready!: () => void;
@@ -215,7 +218,7 @@ export class Guardian {
         fail(new NodriverError('Invalid browser guardian response', { cause: error }));
       }
     });
-    this.child.stdin!.write(JSON.stringify({ executable, args, env }) + '\n');
+    this.child.stdin!.write(JSON.stringify({ executable, args, env, virtualDisplay }) + '\n');
   }
   get diagnostics(): StartupProcessDiagnostics {
     return { ...this.state };

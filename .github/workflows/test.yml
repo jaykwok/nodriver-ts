@@ -43,6 +43,9 @@ jobs:
       - name: Disable piped core dumps
         if: runner.os == 'Linux'
         run: sudo sysctl -w kernel.core_pattern=core
+      - name: Install Xvfb
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y xvfb
       - run: npm ci
       # The runner image's Chrome is not pinned; record what this run actually tested.
       - name: Record versions

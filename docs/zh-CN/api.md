@@ -163,6 +163,12 @@ scope.borrow(startTab); // 保持打开；它的弹出页随作用域关闭
 scope.keep(reviewTab); // 留给人工处理
 ```
 
+## 虚拟显示
+
+`Browser.launch({ virtualDisplay: true })` 让有界面的 Chrome 运行在专属的 Xvfb 服务器上，适用于没有显示器的 Linux 机器。需要安装 `Xvfb` 程序，在其他平台上或与 `headless: true` 同时使用时会报错。可传 `{ screen: '1920x1080x24', timeout, executable }` 进行配置。
+
+服务器自行选择空闲的显示编号，并通过 `-displayfd` 报告，所以并发启动不会争抢编号。它不监听 TCP，并要求 MIT-MAGIC-COOKIE；cookie 写在临时目录里权限为 0600 的文件中，其他本地用户无法连接。Chrome 退出后服务器随之停止，相关文件也会删除。使用 `supervised: true` 时，两个进程都归 guardian 所有，宿主退出时一起结束。`release()` 后两者都继续运行。`XvfbSession.start(options)` 可以单独启动服务器：把 `session.env` 传给需要使用它的程序，用完调用 `session.stop()`。
+
 ## 状态与存储
 
 BrowserContext 之间的 Cookie 与存储相互隔离；这不等于独立的操作系统、GPU 或字体环境。

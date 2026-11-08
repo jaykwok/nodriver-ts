@@ -25,6 +25,8 @@ export type {
   StartupDiagnostics,
   StartupProcessDiagnostics,
 } from './browser/startup.ts';
+export { XvfbSession } from './optional/xvfb.ts';
+export type { XvfbOptions, XvfbStartOptions } from './optional/xvfb.ts';
 export { Download } from './browser/download.ts';
 export { Tab } from './page/tab.ts';
 export type { Environment } from './page/tab.ts';
