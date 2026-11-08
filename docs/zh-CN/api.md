@@ -127,7 +127,7 @@
 
 `await using` 在正常退出和异常展开时关闭资源，也可使用 `try/finally` 与 `close()`。`close()` 幂等，失败后可再次调用。未设置 `detached` 启动的 Chrome 也会在宿主退出时结束，包括 `process.exit()` 和未捕获异常。宿主被强制终止或断电时，JavaScript 无法保证清理；这种情况下的遗留见[浏览器交接与事件](browser-handoff.md)。
 
-`await browser.release()` 返回 WebSocket 端点并放弃进程所有权，之后 `owned` 为 `false`，`close()` 与异步析构只断开连接。自有浏览器必须以 `detached: true` 启动；pipe 会明确拒绝交接且不改变连接。交接保留 profile（临时 profile 也保留）与 `DevToolsActivePort`，移除记录宿主 PID 的 `.nodriver.lock`。`disconnect()` 不放弃所有权，pipe Chrome 在管道断开时会退出。未设置 `supervised` 时，交接前宿主崩溃可能遗留 Chrome。完整示例、清理责任和事件接口见[浏览器交接与事件](browser-handoff.md)。
+`await browser.release()` 返回 WebSocket 端点并放弃进程所有权，之后 `owned` 为 `false`，`close()` 与异步析构只断开连接。自有浏览器必须以 `detached: true` 启动，且不能使用 `virtualDisplay`；pipe 会明确拒绝交接且不改变连接。交接保留 profile（临时 profile 也保留）与 `DevToolsActivePort`，移除记录宿主 PID 的 `.nodriver.lock`。`disconnect()` 不放弃所有权，pipe Chrome 在管道断开时会退出。未设置 `supervised` 时，交接前宿主崩溃可能遗留 Chrome。完整示例、清理责任和事件接口见[浏览器交接与事件](browser-handoff.md)。
 
 ## 输入与元素操作
 
@@ -167,7 +167,7 @@ scope.keep(reviewTab); // 留给人工处理
 
 `Browser.launch({ virtualDisplay: true })` 让有界面的 Chrome 运行在专属的 Xvfb 服务器上，适用于没有显示器的 Linux 机器。需要安装 `Xvfb` 程序，在其他平台上或与 `headless: true` 同时使用时会报错。可传 `{ screen: '1920x1080x24', timeout, executable }` 进行配置。
 
-服务器自行选择空闲的显示编号，并通过 `-displayfd` 报告，所以并发启动不会争抢编号。它不监听 TCP，并要求 MIT-MAGIC-COOKIE；cookie 写在临时目录里权限为 0600 的文件中，其他本地用户无法连接。Chrome 退出后服务器随之停止，相关文件也会删除。使用 `supervised: true` 时，两个进程都归 guardian 所有，宿主退出时一起结束。`release()` 后两者都继续运行。`XvfbSession.start(options)` 可以单独启动服务器：把 `session.env` 传给需要使用它的程序，用完调用 `session.stop()`。
+服务器自行选择空闲的显示编号，并通过 `-displayfd` 报告，所以并发启动不会争抢编号。它不监听 TCP，并要求 MIT-MAGIC-COOKIE；cookie 写在临时目录里权限为 0600 的文件中，其他本地用户无法连接。Chrome 退出后服务器随之停止，相关文件也会删除。使用 `supervised: true` 时，两个进程都归 guardian 所有，宿主退出时一起结束。`XvfbSession.start(options)` 可以单独启动服务器：把 `session.env` 传给需要使用它的程序，用完调用 `session.stop()`。带 `virtualDisplay` 启动的浏览器不能 `release()`，因为交接出去的 Chrome 退出后，没有谁会结束服务器；需要交接时，请用这种方式启动服务器，再以 `env: session.env` 启动浏览器。
 
 ## 状态与存储
 

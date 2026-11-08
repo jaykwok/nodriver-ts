@@ -142,15 +142,10 @@ export class XvfbSession {
   private unbind(): void {
     if (running.delete(this) && !running.size) process.off('exit', endRunning);
   }
-  /** For process exit, where nothing can be awaited. */
+  /** @internal For process exit, where nothing can be awaited. */
   endNow(): void {
     killGroup(this.child, 'SIGKILL');
     rmSync(this.directory, { recursive: true, force: true });
-  }
-  /** Leaves the server running after this process exits, and its files in place. */
-  detach(): void {
-    this.unbind();
-    this.child.unref();
   }
   /** Ends the server and removes its files. */
   stop(): Promise<void> {

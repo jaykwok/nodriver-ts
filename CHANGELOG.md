@@ -40,7 +40,7 @@ All notable changes are recorded here. The project follows [Semantic Versioning]
 ### Browser and process lifecycle
 
 - `PresentationLease` takes `deliver`, which receives each frame and delays its acknowledgement until it settles.
-- `Browser.launch({ virtualDisplay: true })` runs headful Chrome on its own Xvfb server on Linux, with MIT-MAGIC-COOKIE access control and no TCP listener. The server ends with the browser, also under the guardian of `supervised: true`. `XvfbSession` runs one directly, and the MCP CLI has `--virtual-display`.
+- `Browser.launch({ virtualDisplay: true })` runs headful Chrome on its own Xvfb server on Linux, with MIT-MAGIC-COOKIE access control and no TCP listener. The server ends with the browser, also under the guardian of `supervised: true`, and `release()` refuses such a launch. `XvfbSession` runs one directly, and the MCP CLI has `--virtual-display`.
 - Cleanup the library does after an operation failed or after its caller stopped waiting, such as closing a tab that did not finish opening, never replaces the operation's own error. When such cleanup fails, the failure is reported through `onError` and `browser.errors`.
 - `prepareProfile(dir, options)` receives `temporary` and `empty` in its options (`ProfilePreparation`): whether the library created the profile for this launch, and whether the profile held nothing from earlier launches. `empty` is read under the profile lock and ignores only the library's lock files, `.nodriver.lock` and `.nodriver.lock.reclaim`.
 

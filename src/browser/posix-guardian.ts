@@ -66,8 +66,12 @@ lines.on('line', (line) => {
         send({ type: 'error', id: message.id, error: 'Browser already exited' });
         return;
       }
+      // Nothing would end the server once a handed-off Chrome exits.
+      if (display) {
+        send({ type: 'error', id: message.id, error: 'A virtual display cannot be handed off' });
+        return;
+      }
       released = true; // Sole commit point: EOF after this point is harmless.
-      display?.detach();
       clearInterval(report);
       tail = Buffer.alloc(0);
       process.stdout.write(JSON.stringify({ type: 'released', id: message.id }) + '\n', () => {

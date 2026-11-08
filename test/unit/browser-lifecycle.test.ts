@@ -110,3 +110,31 @@ test('a failed close() can be retried, and release() stays refused once closing 
   await browser.close();
   assert.equal(attempts, 2);
 });
+
+test('release() refuses a browser on a virtual display before giving anything up', async (t) => {
+  await using chrome = await ScriptedChrome.start();
+  let released = 0;
+  t.mock.method(BrowserProcess, 'start', async () => ({
+    endpoint: chrome.endpoint,
+    transport: await WebSocketTransport.connect(chrome.endpoint),
+    process: {
+      released: false,
+      detached: true,
+      virtualDisplay: true,
+      diagnostics: { exited: false },
+      captureDiagnostics: async () => {},
+      waitForExit: async () => true,
+      release: async () => {
+        released++;
+      },
+      close: async () => {},
+    },
+  }));
+  chrome.handle('Browser.close', () => {});
+  const browser = await Browser.launch({ attach: 'none', headless: true, timeout: 1000 });
+  await assert.rejects(browser.release(), /virtual display/);
+  assert.equal(released, 0);
+  assert.equal(browser.owned, true);
+  assert.equal(browser.closed, false);
+  await browser.close();
+});

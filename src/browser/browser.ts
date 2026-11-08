@@ -619,6 +619,12 @@ export class Browser {
       );
     if (this.process && !this.process.detached)
       return Promise.reject(new NodriverError('release() requires launch({ detached: true })'));
+    if (this.process?.virtualDisplay)
+      return Promise.reject(
+        new NodriverError(
+          'release() cannot hand off a virtual display; launch with the env of your own XvfbSession',
+        ),
+      );
     if (this.contexts.some((context) => context.proxy))
       return Promise.reject(
         new NodriverError('release() cannot hand off an in-process proxy; close its context first'),

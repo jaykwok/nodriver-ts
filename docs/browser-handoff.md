@@ -45,7 +45,7 @@ Once `close()` has been called, even if it failed, `release()` rejects. It also 
 
 An owned browser can be handed off only if it was launched with `detached: true` explicitly. A browser from `Browser.connect()` can also call `release()`, which just disconnects and returns the endpoint. A plain `disconnect()` keeps ownership of an owned process, so a later `close()` still cleans it up; a detached launch can still call `release()` after disconnecting.
 
-Pipe mode cannot be handed off, because Chrome exits when its CDP pipe closes: `release()` rejects a pipe instance before disconnecting, and `detached: true` with `transport: 'pipe'` is rejected before launch. A context created with `newContext({ proxy })` depends on this process's `ProxyForwarder` and ends with the connection that created it, so it also makes handoff reject. Close that context first, or use an external `proxyServer` that can outlive the process.
+Pipe mode cannot be handed off, because Chrome exits when its CDP pipe closes: `release()` rejects a pipe instance before disconnecting, and `detached: true` with `transport: 'pipe'` is rejected before launch. A context created with `newContext({ proxy })` depends on this process's `ProxyForwarder` and ends with the connection that created it, so it also makes handoff reject. Close that context first, or use an external `proxyServer` that can outlive the process. A launch with `virtualDisplay` cannot be handed off either, because nothing would end its Xvfb server once Chrome exits; see [Virtual display](api.md#virtual-display).
 
 ## Profile and process responsibilities
 

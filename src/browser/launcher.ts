@@ -261,6 +261,8 @@ export class BrowserProcess {
   readonly profile: string;
   readonly temporary: boolean;
   readonly detached: boolean;
+  /** Chrome runs on an Xvfb server of its own, here or under the guardian. */
+  readonly virtualDisplay: boolean;
   private lock?: FileHandle;
   private readonly guardian?: Guardian;
   private readonly display?: XvfbSession;
@@ -269,6 +271,7 @@ export class BrowserProcess {
     profile: string,
     temporary: boolean,
     detached: boolean,
+    virtualDisplay: boolean,
     lock?: FileHandle,
     guardian?: Guardian,
     display?: XvfbSession,
@@ -278,6 +281,7 @@ export class BrowserProcess {
     this.profile = profile;
     this.temporary = temporary;
     this.detached = detached;
+    this.virtualDisplay = virtualDisplay;
     this.lock = lock;
     this.guardian = guardian;
     if (guardian) return;
@@ -494,6 +498,7 @@ export class BrowserProcess {
         profile,
         temporary,
         options.detached === true,
+        virtualDisplay !== undefined,
         lock,
         guardian,
         display,
@@ -591,6 +596,13 @@ export class BrowserProcess {
     if (this.closeStarted) return Promise.reject(new NodriverError('Chrome is already closing'));
     if (!this.detached)
       return Promise.reject(new NodriverError('release() requires launch({ detached: true })'));
+    // Nothing would end the server once a handed-off Chrome exits.
+    if (this.virtualDisplay)
+      return Promise.reject(
+        new NodriverError(
+          'release() cannot hand off a virtual display; launch with the env of your own XvfbSession',
+        ),
+      );
     if (this.diagnostics.exited)
       return Promise.reject(new NodriverError('Chrome has exited; there is nothing to release'));
     if (this.guardian) return (this.releasing = this.releaseGuardian(this.guardian));
@@ -598,7 +610,6 @@ export class BrowserProcess {
     this.handedOff = true;
     unwatchSignals(this);
     this.child.unref();
-    this.display?.detach();
     return (this.releasing = this.unlock());
   }
   private async releaseGuardian(guardian: Guardian): Promise<void> {

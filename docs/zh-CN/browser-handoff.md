@@ -45,7 +45,7 @@ import { Browser } from 'nodriver-ts';
 
 自有浏览器只有显式以 `detached: true` 启动才能交接。`Browser.connect()` 得到的浏览器也可以调用 `release()`，它只断开连接并返回端点。普通的 `disconnect()` 保留对自有进程的所有权，之后的 `close()` 仍会清理它；分离启动的浏览器在断开后仍可调用 `release()`。
 
-Pipe 模式无法交接，因为 Chrome 会在 CDP 管道关闭时退出：`release()` 会在断开前拒绝 pipe 实例，`detached: true` 与 `transport: 'pipe'` 的组合会在启动前被拒绝。用 `newContext({ proxy })` 创建的上下文依赖本进程的 `ProxyForwarder`，并随创建它的连接一起结束，因此也会使交接被拒绝。请先关闭该上下文，或改用能在本进程退出后继续存在的外部 `proxyServer`。
+Pipe 模式无法交接，因为 Chrome 会在 CDP 管道关闭时退出：`release()` 会在断开前拒绝 pipe 实例，`detached: true` 与 `transport: 'pipe'` 的组合会在启动前被拒绝。用 `newContext({ proxy })` 创建的上下文依赖本进程的 `ProxyForwarder`，并随创建它的连接一起结束，因此也会使交接被拒绝。请先关闭该上下文，或改用能在本进程退出后继续存在的外部 `proxyServer`。带 `virtualDisplay` 的启动同样无法交接，因为 Chrome 退出后没有谁会结束它的 Xvfb 服务器；见[虚拟显示](api.md#虚拟显示)。
 
 ## Profile 与进程责任
 
