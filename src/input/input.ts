@@ -261,7 +261,14 @@ export class Mouse {
       }
     });
   }
-  wheel(deltaX: number, deltaY: number, options: InputOptions = {}): Promise<InputReport> {
+  wheel(
+    deltaX: number,
+    deltaY: number,
+    options: InputOptions & {
+      /** @internal No packet is sent after this performance.now() time; the caller scrolls on. */
+      until?: number;
+    } = {},
+  ): Promise<InputReport> {
     return this.action('scroll', options, async (action) => {
       if (!Number.isFinite(deltaX) || !Number.isFinite(deltaY))
         throw new RangeError('Invalid scroll delta');
@@ -279,8 +286,13 @@ export class Mouse {
                 Math.ceil(Math.hypot(deltaX, deltaY) / (profile === 'wheel' ? 100 : 18)),
               ),
             );
+      const { until } = options;
+      const over = () => until !== undefined && performance.now() >= until;
       for (const packet of scrollPlan(deltaX, deltaY, steps, profile)) {
+        if (over()) break;
         await action.check();
+        // An async guard can outlast the limit.
+        if (over()) break;
         await action.send(this.session, 'Input.dispatchMouseEvent', {
           type: 'mouseWheel',
           x: this.x,
@@ -291,7 +303,12 @@ export class Mouse {
           modifiers: this.behavior.modifiers,
         });
         action.record('wheel', { x: this.x, y: this.y });
-        if (human) await action.wait(packet.delay + this.behavior.range('pause'));
+        if (human) {
+          const wait = packet.delay + this.behavior.range('pause');
+          await action.wait(
+            until === undefined ? wait : Math.max(0, Math.min(wait, until - performance.now())),
+          );
+        }
       }
     });
   }

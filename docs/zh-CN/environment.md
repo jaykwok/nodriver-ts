@@ -85,9 +85,9 @@ await tab.alignEnvironment(
 - **GeoIP**：只应用 `fields` 选中的 时区/地理位置字段，显式的 `environment` 优先。品牌、UA-CH、硬件、精确位置和语言绝不从 IP 推导。解析器会收到取消信号和剩余期限，由宿主负责取消其外部工作。
 - **单独设置 Accept-Language**：Chrome 保留自身的 UA 和 UA-CH，在非安全上下文的页面上也是如此；不生成其他品牌身份。
 - **核验**：每个 frame 的文档和新建的 dedicated Worker 分别核验；`expected` 与 `actual` 保留原始值。Worker 不支持的字段（如视口）记为 unavailable，真正不一致的记为 mismatch。视口只在主 frame 上核验，因为 iframe 的视口是它自己的布局框。locale 与时区按规范形式比较，因此 `fr-fr` 与 `fr-FR` 匹配，`Asia/Kolkata` 与 Chrome 报告的 `Asia/Calcutta` 匹配。Accept-Language 按有序的语言标签列表比较，忽略 `;q=` 权重；除非 `httpProbe` 在其 `headers` 中以 `accept-language` 回显该请求头，否则记为 not-tested。locale 只在页面根 session 上设置，因此不保证每个渲染进程/Worker 中的 Intl 都一致。UA-CH 按配置的字段比较，高熵值不可用时不会伪造成功。地理位置绝不自动授权；只有权限已是 granted 时才读取位置用于核验，否则记为 unavailable。
-- **期限与部分失败**：整个调用共用一个期限，默认 10000 ms，可用 `timeout` 与 `signal` 调整，到期时抛出 `TimeoutError`。`inspect` 选项在应用任何配置前校验。覆盖不会原子回滚：应用失败或到期时仍未完成，会记入 `applicationError`，session 记录和实际报告都会保留。如果应用后的采样失败或超时，`after` 为 undefined，`verificationError` 保存原因，所有请求的字段记为 not-tested；从此时起，只有调用方的 `signal` 会让调用拒绝。
+- **期限与部分失败**：整个调用共用一个期限，默认 10000 ms，可用 `timeout` 与 `signal` 调整，到期时抛出 `TimeoutError`。`inspect` 选项在应用任何配置前校验。覆盖不会原子回滚：应用失败或到期时仍未完成，会记入 `applicationError`，到期后不再发送覆盖，session 记录和实际报告都会保留。如果应用后的采样失败或超时，`after` 为 undefined，`verificationError` 保存原因，所有请求的字段记为 not-tested；从此时起，只有调用方的 `signal` 会让调用拒绝。
 
-`setEnvironment()` 是不带核验的显式覆盖接口。UA、Client Hints、时区等覆盖不保证到达每个 Worker、SharedWorker 或 Service Worker。有界面和 headless 模式默认都保留原生值。显式启用的 `maskHeadless: true` 会改变页面 UA/UA-CH 与 Dedicated Worker，但可能与 Shared/Service Worker 及其请求不一致；见[差分审计](differential-audit.md)和[自动化痕迹审计](automation-audit.md)。
+`setEnvironment()` 是不带核验的显式覆盖接口。多次调用依次执行。调用的 `timeout` 与 `signal` 覆盖等待之前的调用、首次读取原生值和每一次覆盖：到期或中止后不再发送覆盖，已发送的覆盖保持生效。在这样的调用期间或之后附加的跨域 iframe session 使用调用前的配置。`environmentState().requested` 是此后附加的 session 将使用的配置，不代表每个页面当前的实际状态。UA、Client Hints、时区等覆盖不保证到达每个 Worker、SharedWorker 或 Service Worker。有界面和 headless 模式默认都保留原生值。显式启用的 `maskHeadless: true` 会改变页面 UA/UA-CH 与 Dedicated Worker，但可能与 Shared/Service Worker 及其请求不一致；见[差分审计](differential-audit.md)和[自动化痕迹审计](automation-audit.md)。
 
 MCP 宿主可在 `BrowserSessionManagerOptions.environmentDiagnostics` 中配置 `httpProbe`/`stunServers`，并注入 `geoIPResolver`。工具只能选择是否使用这些配置，不能传入任意探测 URL。
 

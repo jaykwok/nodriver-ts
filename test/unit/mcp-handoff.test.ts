@@ -4,11 +4,12 @@ import { Client, type CallToolResult } from '@modelcontextprotocol/client';
 import { InMemoryTransport } from '@modelcontextprotocol/server';
 import { expect } from '../fixtures/expect.ts';
 import { Browser } from '../../src/browser/browser.ts';
-import { framePoint, type RemoteHandoffAudit } from '../../src/mcp/handoff.ts';
+import { framePoint, RemoteHandoff, type RemoteHandoffAudit } from '../../src/mcp/handoff.ts';
 import { createBrowserMcpHttpService } from '../../src/mcp/http.ts';
 import { createBrowserMcpServer } from '../../src/mcp/server.ts';
 import type { BrowserSessionManagerOptions } from '../../src/mcp/manager.ts';
 import { ScriptedChrome } from '../../src/testing/index.ts';
+import { poll } from '../../src/utils.ts';
 
 const origin = 'http://127.0.0.1:3100';
 const metadata = {
@@ -322,6 +323,77 @@ test('cancel and expiry end a handoff, and the lease stays retained until then',
   expect(
     (await f.tool('browser_handoff_wait', { handoffId: expiring.handoffId, timeout: 1 })).data,
   ).toMatchObject({ state: 'ended', reason: 'expired' });
+});
+
+/** A handoff whose screencast stops only once `stop` is called. */
+async function stalledStop(t: TestContext) {
+  const chrome = await ScriptedChrome.start();
+  const browser = await chrome.connect();
+  let stop!: () => void;
+  const stopped = new Promise<void>((resolve) => {
+    stop = resolve;
+  });
+  chrome.handle('Page.startScreencast', () => {});
+  chrome.handle('Page.stopScreencast', async () => {
+    await stopped;
+  });
+  const released = { count: 0 };
+  const handoff = new RemoteHandoff(
+    {
+      tab: browser.tabs[0]!,
+      principal: 'alice',
+      leaseId: 'lease',
+      options: { maxDuration: 10_000, tokenTtl: 10_000 },
+      release: () => {
+        released.count++;
+      },
+      changed: () => {},
+      onEnded: () => {},
+    },
+    'token',
+  );
+  t.after(async () => {
+    stop();
+    await handoff.end('cancelled');
+    await browser.close();
+    await chrome.close();
+  });
+  /** Opens a stream, then closes the viewer and waits until the screencast is being stopped. */
+  const disconnect = async () => {
+    const viewer = new AbortController();
+    await handoff.frames(viewer.signal);
+    viewer.abort();
+    const stopping = () => chrome.commands.some((c) => c.method === 'Page.stopScreencast');
+    await poll(async () => stopping() || undefined, { timeout: 1000 });
+  };
+  return { handoff, stop, released, disconnect };
+}
+
+test('a reconnect waits for the stream a disconnect is still stopping', async (t) => {
+  const f = await stalledStop(t);
+  await f.disconnect();
+  const reconnect = f.handoff.frames(new AbortController().signal).then(
+    () => 'connected',
+    (error: unknown) => String(error),
+  );
+  await sleep(20);
+  f.stop();
+  expect(await reconnect).toBe('connected');
+});
+
+test('the end releases the tools only after a disconnecting stream has stopped', async (t) => {
+  const f = await stalledStop(t);
+  await f.disconnect();
+  let ended = false;
+  const ending = f.handoff.end('cancelled').then(() => {
+    ended = true;
+  });
+  await sleep(20);
+  expect(ended).toBe(false);
+  expect(f.released.count).toBe(0);
+  f.stop();
+  await ending;
+  expect(f.released.count).toBe(1);
 });
 
 test('a resume condition ends the handoff when the page reaches it', async (t) => {

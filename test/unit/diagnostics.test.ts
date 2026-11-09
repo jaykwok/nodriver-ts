@@ -1,4 +1,5 @@
 import { test } from 'node:test';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { expect } from '../fixtures/expect.ts';
 import {
   alignEnvironment,
@@ -314,4 +315,114 @@ test('alignment applies overrides within its deadline and reports a stalled appl
   });
   expect(performance.now() - started).toBeLessThan(2000);
   expect(report.applicationError).toMatch(/deadline exceeded|timed out/);
+});
+
+test('alignment sends no override once its deadline passed during the baseline read', async (t) => {
+  await using chrome = await ScriptedChrome.start();
+  await using browser = await chrome.connect();
+  const tab = browser.tabs[0]!;
+  let read!: () => void;
+  const baseline = new Promise<void>((resolve) => {
+    read = resolve;
+  });
+  t.mock.method(tab, 'inspectEnvironment', async () => {
+    await baseline;
+    return {};
+  });
+  t.mock.method(tab, 'diagnoseEnvironment', async () => ({ frames: [] }));
+  chrome.handle('Emulation.setTimezoneOverride', () => {});
+  const report = await tab.alignEnvironment({
+    environment: { timezone: 'Europe/Paris' },
+    timeout: 30,
+  });
+  expect(report.applicationError).toMatch(/deadline exceeded|timed out/);
+  read();
+  await sleep(30);
+  expect(chrome.commands.some((c) => c.method === 'Emulation.setTimezoneOverride')).toBe(false);
+});
+
+test('a frame attaching while alignment runs out of time gets the configuration from before it', async (t) => {
+  await using chrome = await ScriptedChrome.start();
+  await using browser = await chrome.connect();
+  const tab = browser.tabs[0]!;
+  t.mock.method(tab, 'inspectEnvironment', async () => ({}));
+  // The sample after the timed-out application is cut short.
+  t.mock.method(tab, 'diagnoseEnvironment', async (options: DiagnoseEnvironmentOptions) => {
+    options.signal?.throwIfAborted();
+    return { frames: [] };
+  });
+  chrome.handle('Emulation.setTimezoneOverride', () => {});
+  chrome.handle('Emulation.setUserAgentOverride', () => {});
+  await tab.setEnvironment({ timezone: 'Asia/Tokyo' });
+  // The viewport override never answers, so the alignment runs out of time before the others.
+  chrome.handle('Emulation.setDeviceMetricsOverride', () => NO_REPLY);
+  // The frame's setup, and so its configuration, finishes only after the alignment returned.
+  let attach!: () => void;
+  const attached = new Promise<void>((resolve) => {
+    attach = resolve;
+  });
+  chrome.handle('Page.enable', () => {});
+  chrome.handle('Page.getFrameTree', async () => {
+    await attached;
+    return {
+      frameTree: {
+        frame: {
+          id: 'frame',
+          parentId: tab.mainFrame.id,
+          loaderId: 'loader',
+          url: 'https://other.test/',
+          domainAndRegistry: 'other.test',
+          securityOrigin: 'https://other.test',
+          mimeType: 'text/html',
+          secureContextType: 'Secure',
+          crossOriginIsolatedContextType: 'NotIsolated',
+          gatedAPIFeatures: [],
+        },
+      },
+    };
+  });
+  chrome.handle('Page.setLifecycleEventsEnabled', () => {});
+  chrome.handle('Target.setAutoAttach', () => {});
+  chrome.handle('Runtime.runIfWaitingForDebugger', () => {});
+  const aligning = tab.alignEnvironment({
+    environment: {
+      viewport: { width: 100, height: 100 },
+      timezone: 'Europe/Paris',
+      acceptLanguage: 'fr-FR',
+    },
+    timeout: 150,
+  });
+  const viewport = () =>
+    chrome.commands.some((c) => c.method === 'Emulation.setDeviceMetricsOverride');
+  await poll(async () => viewport() || undefined, { timeout: 1000 });
+  chrome.emit(
+    'Target.attachedToTarget',
+    {
+      sessionId: 'frame-session',
+      waitingForDebugger: true,
+      targetInfo: {
+        targetId: 'frame',
+        type: 'iframe',
+        url: 'https://other.test/',
+        title: '',
+        attached: true,
+        canAccessOpener: false,
+      },
+    },
+    tab.session.id,
+  );
+  await poll(async () => tab.framesManager.setup.has('frame-session') || undefined, {
+    timeout: 1000,
+  });
+  expect((await aligning).applicationError).toMatch(/deadline exceeded|timed out/);
+  const returned = chrome.commands.length;
+  attach();
+  await poll(async () => !tab.framesManager.setup.has('frame-session') || undefined, {
+    timeout: 1000,
+  });
+  const late = chrome.commands.slice(returned).filter((c) => c.method.startsWith('Emulation.'));
+  expect(late.map((c) => [c.sessionId, c.method, c.params])).toEqual([
+    ['frame-session', 'Emulation.setTimezoneOverride', { timezoneId: 'Asia/Tokyo' }],
+  ]);
+  expect(tab.environmentState().requested.timezone).toBe('Asia/Tokyo');
 });

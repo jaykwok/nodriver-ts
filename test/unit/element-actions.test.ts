@@ -183,3 +183,102 @@ test('setChecked does not press a label once its control becomes disabled', asyn
   assert.deepEqual(f.dom.pressed, []);
   assert.equal(error.report.dispatched, 0);
 });
+
+/** A human-mode element whose geometry reads answer `box` in a 100 × 100 viewport. */
+async function placedElement(box: () => Promise<unknown> | unknown) {
+  const chrome = await ScriptedChrome.start();
+  const browser = await chrome.connect();
+  const tab = browser.tabs[0]!;
+  chrome.handle('Page.bringToFront', () => {});
+  chrome.handle('Page.createIsolatedWorld', () => ({ executionContextId: 1 }));
+  chrome.handle('DOM.resolveNode', () => ({ object: { type: 'object', objectId: 'element' } }));
+  chrome.handle('Runtime.releaseObjectGroup', () => {});
+  chrome.handle('Runtime.callFunctionOn', async ({ functionDeclaration: code }) => ({
+    result: {
+      type: 'object',
+      value: code === 'function(){return this.isConnected}' ? true : await box(),
+    },
+  }));
+  chrome.handle(
+    'Page.getLayoutMetrics',
+    () => ({ cssVisualViewport: { clientWidth: 100, clientHeight: 100 } }) as any,
+  );
+  chrome.handle('DOM.scrollIntoViewIfNeeded', () => {});
+  return {
+    chrome,
+    tab,
+    element: new Element(tab.mainFrame, 1, tab.mainFrame.generation, tab.session),
+    async [Symbol.asyncDispose]() {
+      await browser.close();
+      await chrome.close();
+    },
+  };
+}
+
+test('human scrolling stops the wheel at its limit, also within a round', async () => {
+  // The target never moves, so one round of wheel packets would outlast the limit.
+  await using f = await placedElement(() => ({ x: 50, y: 300, w: 100, h: 100 }));
+  f.tab.setInputPolicy({
+    mode: 'human',
+    wheelProfile: 'wheel',
+    scrollSteps: [120, 120],
+    pause: [0, 0],
+  });
+  let lastWheel = 0;
+  f.chrome.handle('Input.dispatchMouseEvent', ({ type }) => {
+    if (type === 'mouseWheel') lastWheel = performance.now();
+  });
+  const start = performance.now();
+  await f.element.scrollIntoView({ timeout: 10_000 });
+  assert.ok(lastWheel > start, 'the wheel scrolled');
+  assert.ok(lastWheel - start < 3200, `wheel packet at ${Math.round(lastWheel - start)} ms`);
+  assert.ok(f.chrome.commands.some((c) => c.method === 'DOM.scrollIntoViewIfNeeded'));
+});
+
+test('a standalone scrollIntoView keeps its timeout during the geometry reads', async () => {
+  await using f = await placedElement(async () => {
+    await sleep(150);
+    return { x: 50, y: 50, w: 100, h: 100 };
+  });
+  f.tab.setInputPolicy({ mode: 'human' });
+  await assert.rejects(f.element.scrollIntoView({ timeout: 20 }), TimeoutError);
+});
+
+test('a standalone scrollIntoView keeps its timeout during the pause between wheel rounds', async (t) => {
+  await using f = await placedElement(() => ({ x: 50, y: 300, w: 100, h: 100 }));
+  f.tab.setInputPolicy({ mode: 'human', scrollSteps: [1, 1], pause: [0, 0] });
+  // The pause between rounds is then 100 ms.
+  t.mock.method(f.tab.inputBehavior, 'random', () => 1);
+  let wheel = 0;
+  f.chrome.handle('Input.dispatchMouseEvent', ({ type }) => {
+    if (type === 'mouseWheel') wheel ||= performance.now();
+  });
+  await assert.rejects(f.element.scrollIntoView({ timeout: 60 }), TimeoutError);
+  assert.ok(wheel, 'the wheel scrolled');
+  const after = performance.now() - wheel;
+  assert.ok(after < 90, `rejected ${Math.round(after)} ms after the wheel`);
+});
+
+test('the wheel sends nothing once an async guard outlasts its limit', async () => {
+  await using f = await placedElement(() => ({ x: 50, y: 300, w: 100, h: 100 }));
+  f.tab.setInputPolicy({ mode: 'human', scrollSteps: [1, 1], pause: [0, 0] });
+  // Placing the pointer is the last step before the first packet's guard.
+  let placed = false;
+  f.chrome.handle('Page.getLayoutMetrics', () => {
+    placed = true;
+    return { cssVisualViewport: { clientWidth: 100, clientHeight: 100 } } as any;
+  });
+  const sent: string[] = [];
+  f.chrome.handle('Input.dispatchMouseEvent', ({ type }) => {
+    sent.push(type);
+  });
+  const until = performance.now() + 80;
+  await f.tab.mouse.wheel(0, 100, {
+    timeout: 1000,
+    until,
+    guard: async () => {
+      if (placed) await sleep(until - performance.now() + 20);
+    },
+  });
+  assert.deepEqual(sent, []);
+});

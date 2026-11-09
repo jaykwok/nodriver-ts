@@ -2,6 +2,13 @@
 
 All notable changes are recorded here. The project follows [Semantic Versioning](https://semver.org/); before 1.0, minor versions may contain breaking changes.
 
+## Unreleased
+
+- A remote handoff waits for a stream its viewer disconnected from to stop before it opens the next one or ends: reconnecting during that stop no longer fails with "Presentation session already has an active lease", and other MCP tools run again only once the stream has stopped.
+- `tab.setEnvironment()` calls apply one at a time; they used to interleave. `tab.setEnvironment(environment, { timeout, signal })` bounds waiting for earlier calls, the first read of the native values and every override; once the deadline or signal ends, no further override is sent. Cross-origin iframe sessions attaching during or after such a call get the configuration from before it, which `environmentState().requested` then reports. `alignEnvironment()` passes its deadline, so no override is sent after it returns.
+- Scrolling an element into view in human mode stops the wheel at its 3 s limit also within a round of wheel events and after a slow `guard`, and Chrome scrolls the rest. A long round could run past the limit before.
+- `element.scrollIntoView({ timeout, signal })` also bounds the geometry reads and the pauses between wheel rounds of human scrolling.
+
 ## 0.9.0 — 2026-11-09
 
 ### License

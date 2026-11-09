@@ -511,12 +511,10 @@ export async function alignEnvironment(
     signal.throwIfAborted();
     let applicationError: string | undefined;
     try {
-      // Overrides still in flight at the deadline may land later; the report keeps the error.
-      await bounded(
-        tab.setEnvironment(requested),
-        { timeout: remaining(), signal },
-        'Environment application',
-      );
+      // The deadline stops the baseline read and any override not yet sent; an override already
+      // sent may still land, and the report keeps the error.
+      const wait = { timeout: remaining(), signal };
+      await bounded(tab.setEnvironment(requested, wait), wait, 'Environment application');
     } catch (error) {
       options.signal?.throwIfAborted();
       applicationError = String(error);

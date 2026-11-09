@@ -587,15 +587,17 @@ export class Element {
    * frame, then lets Chrome finish if needed.
    */
   async scrollIntoView(options: WaitOptions = {}): Promise<void> {
-    this.assertValid();
-    const { mode, scroll } = this.frame.tab.inputBehavior.policy;
-    if (scroll === 'wheel' || (scroll === 'auto' && mode === 'human'))
-      if (this.frame === this.frame.tab.mainFrame) await this.wheelIntoView(options);
-    // A no-op when already visible; also covers clipped scroll containers and nested frames.
-    const action = this.frame.tab.inputBehavior.current;
-    const params = { backendNodeId: this.backendNodeId };
-    if (action) await action.send(this.session, 'DOM.scrollIntoViewIfNeeded', params);
-    else await this.session.sendWith('DOM.scrollIntoViewIfNeeded', options, params);
+    // One budget covers the geometry reads, the wheel and Chrome's scroll.
+    await this.read('Scroll into view', options, async () => {
+      this.assertValid();
+      const { mode, scroll } = this.frame.tab.inputBehavior.policy;
+      if (scroll === 'wheel' || (scroll === 'auto' && mode === 'human'))
+        if (this.frame === this.frame.tab.mainFrame) await this.wheelIntoView(options);
+      // A no-op when already visible; also covers clipped scroll containers and nested frames.
+      await this.send(this.session, 'DOM.scrollIntoViewIfNeeded', {
+        backendNodeId: this.backendNodeId,
+      });
+    });
   }
   private async wheelIntoView(options: WaitOptions): Promise<void> {
     const tab = this.frame.tab;
@@ -616,8 +618,11 @@ export class Element {
       const dx = offset(current.x, current.w),
         dy = offset(current.y, current.h);
       if (!dx && !dy) return;
-      await tab.mouse.wheel(dx, dy, options);
-      await delay(40 + 60 * random(), options.signal);
+      // The wheel stops at the limit, also within a round; Chrome scrolls the rest.
+      await tab.mouse.wheel(dx, dy, { ...options, ...this.step(), until });
+      // The pause between rounds spends the same budget; the next read fails once it is spent.
+      const { timeout = Infinity, signal } = this.step();
+      await delay(Math.min(40 + 60 * random(), timeout), signal);
       const next = await box();
       // The pointer is over a container that cannot scroll toward the target.
       if (Math.abs(next.x - current.x) < 1 && Math.abs(next.y - current.y) < 1) return;

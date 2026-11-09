@@ -20,7 +20,7 @@ import { Locator } from '../dom/locator.ts';
 import { StaleElementError } from '../errors.ts';
 import type { Selector, QueryOptions } from '../dom/query.ts';
 import type { Element } from '../dom/element.ts';
-import { EventHub, type WaitOptions } from '../utils.ts';
+import { bounded, budget, EventHub, type WaitOptions } from '../utils.ts';
 import type { Download } from '../browser/download.ts';
 import { NodriverError } from '../errors.ts';
 import type { EnvironmentReport, InspectEnvironmentOptions } from './environment.ts';
@@ -55,6 +55,15 @@ interface InitScript {
   sessions: Map<Session, Promise<string>>;
   removed: boolean;
 }
+/** Whether a budget has run out or its signal has aborted. */
+function spent(step: () => WaitOptions): boolean {
+  try {
+    step();
+    return false;
+  } catch {
+    return true;
+  }
+}
 export class Tab {
   readonly framesManager: FrameManager;
   readonly network: Network;
@@ -71,6 +80,8 @@ export class Tab {
     status: 'applied' | 'failed';
     error?: string;
   }> = [];
+  /** Settles once the setEnvironment() calls made so far have ended. */
+  private environmentTurn: Promise<void> = Promise.resolve();
   private scripts: InitScript[] = [];
   /** Per-tab world for isolated init scripts, distinct from the internal helper world. */
   private readonly scriptWorld = randomUUID();
@@ -149,6 +160,9 @@ export class Tab {
   async configureSession(session: Session): Promise<void> {
     await this.network.configure(session);
     const failures: unknown[] = [];
+    // A change in progress decides the configuration: its own, or the one from before it if it
+    // ran out of time or was aborted.
+    await this.environmentTurn;
     await this.applyEnvironment(session, this.environment).catch((e: unknown) => failures.push(e));
     for (const script of this.scripts)
       await this.registerScript(script, session).catch((e: unknown) => failures.push(e));
@@ -401,7 +415,14 @@ export class Tab {
     if (path) await writeFile(path, bytes);
     return bytes;
   }
-  async setEnvironment(environment: Environment): Promise<void> {
+  /**
+   * Calls apply one at a time. `timeout` and `signal` cover waiting for earlier calls, reading the
+   * baseline and every override; once they end, no further override is sent. When they end the
+   * call, overrides already sent stay applied, and sessions attaching during or after it get the
+   * configuration from before it.
+   */
+  async setEnvironment(environment: Environment, options: WaitOptions = {}): Promise<void> {
+    const step = budget(options, 'Environment application');
     if (environment.timezone) new Intl.DateTimeFormat('en', { timeZone: environment.timezone });
     if (environment.locale) new Intl.Locale(environment.locale);
     if (
@@ -412,55 +433,81 @@ export class Tab {
         environment.viewport.height < 1)
     )
       throw new RangeError('Invalid viewport');
-    if (environment.userAgentMetadata && !environment.userAgent && !this.environment.userAgent)
-      throw new TypeError('UA metadata requires an explicit UA');
-    this.environmentBaseline ??= await this.inspectEnvironment();
-    // A field set to undefined keeps its earlier value, as an omitted one does.
-    const given = Object.fromEntries(
-      Object.entries(environment).filter(([, value]) => value !== undefined),
-    ) as Environment;
-    this.environment = { ...this.environment, ...given };
-    this.environmentApplications = [];
-    for (const s of this.framesManager.sessions)
-      if (!s.closed) {
-        try {
-          await this.applyEnvironment(s, this.environment);
-          this.environmentApplications.push({ sessionId: s.id ?? 'root', status: 'applied' });
-        } catch (error) {
-          this.environmentApplications.push({
-            sessionId: s.id ?? 'root',
-            status: 'failed',
-            error: String(error),
-          });
-          throw error;
-        }
+    let finish!: () => void;
+    const mine = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const earlier = this.environmentTurn;
+    this.environmentTurn = earlier.then(() => mine);
+    try {
+      await bounded(earlier, step(), 'Environment application');
+      if (environment.userAgentMetadata && !environment.userAgent && !this.environment.userAgent)
+        throw new TypeError('UA metadata requires an explicit UA');
+      this.environmentBaseline ??= await this.inspectEnvironment(step());
+      step();
+      // A field set to undefined keeps its earlier value, as an omitted one does.
+      const given = Object.fromEntries(
+        Object.entries(environment).filter(([, value]) => value !== undefined),
+      ) as Environment;
+      const previous = this.environment;
+      this.environment = { ...previous, ...given };
+      this.environmentApplications = [];
+      try {
+        for (const s of this.framesManager.sessions)
+          if (!s.closed) {
+            try {
+              await this.applyEnvironment(s, this.environment, step);
+              this.environmentApplications.push({ sessionId: s.id ?? 'root', status: 'applied' });
+            } catch (error) {
+              this.environmentApplications.push({
+                sessionId: s.id ?? 'root',
+                status: 'failed',
+                error: String(error),
+              });
+              throw error;
+            }
+          }
+      } catch (error) {
+        // Sessions attached from now on get the configuration from before a call that ran out of
+        // time or was aborted; overrides it already sent stay.
+        if (spent(step)) this.environment = previous;
+        throw error;
       }
+    } finally {
+      finish();
+    }
   }
-  private async applyEnvironment(session: Session, e: Environment): Promise<void> {
+  private async applyEnvironment(
+    session: Session,
+    e: Environment,
+    step: () => WaitOptions = () => ({}),
+  ): Promise<void> {
     if (e.viewport && session === this.session)
-      await session.send('Emulation.setDeviceMetricsOverride', {
+      await session.sendWith('Emulation.setDeviceMetricsOverride', step(), {
         ...e.viewport,
         mobile: e.viewport.mobile ?? false,
         deviceScaleFactor: e.viewport.deviceScaleFactor ?? 1,
       });
-    if (e.timezone) await session.send('Emulation.setTimezoneOverride', { timezoneId: e.timezone });
+    if (e.timezone)
+      await session.sendWith('Emulation.setTimezoneOverride', step(), { timezoneId: e.timezone });
     // Locale overrides share renderer state. Applying the same override through
     // nested OOPIF sessions can fail with "Another locale override". Apply at
     // the page root and verify each document/Worker rather than promise scope.
     if (e.locale && session === this.session && e.locale !== this.appliedLocale) {
-      if (this.appliedLocale) await session.send('Emulation.setLocaleOverride', { locale: '' });
-      await session.send('Emulation.setLocaleOverride', { locale: e.locale });
+      if (this.appliedLocale)
+        await session.sendWith('Emulation.setLocaleOverride', step(), { locale: '' });
+      await session.sendWith('Emulation.setLocaleOverride', step(), { locale: e.locale });
       this.appliedLocale = e.locale;
     }
     // An empty userAgent overrides Accept-Language alone; Chrome keeps its own UA and UA-CH.
     if (e.userAgent || e.acceptLanguage)
-      await session.send('Emulation.setUserAgentOverride', {
+      await session.sendWith('Emulation.setUserAgentOverride', step(), {
         userAgent: e.userAgent ?? '',
         ...(e.userAgent ? { userAgentMetadata: e.userAgentMetadata } : {}),
         acceptLanguage: e.acceptLanguage ?? e.locale,
       });
     if (e.geolocation)
-      await session.send('Emulation.setGeolocationOverride', {
+      await session.sendWith('Emulation.setGeolocationOverride', step(), {
         ...e.geolocation,
         accuracy: e.geolocation.accuracy ?? 1,
       });

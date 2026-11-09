@@ -222,6 +222,7 @@ export class RemoteHandoff {
   private keepAlive?: ReturnType<typeof setInterval>;
   private inputChain: Promise<unknown> = Promise.resolve();
   private streaming: Promise<unknown> = Promise.resolve();
+  private stopping: Promise<void> = Promise.resolve();
   private checking = false;
   private readonly offs: Array<() => void> = [];
   private readonly timers: Array<ReturnType<typeof setTimeout>> = [];
@@ -369,14 +370,22 @@ export class RemoteHandoff {
       headers: { 'content-type': 'text/event-stream', ...SECURITY_HEADERS },
     });
   }
-  private async stopStream(only?: FrameChannel): Promise<void> {
-    if (only && this.channel !== only) return;
-    const { channel, lease } = this;
-    this.channel = undefined;
-    this.lease = undefined;
-    clearInterval(this.keepAlive);
-    channel?.close();
-    await lease?.close().catch(() => {});
+  /** Settles once every stopped stream's lease has closed, including ones stopped earlier. */
+  private stopStream(only?: FrameChannel): Promise<void> {
+    if (!only || this.channel === only) {
+      const { channel, lease } = this;
+      this.channel = undefined;
+      this.lease = undefined;
+      clearInterval(this.keepAlive);
+      channel?.close();
+      // A new stream needs the tab's presentation session, and end() releases the lease's tools:
+      // both wait for a lease that a disconnect is still closing.
+      if (lease) {
+        const closing = lease.close().catch(() => {});
+        this.stopping = Promise.all([this.stopping, closing]).then(() => {});
+      }
+    }
+    return this.stopping;
   }
   /** Sends input in the order it arrives. Rejects when the page could not be reached. */
   input(event: HandoffInput): Promise<void> {
