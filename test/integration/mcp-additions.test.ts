@@ -65,11 +65,13 @@ for (const transport of ['pipe', 'websocket'] as const)
       expect(second.nodes[0].ref).not.toBe(first.nodes[0].ref);
       const find = async (selector: string) =>
         (await call('browser_find', { tabId, selector })).elements[0].ref;
+      // The timeout covers the click as well as the wait for a navigation that never starts,
+      // which uses all of it.
       const failed = await tool('browser_click', {
         tabId,
         ref: await find('#once'),
         waitFor: 'load',
-        timeout: 500,
+        timeout: 3000,
       });
       expect(failed.isError).toBe(true);
       expect(JSON.stringify(failed.content)).toContain('navigation did not start');

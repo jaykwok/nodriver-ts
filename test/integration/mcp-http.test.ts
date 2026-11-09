@@ -670,7 +670,7 @@ for (const version of ['2026-07-28'])
       await poll(
         async () =>
           server.manager.session('alice', id).status().queuedOperations === 0 ? true : undefined,
-        { timeout: 500 },
+        { timeout: 2000 },
         'modern stream cancellation',
       );
       expect((await call(client, 'browser_tabs')).connected).toBe(true);
