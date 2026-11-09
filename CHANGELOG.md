@@ -2,12 +2,31 @@
 
 All notable changes are recorded here. The project follows [Semantic Versioning](https://semver.org/); before 1.0, minor versions may contain breaking changes.
 
-## Unreleased
+## 0.9.0 — 2026-11-09
+
+### License
+
+- nodriver-ts is now licensed under the Apache License 2.0. Earlier versions were released under AGPL-3.0-or-later.
 
 ### Breaking changes
 
-- `moveDuration`, `moveSteps` and `scrollSteps` have no default range: omitting them means automatic planning from the distance, the target and `wheelProfile`, and an explicit range replaces it. `inputBehavior.policy` and the `browser_input_policy` result include these fields only when they are set, and a seed plans different trajectories than in 0.9.0.
+- `clearSiteData()` failures other than refusing open tabs are `ClearSiteDataError`s, with the original error, such as a `TimeoutError`, as `cause`; they used to be thrown directly. A cookie set again during the call is also reported as `ClearSiteDataError`, which extends `NodriverError` as before.
+- `TabScope.adopt(tab)` no longer owns popups the tab opened before it was adopted; popups it opens afterwards are owned as before. Whether a popup is owned is decided when Chrome reports it, by its opener's role at that moment, and roles belong to the page, so a page attached again keeps its role. `TabScopeCloseResult` has a `borrowed` list, and `closed` also lists tabs that did not finish opening through `scope.newTab()`.
+- MCP snapshot lines carry each node's layout box, `@x,y WxH` in CSS pixels of the tab viewport, and `offscreen` for nodes outside the viewport, after a `Viewport WxH` line. Structured nodes have `box` (`{ x, y, width, height }` or null), and snapshots have `viewport`. Code that parses snapshot text needs to allow the new fields.
+- `storageState()` takes an options object; `storageState(path)` becomes `storageState({ path })`. Its result has `version: 2`, and an export over `maxBytes` (64 MiB by default) fails with a `RangeError`.
+- While a remote handoff runs, MCP tools other than `browser_tabs` and `browser_handoff_wait` fail at once with `HandoffActiveError`. `browser_handoff` takes `mode` and `resumeCondition`, and its schema still rejects unknown fields.
+- `moveDuration`, `moveSteps` and `scrollSteps` have no default range: omitting them means automatic planning from the distance, the target and `wheelProfile`, and an explicit range replaces it. `inputBehavior.policy` and the `browser_input_policy` result include these fields only when they are set, and a seed plans different trajectories than in 0.8.0.
 - `tab.setEnvironment({ acceptLanguage })` without a `userAgent` overrides Accept-Language alone, and Chrome keeps its own UA and UA-CH. It used to copy the page's UA and UA-CH into a UA override, which `environmentState().requested` reported.
+
+### MCP
+
+- `browser_handoff` has `mode: 'remote'`: with `remoteHandoff` (`--remote-handoff`), a user operates a tab through a one-time link to a loopback viewer, also in headless mode. The link goes through URL elicitation unless the host opts in to returning it. `browser_handoff_wait` waits for the end or cancels, `resumeCondition` ends it when the page reaches a URL or selector, and `browser://events` reports `handoff-*`. A handoff whose link is not opened within `tokenTtl` ends as `expired`.
+- `browser_storage_state` takes `include` to save sessionStorage or IndexedDB. With `stateKey` (`--state-key-env`), state files are encrypted and plain files are refused.
+- `browser_snapshot` takes `viewportOnly` to return only nodes visible in the viewport. Boxes come from one DOMSnapshot capture per snapshot; no page script runs.
+- `browser_screenshot` takes `marks: 'interactive' | 'all'` to draw each visible node's box and ref on a PNG of the viewport, and returns a `legend` of `{ ref, role, name, box }`.
+- `browser_input_policy` takes `wheelProfile`, and its description says which fields are planned when omitted.
+- An invalid `inputPolicy` fails when the MCP manager is created, not when each lease opens a tab.
+- `browser_snapshot` handles accessibility trees of any depth.
 
 ### Input
 
@@ -26,56 +45,12 @@ All notable changes are recorded here. The project follows [Semantic Versioning]
 
 ### Pages and queries
 
+- Navigation waits follow documents that replace the one being loaded before it reaches the awaited event, such as a sign-in page that submits a form or calls `location.replace()` while loading, and complete when one of them reaches the event, within the same deadline. Only the first navigation is sent, and the wait resolves with the URL of the document that completed it. Such a `goto(url, { waitUntil: 'domcontentloaded' })` used to time out although the final page had loaded.
 - `Element.evaluate(fn, arg, { world, timeout, signal })` and `Element.withObject(fn, options)` run in the isolated world by default, or in the main world with `world: 'main'`, where they can read properties the page sets on DOM wrappers. Built-in probes always use the isolated world. Inside an input action, the timeout and signal apply together with the action's deadline. The options are typed `ElementEvaluateOptions`.
 - `waitForFunction()` with an element handle as its argument throws `StaleElementError` once the handle's document has gone, instead of waiting out its timeout.
 - `tab.goto()` to a URL that becomes a download reports the download, also when Chrome reports `net::ERR_ABORTED` with it.
 - `queryAll()` running out of time while it describes its matches leaves no unhandled rejections.
 - `fetch()` rejects an invalid `timeout` before sending the request, and accepts timeouts up to the maximum.
-
-### MCP
-
-- `browser_input_policy` takes `wheelProfile`, and its description says which fields are planned when omitted.
-- A remote handoff whose link is not opened within `tokenTtl` ends as `expired`.
-- A remote handoff that cannot start, for example at capacity, no longer keeps its lease from being reclaimed.
-- Concurrent `/frames` requests of a remote handoff open in turn, so only the newest stream stays open.
-- `browser_handoff_wait` on a handoff that is ending reports `ended` once the lease's other tools can run again.
-- `resumeCondition.url` patterns match in linear time.
-- An invalid `inputPolicy` fails when the MCP manager is created, not when each lease opens a tab.
-- `browser_snapshot` handles accessibility trees of any depth.
-
-### Browser and process lifecycle
-
-- Under `supervised: true`, a `release()` the guardian refuses, such as for a browser on a virtual display, rejects that call only, and the guardian keeps supervising the browser.
-- A profile lock left by an exited process whose PID the current process has reused, as PID 1 is after a container restarts, is replaced instead of reported as in use. Locks record the process start time for this.
-- When the browser connection closes, the `ProxyForwarder` of each context created with its own `proxy` stops, because Chrome disposes the context with the connection.
-- `PresentationLease` acknowledges a frame also when `deliver` throws.
-- `decryptState()` refuses a `null` header, and scrypt parameters that need more than four times the memory or work of its own, before deriving a key.
-- The pipe transport splits a chunk that holds many messages in one pass.
-
-## 0.9.0 — 2026-11-08
-
-### License
-
-- nodriver-ts is now licensed under the Apache License 2.0. Earlier versions were released under AGPL-3.0-or-later.
-
-### Breaking changes
-
-- `clearSiteData()` failures other than refusing open tabs are `ClearSiteDataError`s, with the original error, such as a `TimeoutError`, as `cause`; they used to be thrown directly. A cookie set again during the call is also reported as `ClearSiteDataError`, which extends `NodriverError` as before.
-- `TabScope.adopt(tab)` no longer owns popups the tab opened before it was adopted; popups it opens afterwards are owned as before. Whether a popup is owned is decided when Chrome reports it, by its opener's role at that moment, and roles belong to the page, so a page attached again keeps its role. `TabScopeCloseResult` has a `borrowed` list, and `closed` also lists tabs that did not finish opening through `scope.newTab()`.
-- MCP snapshot lines carry each node's layout box, `@x,y WxH` in CSS pixels of the tab viewport, and `offscreen` for nodes outside the viewport, after a `Viewport WxH` line. Structured nodes have `box` (`{ x, y, width, height }` or null), and snapshots have `viewport`. Code that parses snapshot text needs to allow the new fields.
-- `storageState()` takes an options object; `storageState(path)` becomes `storageState({ path })`. Its result has `version: 2`, and an export over `maxBytes` (64 MiB by default) fails with a `RangeError`.
-- While a remote handoff runs, MCP tools other than `browser_tabs` and `browser_handoff_wait` fail at once with `HandoffActiveError`. `browser_handoff` takes `mode` and `resumeCondition`, and its schema still rejects unknown fields.
-
-### MCP
-
-- `browser_handoff` has `mode: 'remote'`: with `remoteHandoff` (`--remote-handoff`), a user operates a tab through a one-time link to a loopback viewer, also in headless mode. The link goes through URL elicitation unless the host opts in to returning it. `browser_handoff_wait` waits for the end or cancels, `resumeCondition` ends it when the page reaches a URL or selector, and `browser://events` reports `handoff-*`.
-- `browser_storage_state` takes `include` to save sessionStorage or IndexedDB. With `stateKey` (`--state-key-env`), state files are encrypted and plain files are refused.
-- `browser_snapshot` takes `viewportOnly` to return only nodes visible in the viewport. Boxes come from one DOMSnapshot capture per snapshot; no page script runs.
-- `browser_screenshot` takes `marks: 'interactive' | 'all'` to draw each visible node's box and ref on a PNG of the viewport, and returns a `legend` of `{ ref, role, name, box }`.
-
-### Pages and queries
-
-- Navigation waits follow documents that replace the one being loaded before it reaches the awaited event, such as a sign-in page that submits a form or calls `location.replace()` while loading, and complete when one of them reaches the event, within the same deadline. Only the first navigation is sent, and the wait resolves with the URL of the document that completed it. Such a `goto(url, { waitUntil: 'domcontentloaded' })` used to time out although the final page had loaded.
 
 ### Tabs
 
@@ -85,16 +60,20 @@ All notable changes are recorded here. The project follows [Semantic Versioning]
 ### State and storage
 
 - `storageState({ include: ['sessionStorage', 'indexedDB'] })` also exports the sessionStorage of open tabs and IndexedDB databases with their structure and typed values. `restoreStorage(state, { sessionStorageTab })` restores them; replacing a database is refused while a tab shows its origin.
-- `encryptState()` and `decryptState()` seal a state with AES-256-GCM, using a 32-byte key or a passphrase.
+- `encryptState()` and `decryptState()` seal a state with AES-256-GCM, using a 32-byte key or a passphrase. `decryptState()` refuses a header whose scrypt parameters need more than four times the memory or work of its own, before deriving a key.
 - `clearSiteData({ timeout, signal })` bounds the whole call. A call that stops, by timeout, abort or a failed step, throws `ClearSiteDataError`, whose `result` lists the cookies deleted, origins cleared and tabs handled so far. The request interception it sets on a tab stops when the call ends, also after it stops, and the Service Worker bypass is undone even when Chrome did not confirm it in time. A temporary tab the call opens is closed within its deadline, or after it returns once the deadline has passed. When undoing fails after the call has already failed, the call keeps its own error, so `cause` stays the original error, such as the abort reason.
 - `storageState()` and `restoreStorage()` keep the error of a failed visit when their temporary tab cannot be closed either; the close failure used to replace it.
 
 ### Browser and process lifecycle
 
-- `PresentationLease` takes `deliver`, which receives each frame and delays its acknowledgement until it settles.
+- `PresentationLease` takes `deliver`, which receives each frame and delays its acknowledgement until it settles, also when it throws.
 - `Browser.launch({ virtualDisplay: true })` runs headful Chrome on its own Xvfb server on Linux, with MIT-MAGIC-COOKIE access control and no TCP listener. The server ends with the browser, also under the guardian of `supervised: true`, and `release()` refuses such a launch. `XvfbSession` runs one directly, and the MCP CLI has `--virtual-display`.
 - Cleanup the library does after an operation failed or after its caller stopped waiting, such as closing a tab that did not finish opening, never replaces the operation's own error. When such cleanup fails, the failure is reported through `onError` and `browser.errors`.
 - `prepareProfile(dir, options)` receives `temporary` and `empty` in its options (`ProfilePreparation`): whether the library created the profile for this launch, and whether the profile held nothing from earlier launches. `empty` is read under the profile lock and ignores only the library's lock files, `.nodriver.lock` and `.nodriver.lock.reclaim`.
+- Under `supervised: true`, a `release()` the guardian refuses, such as after the browser has exited or for a browser on a virtual display, rejects that call only, and the guardian keeps supervising the browser.
+- A profile lock left by an exited process whose PID the current process has reused, as PID 1 is after a container restarts, is replaced instead of reported as in use. Locks record the process start time for this.
+- When the browser connection closes, the `ProxyForwarder` of each context created with its own `proxy` stops, because Chrome disposes the context with the connection.
+- The pipe transport finds message boundaries with a native search instead of a byte-by-byte loop.
 
 ## 0.8.0 — 2026-11-07
 
