@@ -4,6 +4,8 @@
 
 [English](README.md)
 
+如果你喜欢本项目，欢迎在 [GitHub](https://github.com/jaykwok/nodriver-ts) 上点一个 ⭐，这能让更多人发现它，也是对项目持续维护的鼓励。
+
 - **安静的 CDP。** 库从不发送 `Runtime.enable`、`Runtime.addBinding`、`Console.enable` 或 `Debugger.enable`，也不会退回到这些命令。它通过 frame 的 document 和 `DOM.resolveNode` 找到主世界，不向页面注入任何内容，Chrome 的 sandbox 和站点隔离保持开启。
 - **Frame 与 shadow DOM。** 同进程 iframe 和进程外 iframe（OOPIF，包括嵌套的 OOPIF）各自使用正确的 CDP session。查询会穿透 open 和 closed shadow root。
 - **输入。** 点击会等待目标可见、稳定且未被遮挡，动作从不重放。可选的带种子 `human` 策略提供指针轨迹、按键事件打字和滚轮滚动。

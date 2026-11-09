@@ -4,6 +4,8 @@ TypeScript redesign of [nodriver](https://github.com/ultrafunkamsterdam/nodriver
 
 [简体中文](README.zh-CN.md)
 
+If you like nodriver-ts, please give it a ⭐ on [GitHub](https://github.com/jaykwok/nodriver-ts): it helps others find the project and keeps it going.
+
 - **Quiet CDP.** The library never sends `Runtime.enable`, `Runtime.addBinding`, `Console.enable` or `Debugger.enable`, and never falls back to them. It finds the main world through the frame's document and `DOM.resolveNode`, injects nothing into the page, and leaves Chrome's sandbox and site isolation on.
 - **Frames and shadow DOM.** Same-process and out-of-process iframes (OOPIF), nested ones included, each use the right CDP session. Queries pierce open and closed shadow roots.
 - **Input.** Clicks wait until the target is visible, stable and unobscured, and actions are never replayed. An optional seeded `human` policy adds pointer paths, key-event typing and wheel scrolling.
