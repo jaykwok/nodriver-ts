@@ -12,14 +12,19 @@ import {
   type Result,
   type Session,
 } from '../protocol/connection.ts';
+import type { Protocol } from 'devtools-protocol';
 import type { InputPage } from './targets.ts';
 import {
   InputBlockedError,
+  inputCoordinator,
   type InputBehavior,
+  type InputCheckpoint,
   type InputOptions,
   type InputReport,
   type InputCleanupReport,
+  type InputSent,
 } from './behavior.ts';
+import { PresentationRecovery } from './recovery.ts';
 export interface InputRelease {
   run(): Promise<void>;
   forget(): void;
@@ -42,13 +47,37 @@ function isObjectGone(error: unknown): boolean {
     (error instanceof ProtocolError && /Could not find object with given id/.test(error.message))
   );
 }
-/** Input that can change the page, unlike pointer moves and wheel scrolling. */
-function changesPage(method: string, params: unknown): boolean {
-  if (method === 'Input.dispatchMouseEvent') {
-    const type = (params as { type?: string }).type;
-    return type === 'mousePressed' || type === 'mouseReleased';
+/**
+ * What is known about the session's pages and dialogs. It comes from the session's own connection,
+ * which a raw command of a scope callback can make another than the action's.
+ */
+function pages(session: Session) {
+  return inputCoordinator(session.connection);
+}
+const mouseKinds: Record<string, keyof InputSent> = {
+  mouseMoved: 'moves',
+  mouseWheel: 'wheels',
+  mousePressed: 'presses',
+  mouseReleased: 'releases',
+};
+const keyKinds: Record<string, keyof InputSent> = {
+  rawKeyDown: 'keys',
+  keyDown: 'keys',
+  char: 'characters',
+  keyUp: 'releases',
+};
+/** The kind of input a command sends, as the report counts it; undefined for other commands. */
+function inputKind(method: string, params: unknown): keyof InputSent | undefined {
+  switch (method) {
+    case 'Input.dispatchMouseEvent':
+      return mouseKinds[(params as Protocol.Input.DispatchMouseEventRequest).type];
+    case 'Input.dispatchKeyEvent':
+      return keyKinds[(params as Protocol.Input.DispatchKeyEventRequest).type];
+    case 'Input.insertText':
+      return 'text';
+    case 'Input.imeSetComposition':
+      return 'composition';
   }
-  return method.startsWith('Input.') && method !== 'Input.synthesizeScrollGesture';
 }
 /**
  * A cleanup budget that runs only while no JavaScript dialog is open on the action's pages: Chrome
@@ -116,11 +145,19 @@ export class InputAction {
   /** IDs of this action's own requests, per connection, until they are answered. */
   private requests = new Map<Connection, Set<number>>();
   private recording = true;
+  private recovery?: PresentationRecovery;
+  /** When the action acquired input. */
+  private started = 0;
+  /**
+   * Where planned delays count from: when the previous input was sent, or when the previous delay
+   * was planned to end.
+   */
+  private paced?: number;
   /**
    * @internal Records a request of this action: its own sends and any command issued in its
    * async context, such as element preparation or a scope callback's raw command.
    */
-  readonly recordRequest: RequestRecorder = (connection, id, session) => {
+  readonly recordRequest: RequestRecorder = (connection, id, method, session, params) => {
     if (!this.recording) return;
     // Cleanup covers every connection and session the action used, even one reached only by a
     // raw command.
@@ -131,6 +168,16 @@ export class InputAction {
     // Long actions drop answered IDs as they go.
     else if (ids.size >= 1024) connection.outstanding(ids);
     ids.add(id);
+    return {
+      sent: () => {
+        this.sending(method, params);
+        if (session && method.startsWith('Input.')) this.recovery?.watch(connection, id, session);
+      },
+      replied: this.replied,
+    };
+  };
+  private readonly replied = (late: boolean): void => {
+    if (late && this.report.phase !== 'done') this.report.lateReplies++;
   };
   private failures: CleanupFailure[] = [];
   private finishing?: Promise<InputCleanupReport>;
@@ -157,7 +204,33 @@ export class InputAction {
   reason?: unknown;
   start(): void {
     this.acquired = true;
+    this.started = performance.now();
     this.report.phase = 'running';
+    const after = this.behavior.policy.presentationRecovery;
+    if (after === false) return;
+    const recovery = (this.recovery = new PresentationRecovery(
+      after,
+      (session) => this.recoverPresentation(session),
+      (session) => pages(session).dialogOpen(session, this.sessions.get(session)),
+    ));
+    this.disposeWith(() => recovery.dispose());
+  }
+  /**
+   * Draws a frame of the session's page so that Chrome delivers the input it holds back. Chrome
+   * captures only top-level targets, so a frame's input recovers through a session of its page.
+   * The screenshot is a request of this action, so cleanup waits for it as well.
+   */
+  private recoverPresentation(session: Session): void {
+    const target = pages(session).pageSession(session, this.sessions.get(session)) ?? session;
+    this.report.presentationRecoveries++;
+    this.note('presentationRecovery');
+    target
+      .sendWith('Page.captureScreenshot', this.ledger({ timeout: this.cleanupBudget }), {
+        format: 'jpeg',
+        quality: 0,
+        optimizeForSpeed: true,
+      })
+      .catch(() => {});
   }
   retain(release: InputRelease): void {
     this.retained.add(release);
@@ -169,8 +242,7 @@ export class InputAction {
   /** Records a session the action used, and its page while that is still known. */
   private use(session: Session): void {
     this.connections.add(session.connection);
-    if (!this.sessions.get(session))
-      this.sessions.set(session, this.behavior.coordinator?.pageFor(session));
+    if (!this.sessions.get(session)) this.sessions.set(session, pages(session).pageFor(session));
   }
   constructor(behavior: InputBehavior, action: string, options: InputOptions) {
     this.behavior = behavior;
@@ -189,6 +261,21 @@ export class InputAction {
       completedSegments: 0,
       events: 0,
       dispatched: 0,
+      sent: {
+        moves: 0,
+        wheels: 0,
+        presses: 0,
+        keys: 0,
+        characters: 0,
+        releases: 0,
+        text: 0,
+        composition: 0,
+      },
+      skippedMoves: 0,
+      lateReplies: 0,
+      presentationRecoveries: 0,
+      plannedMs: 0,
+      actualMs: 0,
       trace: [],
       cleanupErrors: [],
       phase: 'queued',
@@ -200,10 +287,15 @@ export class InputAction {
     this.reason = error;
     this.report.status = 'interrupted';
     if (this.report.phase !== 'done') {
-      this.report.phase = 'cleaning';
+      this.inputEnded();
       this.cleanupDeadline ??= this.deadline();
     }
     this.controller.abort(error);
+  }
+  /** Input has ended, and cleanup begins. */
+  private inputEnded(): void {
+    if (this.report.phase === 'running') this.report.actualMs = performance.now() - this.started;
+    this.report.phase = 'cleaning';
   }
   /** The first cleanup failure that stands, as the cause of "Input cleanup failed". */
   get cleanupError(): unknown {
@@ -231,13 +323,14 @@ export class InputAction {
       return Promise.reject(error);
     }
   }
-  async check(): Promise<void> {
+  /** Checks that the action may go on, calling its guards with the checkpoint reached. */
+  async check(checkpoint: InputCheckpoint = { type: 'step' }): Promise<void> {
     this.step();
     this.behavior.guard();
     this.documentGuard();
-    await this.waitFor(Promise.resolve().then(() => this.options.guard?.()));
+    await this.waitFor(Promise.resolve().then(() => this.options.guard?.(checkpoint)));
     if (this.stepOptions?.guard)
-      await this.waitFor(Promise.resolve().then(() => this.stepOptions!.guard!()));
+      await this.waitFor(Promise.resolve().then(() => this.stepOptions!.guard!(checkpoint)));
     this.step();
     this.behavior.guard();
     this.documentGuard();
@@ -247,11 +340,28 @@ export class InputAction {
     method: M,
     ...params: Params<M>
   ): Promise<Result<M>> {
+    return this.sendAcknowledged(session, method, undefined, ...params);
+  }
+  /** Observes a successful reply even when cancellation made the caller stop waiting for it. */
+  async sendAcknowledged<M extends Command>(
+    session: Session,
+    method: M,
+    confirmed: (() => void) | undefined,
+    ...params: Params<M>
+  ): Promise<Result<M>> {
     const options = this.step();
     this.observe(session);
-    if (changesPage(method, params[0])) this.report.dispatched++;
+    let observed = false;
+    const confirm =
+      confirmed &&
+      (() => {
+        if (observed) return;
+        observed = true;
+        confirmed();
+      });
     const acknowledged = this.behavior.coordinator?.trackCommand(session, method, params[0]);
-    const result = await session.sendWith(method, this.ledger(options), ...params);
+    const result = await session.sendWith(method, this.ledger(options, confirm), ...params);
+    confirm?.();
     acknowledged?.();
     return result;
   }
@@ -261,13 +371,20 @@ export class InputAction {
     ...params: Params<M>
   ): Promise<Result<M>> {
     this.use(session);
-    if (changesPage(method, params[0])) this.report.dispatched++;
     const acknowledged = this.behavior.coordinator?.trackCommand(session, method, params[0]);
     const result = await this.withinCleanup((options) =>
       session.sendWith(method, this.ledger(options), ...params),
     );
     acknowledged?.();
     return result;
+  }
+  /** Counts an input command as it is sent; the next planned delay counts from now. */
+  private sending(method: string, params: unknown): void {
+    const kind = inputKind(method, params);
+    if (!kind) return;
+    this.report.sent[kind]++;
+    if (kind !== 'moves' && kind !== 'wheels') this.report.dispatched++;
+    this.paced = performance.now();
   }
   /**
    * Releases remote objects of the action. Objects of a destroyed context or a closed session are
@@ -285,8 +402,21 @@ export class InputAction {
     }
   }
   /** Records the request ID so that cleanup can wait for this action's own late replies. */
-  private ledger(options: WaitOptions): LedgerOptions {
-    return { ...options, [REQUEST_LEDGER]: this.recordRequest };
+  private ledger(options: WaitOptions, confirmed?: () => void): LedgerOptions {
+    if (!confirmed) return { ...options, [REQUEST_LEDGER]: this.recordRequest };
+    return {
+      ...options,
+      [REQUEST_LEDGER]: (...args) => {
+        const recorded = this.recordRequest(...args);
+        return {
+          ...recorded,
+          replied: (late, succeeded) => {
+            recorded?.replied?.(late, succeeded);
+            if (succeeded) confirmed();
+          },
+        };
+      },
+    };
   }
   /**
    * Runs one cleanup wait. While the action is cleaning up, all waits share one budget; before
@@ -312,15 +442,16 @@ export class InputAction {
         if (open) this.noteOnce('dialogWait');
         return open;
       },
-      (listener) => this.behavior.coordinator?.onPages(listener) ?? (() => {}),
+      (listener) => {
+        const offs = [...this.connections].map((c) => inputCoordinator(c).onPages(listener));
+        return () => offs.forEach((off) => off());
+      },
     );
   }
   /** Whether a JavaScript dialog is open on a page the action used. */
   private dialogOpen(): boolean {
-    const coordinator = this.behavior.coordinator;
-    if (coordinator)
-      for (const [session, page] of this.sessions)
-        if (coordinator.dialogOpen(session, page)) return true;
+    for (const [session, page] of this.sessions)
+      if (pages(session).dialogOpen(session, page)) return true;
     return false;
   }
   /**
@@ -359,8 +490,7 @@ export class InputAction {
    * finished, at once.
    */
   private cleanupFailed(error: unknown, session?: Session, composition = false): void {
-    const page =
-      session && (this.sessions.get(session) ?? this.behavior.coordinator?.pageFor(session));
+    const page = session && (this.sessions.get(session) ?? pages(session).pageFor(session));
     const failure: CleanupFailure = { error, page, composition, sessionEnded: !!session?.closed };
     this.failures.push(failure);
     if (!this.finished) this.report.cleanupErrors.push(String(error));
@@ -386,8 +516,7 @@ export class InputAction {
     page: InputPage | undefined,
     deadline: CleanupDeadline,
   ): Promise<boolean> {
-    const coordinator = this.behavior.coordinator;
-    if (!page || !coordinator) return false;
+    if (!page) return false;
     const ended = [...this.sessions].find(([session, owner]) => owner === page && session.closed);
     const connection = ended?.[0].connection;
     if (!page.destroyed && connection && !connection.closed && !deadline.signal.aborted)
@@ -397,7 +526,7 @@ export class InputAction {
           deadline.signal.removeEventListener('abort', done);
           resolve();
         };
-        const off = coordinator.onPages(() => {
+        const off = inputCoordinator(connection).onPages(() => {
           if (page.destroyed || connection.closed) done();
         });
         deadline.signal.addEventListener('abort', done, { once: true });
@@ -444,9 +573,9 @@ export class InputAction {
           previous?.signal && options.signal
             ? AbortSignal.any([previous.signal, options.signal])
             : (options.signal ?? previous?.signal),
-        guard: async () => {
-          await previous?.guard?.();
-          await options.guard?.();
+        guard: async (checkpoint) => {
+          await previous?.guard?.(checkpoint);
+          await options.guard?.(checkpoint);
         },
       };
       this.stepEnd = Math.min(previousEnd, end);
@@ -528,7 +657,7 @@ export class InputAction {
   }
   finish(): Promise<InputCleanupReport> {
     return (this.finishing ??= (async () => {
-      this.report.phase = 'cleaning';
+      this.inputEnded();
       if (this.acquired) this.behavior.coordinator?.cleaningStarted();
       const deadline = (this.cleanupDeadline ??= this.deadline());
       // Standalone down() transfers ownership only after the complete action succeeds.
@@ -592,15 +721,42 @@ export class InputAction {
     this.report.events++;
     if (this.report.trace.length < 2000) this.report.trace.push({ type, ...fields });
   }
+  /** Waits `ms`, as a scope callback asks; the next planned delay counts from its end. */
   async wait(ms: number): Promise<void> {
     timeoutValue(ms, 'wait');
+    await this.waitUntil(performance.now() + ms, ms);
+  }
+  /**
+   * Waits for a planned delay. It counts from when the previous input was sent, or from the
+   * planned end of the previous delay, so time spent waiting for Chrome's replies counts toward it.
+   * Never waits past `limit`, a performance.now() time.
+   */
+  async pace(ms: number, limit = Infinity): Promise<void> {
+    timeoutValue(ms, 'wait');
+    await this.waitUntil(Math.min((this.paced ?? performance.now()) + ms, limit), ms);
+  }
+  /**
+   * Starts a planned sequence: its first delay counts from now, not from earlier input, so time the
+   * action spent on other work does not make the sequence late.
+   */
+  startPlan(): void {
+    this.paced = performance.now();
+  }
+  /** Whether a planned delay of `ms` would already have passed. */
+  overdue(ms: number): boolean {
+    const now = performance.now();
+    return (this.paced ?? now) + ms <= now;
+  }
+  private async waitUntil(due: number, planned: number): Promise<void> {
     await this.check();
-    if (ms) {
-      if (this.report.trace.length < 2000) this.report.trace.push({ type: 'pause', delay: ms });
-      await this.waitFor(
-        delay(Math.min(ms, Math.max(0, this.end - performance.now())), this.step().signal),
-      );
+    if (planned) {
+      this.report.plannedMs += planned;
+      if (this.report.trace.length < 2000)
+        this.report.trace.push({ type: 'pause', delay: planned });
+      const left = Math.min(due, this.end) - performance.now();
+      if (left > 0) await this.waitFor(delay(left, this.step().signal));
     }
+    this.paced = due;
     await this.check();
   }
 }

@@ -100,7 +100,7 @@ test('rollover overlaps only eligible keys and releases both on cancellation', a
     const events: string[] = [];
     chrome.handle('Input.dispatchKeyEvent', (p) => {
       events.push(`${p.type}:${p.key}`);
-      if (cancel && p.type === 'keyDown' && p.key === 'h') controller.abort(new Error('stop'));
+      if (cancel && p.type === 'rawKeyDown' && p.key === 'h') controller.abort(new Error('stop'));
     });
     const action = keyboard.type('th', { signal: controller.signal });
     if (cancel) {
@@ -108,7 +108,7 @@ test('rollover overlaps only eligible keys and releases both on cancellation', a
       assert.ok(error instanceof InputActionError);
       assert.equal((await error.cleanup).status, 'completed');
     } else assert.equal((await action).completedSegments, 2);
-    assert.ok(events.indexOf('keyDown:h') < events.indexOf('keyUp:t'));
+    assert.ok(events.indexOf('rawKeyDown:h') < events.indexOf('keyUp:t'));
     assert.ok(events.includes('keyUp:t') && events.includes('keyUp:h'));
     assert.deepEqual(keyboard.pressedKeys, []);
   }
@@ -182,7 +182,7 @@ test('rollover preserves explicit text segments and never overlaps caller-held k
       (c) => c.method === 'Input.dispatchKeyEvent',
     ) as RecordedCommand<'Input.dispatchKeyEvent'>[]
   ).map((c) => `${c.params.type}:${c.params.key}`);
-  assert.ok(keys.indexOf('keyUp:t') < keys.indexOf('keyDown:h'));
+  assert.ok(keys.indexOf('keyUp:t') < keys.indexOf('rawKeyDown:h'));
   await keyboard.up('a');
 });
 
@@ -193,7 +193,7 @@ test('a rejected second rollover press still releases both keys and keeps the in
   b.random = () => 0.1;
   const keyboard = new Keyboard(browser.tabs[0]!.session, b);
   chrome.handle('Input.dispatchKeyEvent', (p) => {
-    if (p.type === 'keyDown' && p.key === 'h')
+    if (p.type === 'rawKeyDown' && p.key === 'h')
       throw new ProtocolError('Input.dispatchKeyEvent', -32000, 'second press refused');
   });
   const error = await keyboard.type('th').catch((e) => e);

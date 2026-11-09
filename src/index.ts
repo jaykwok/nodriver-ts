@@ -62,12 +62,14 @@ export type { FetchOptions, FetchResponse } from './page/fetch.ts';
 export { Locator } from './dom/locator.ts';
 export type { Selector, QueryOptions } from './dom/query.ts';
 export { Mouse, Keyboard, keyDefinition, parseChord } from './input/input.ts';
-export type { ComposeOptions } from './input/input.ts';
+export type { ComposeOptions, KeyDefinition } from './input/input.ts';
 export { InputActionError, InputBlockedError } from './input/behavior.ts';
 export type {
   InputPolicy,
   InputReport,
+  InputSent,
   InputOptions,
+  InputCheckpoint,
   InputCleanupReport,
 } from './input/behavior.ts';
 export { Composition } from './input/composition.ts';

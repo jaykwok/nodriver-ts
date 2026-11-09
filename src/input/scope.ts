@@ -7,7 +7,7 @@ import {
   type InputPolicy,
   type InputReport,
 } from './behavior.ts';
-import { Keyboard, Mouse } from './input.ts';
+import { Keyboard, Mouse, type PointerState } from './input.ts';
 import { Composition, type CompositionOptions } from './composition.ts';
 export interface InputScopeOptions {
   policy?: InputPolicy;
@@ -19,6 +19,13 @@ export interface InputScopeOptions {
    * true.
    */
   pageEvents?: boolean;
+  /**
+   * Where the pointer is when the scope is created, in CSS pixels of the viewport, such as
+   * `tab.mouse.position`. The first run moves on from there; each later run starts where the
+   * previous one left the pointer. Omit it to start as a new Mouse does: at (0, 0), or at a random
+   * point of the viewport in human mode.
+   */
+  pointer?: { x: number; y: number };
 }
 export interface InputScopeRunOptions extends InputOptions, CompositionOptions {}
 export interface ScopedInput {
@@ -33,8 +40,16 @@ export class InputScope {
   readonly behavior: InputBehavior;
   private readonly mac: boolean;
   private readonly pageEvents: boolean;
+  /** The pointer every run's mouse moves; only acknowledged moves change it. */
+  private readonly pointer: PointerState;
   constructor(session: Session, options: InputScopeOptions = {}) {
     if (!session.id) throw new TypeError('Input scope requires a target session');
+    const { pointer } = options;
+    if (pointer && (!Number.isFinite(pointer.x) || !Number.isFinite(pointer.y)))
+      throw new RangeError('Invalid pointer coordinates');
+    this.pointer = pointer
+      ? { x: pointer.x, y: pointer.y, placed: true }
+      : { x: 0, y: 0, placed: false };
     this.session = session;
     this.mac = options.mac ?? false;
     this.pageEvents = options.pageEvents ?? true;
@@ -67,7 +82,7 @@ export class InputScope {
       action.watch(this.session);
       if (this.pageEvents) await action.send(this.session, 'Page.enable');
       const input: ScopedInput = {
-        mouse: new Mouse(this.session, this.behavior, action),
+        mouse: new Mouse(this.session, this.behavior, action, this.pointer),
         keyboard: new Keyboard(this.session, this.behavior, this.mac, action),
         composition: new Composition(this.session, action, options),
         wait: async (ms) => {

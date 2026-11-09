@@ -64,10 +64,12 @@ test('keyUp mirrors keyDown; held Shift yields shifted keys; modifiers send rawK
   await keyboard.press('Shift+a');
   await keyboard.press('Control+a');
   expect(keyEvents(messages)).toEqual([
-    'keyDown: :Space: ',
+    'rawKeyDown: :Space',
+    'char: :Space: ',
     'keyUp: :Space',
     'rawKeyDown:Shift:ShiftLeft',
-    'keyDown:A:KeyA:A',
+    'rawKeyDown:A:KeyA',
+    'char:A:KeyA:A',
     'keyUp:A:KeyA',
     'keyUp:Shift:ShiftLeft',
     'rawKeyDown:Control:ControlLeft',
@@ -83,7 +85,7 @@ test('macOS key events carry the platform editing commands', async () => {
     const { session, messages } = fakeSession();
     await new Keyboard(session, undefined, mac).press(chord);
     return messages
-      .filter((m) => m.method === 'Input.dispatchKeyEvent' && m.type !== 'keyUp')
+      .filter((m) => m.method === 'Input.dispatchKeyEvent' && m.type === 'rawKeyDown')
       .map((m) => m.commands ?? []);
   };
   expect(await commands(true, 'Meta+A')).toEqual([[], ['selectAll']]);
@@ -111,7 +113,7 @@ test('human typing uses key events for keyboard characters and insertText otherw
   await new Keyboard(session, behavior).type('A新');
   expect(
     messages.map((m) => (m.method === 'Input.insertText' ? `insert:${m.text}` : m.type)),
-  ).toEqual(['rawKeyDown', 'keyDown', 'keyUp', 'keyUp', 'insert:新']);
+  ).toEqual(['rawKeyDown', 'rawKeyDown', 'char', 'keyUp', 'keyUp', 'insert:新']);
   messages.length = 0;
   behavior.configure({ typing: 'insertText' });
   await new Keyboard(session, behavior).type('ab');

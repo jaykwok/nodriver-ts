@@ -15,6 +15,8 @@ tab.setInputPolicy({
   targetInset: 0.2,
   typing: 'auto', // auto | keys | insertText; auto uses key events in human mode
   scroll: 'auto', // auto | wheel | dom; auto first wheels the element close to the viewport in human mode
+  presentationRecovery: 250, // ms an input command may stall before a frame is requested; false turns it off
+  lateMoves: 'send', // send | skip; skip drops pointer samples whose time has passed
 });
 const input = await tab.waitForSelector('input');
 await input.fill('replace all');
@@ -37,7 +39,7 @@ const popup = await page.waitForPopup(); // human
 
 ## Parameters
 
-Times are in milliseconds and each range is a minimum/maximum: step counts 1–120, times 0–3000, and `targetInset` (the fraction of the visible target excluded at each edge) 0–0.45. Omitted policy fields, and fields set to `undefined`, reset to their defaults, except the seed. When no seed is given, one is generated with Node crypto when the Tab's input behavior is created, and it is kept across actions, mode switches and configure calls that omit it. An explicit seed, even the current one, restarts that behavior's random stream; other tabs are unaffected. The policy cannot be changed while an action is running, and it never introduces typos, extra submits or random business actions.
+Times are in milliseconds and each range is a minimum/maximum: step counts 1–120, times 0–3000, and `targetInset` (the fraction of the visible target excluded at each edge) 0–0.45. `presentationRecovery` is 10–60000 ms or `false`; see [pages that draw no frames](#pages-that-draw-no-frames). `wheelNotch` (1–1000 px) and `pointerGrid` have no default and are described [below](#human-motion-planning): `wheelNotch` requires `wheelProfile: 'wheel'` and cannot be combined with `scrollSteps`, and `pointerGrid.scale` is 0.25–20. Omitted policy fields, and fields set to `undefined`, reset to their defaults, except the seed. When no seed is given, one is generated with Node crypto when the Tab's input behavior is created, and it is kept across actions, mode switches and configure calls that omit it. An explicit seed, even the current one, restarts that behavior's random stream; other tabs are unaffected. The policy cannot be changed while an action is running, and it never introduces typos, extra submits or random business actions.
 
 Omitting `moveDuration`, `moveSteps` or `scrollSteps` means automatic planning, described [below](#human-motion-planning); an explicit range replaces it. The MCP tool `browser_input_policy` takes the same fields.
 
@@ -50,18 +52,21 @@ Human input is planned in Node; nothing runs in the page to produce it.
 - **Paths**: cubic Bézier curves with minimum-jerk progress and 8–12 Hz motion noise that fades in and out. A path that starts and ends inside the viewport does not cross its top or left edge.
 - **Duration**: `70 + 90 * log2(1 + distance / targetWidth)` ms, at most 1800 ms, planned at about 120 points per second. `click()` uses the smaller side of the element's box as `targetWidth`; `hover()`, `mouse.move()` and the approach of `drag()` use 24 px. An explicit `moveDuration` or `moveSteps` replaces the planned duration or point count. With the button held, `drag()` moves in its `steps` equal straight steps and waits `pause` plus 10 ms after each.
 - **Overshoot**: a move over 350 px overshoots by 4–12 px in a quarter of cases and adds 3–5 correction points, which can take it past 1800 ms. There is no overshoot while a button is held, or with an explicit `moveDuration` or `moveSteps`.
-- **Timing**: each point waits its planned delay. The host's timer resolution can stretch short waits; on Windows it is often about 16 ms, which lowers the actual rate.
+- **Timing**: each point is due its planned delay after the previous point was sent, the first after the path starts, and the time Chrome takes to answer counts toward that delay. Pauses, press holds, key intervals and the intervals between wheel events count the same way, so a reply only adds time when it takes longer than the delay. The host's timer resolution can stretch short waits; on Windows it is often about 16 ms, which lowers the actual rate.
+- **Late samples**: when replies are slower than the samples, as in a background window, a path still sends every sample by default and takes longer than planned. With `lateMoves: 'skip'`, a sample is dropped once the next sample is due as well, so the pointer keeps to the planned timeline. The last point of a path is always sent, and so are moves with a button held, such as those of `drag()`, presses, keys and wheel events. `report.skippedMoves` counts the dropped samples.
+- **Pointer grid**: a physical mouse reports positions in whole device pixels. `pointerGrid: { scale, phase }` places every pointer coordinate on that grid: a multiple of `1 / scale` CSS pixels, offset by `phase` (`{ x, y }`, in CSS pixels, default 0). `scale` is the device pixels per CSS pixel, which is `devicePixelRatio` including page zoom; the phase depends on where the viewport lies on the screen. Both depend on the machine and window, so there is no default. Moves, presses, releases and wheel events use the snapped position, guards receive it, and a planned sample that would not move the pointer is not sent.
 - **Landing points**: truncated Gaussian sampling within `targetInset` over the part of the element inside the viewport, centred horizontally and slightly above centre vertically.
 - **Presses**: some presses include a 1 px held-pointer move halfway through `pressDelay`. Element clicks hit-test it first and skip it when the check fails, and it never happens inside out-of-process frames. The release uses the final position.
-- **Scrolling**: `wheelProfile: 'trackpad'` (default) sends accelerating then decaying wheel events, one per 18 px of distance and about 8 ms apart; `'wheel'` sends equal events, one per 100 px and 45 ms apart. Both send 1–120 events, add `pause` to each interval and keep the signed, fractional total. An explicit `scrollSteps` sets the number of events. Scrolling an element into view in human mode uses the wheel for up to 3 s, and Chrome scrolls the rest.
+- **Scrolling**: `wheelProfile: 'trackpad'` (default) sends accelerating then decaying wheel events, one per 18 px of distance and about 8 ms apart; `'wheel'` sends equal events, one per 100 px and 45 ms apart. Both send 1–120 events, add `pause` to each interval and keep the signed, fractional total. An explicit `scrollSteps` sets the number of events. With `wheelNotch`, the size of one notch of the target platform's wheel, `'wheel'` instead sends one event per notch, each along one axis and 45 ms apart, and rounds the distance to whole notches: `wheel(0, 250)` with a 100 px notch scrolls three notches. Instant mode sends one event with the exact distance. Scrolling an element into view in human mode uses the wheel for up to 3 s, and Chrome scrolls the rest.
 - **Typing**: delays are log-normal, bounded by `keyDelay` and weighted by QWERTY distance and hand alternation. Lowercase `th`, `he`, `in` and `er` can overlap for a planned 5–12 ms; modified keys, repeated keys and non-ASCII segments do not. Cancellation releases both keys.
 
 ## Text and keys
 
 - **`fill()`**: replaces the whole value using focus, the selection and a single `Input.insertText`.
 - **`type()`**: commits text at the current selection one grapheme at a time (Intl.Segmenter), and also accepts an array of string segments. `type(text, { replace: true })` first selects the whole value, as `fill()` does, and then types over it; with an empty text it deletes the value with Backspace. Emoji surrogate pairs, ZWJ sequences and combining characters are never split. At most 100000 UTF-16 code units per call.
-- **Key events**: with `typing: 'keys'`, or the default `auto` in human mode, typeable US-layout characters (letters, digits, common symbols, space) are sent one at a time as keyDown/keyUp, with Shift held for capitals and shifted symbols; keyUp carries the same key as keyDown. While Shift is held with `keyboard.down('Shift')`, characters that need no Shift are inserted with `insertText` so that the held key does not shift them. CJK, emoji, newlines and tabs use `insertText`, and `typing: 'insertText'` uses it for everything.
+- **Key events**: with `typing: 'keys'`, or the default `auto` in human mode, typeable US-layout characters (letters, digits, common symbols, space) are sent one at a time as key presses, with Shift held for capitals and shifted symbols. A key that produces a character is sent as `rawKeyDown` and then `char`, so a keydown handler that prevents the default suppresses the character, as with a physical key; with Control, Alt or Meta held, only `rawKeyDown` is sent. keyUp carries the same `key`, `code`, key code and location as keydown. While Shift is held with `keyboard.down('Shift')`, characters that need no Shift are inserted with `insertText` so that the held key does not shift them. CJK, emoji, newlines and tabs use `insertText`, and `typing: 'insertText'` uses it for everything.
 - **`press()`**: supports named keys (Enter, Tab, Escape, arrow keys, Home/End, PageUp/PageDown, F1–F12, Space and more), modifier combinations and US-layout characters, for example `Shift+Tab` or `Control++`. While Shift is held, the shifted character is sent. `keyDefinition()` and `parseChord()` are exported.
+- **Left, right and numpad keys**: `Shift`, `Control`, `Alt` and `Meta` are the left keys; `ShiftLeft`, `ShiftRight`, `ControlLeft`, `ControlRight`, `AltLeft`, `AltRight`, `MetaLeft` and `MetaRight` choose a side. `Numpad0`–`Numpad9`, `NumpadAdd`, `NumpadSubtract`, `NumpadMultiply`, `NumpadDivide`, `NumpadDecimal` and `NumpadEnter` type as with Num Lock on. Their events set `KeyboardEvent.location` to 1 (left), 2 (right) or 3 (numpad), on keydown, keypress and keyup alike, and `keyDefinition()` reports the same `location`. A key is held by its physical key: `up('ControlLeft')` releases a key pressed with `down('Control')`, and `pressedKeys` lists keys by the name they were pressed with.
 - **macOS editing shortcuts**: when the browser runs on macOS, key events carry AppKit editing commands (CDP `commands`), so `Meta+A` selects all, `Meta+Z` undoes, `Alt+ArrowLeft` moves by word, `Control+A` moves to the start of the paragraph, and so on, as on a Mac keyboard. A launched browser uses the host platform, so a `userAgent` launch option does not change it; a connected browser uses the user agent that `Browser.getVersion` reports.
 - **`select()`**: changes the option through the DOM and dispatches synthetic input/change events; isTrusted is not rewritten. When pointer or key interaction is needed, the caller performs it explicitly.
 
@@ -73,7 +78,32 @@ A click first scrolls the element into the viewport, checks that it is visible, 
 
 `setChecked(checked)` is one input action: its timeout, signal and guard cover reading the state, the click and up to 1 s of waiting for the requested state. It clicks the checkbox or radio itself, or its first rendered `<label>` when a click at the control's center would not reach it, for example a native control hidden behind a styled label. It resolves to `{ changed, clicked }`, where `clicked` is `'control'` or `'label'`. A radio cannot be unchecked by clicking, so `setChecked(false)` on a checked radio is refused before any input; `setChecked(true)` checks an unchecked one. A disabled control, including one inside a disabled `<fieldset>`, is waited for until it is enabled, within the same deadline; neither it nor its label is clicked while it is disabled. A click that does not reach the requested state is reported, not repeated. Plain `click()` never redirects to another element.
 
-Pointer pressure is 0.5 while a button is pressed, including moves with a button held. In human mode the first pointer position is random within 15–85% of the viewport. Hovering inside an OOPIF confirms that the event was delivered; only when the pointer already rests at the same coordinates is an extra 0.25px probe move sent, which itself produces observable events.
+Pointer pressure is 0.5 while a button is pressed, including moves with a button held. In human mode the first pointer position is random within 15–85% of the viewport. Hovering inside an OOPIF confirms that the event was delivered; only when the pointer already rests at the same coordinates is an extra probe move sent, 0.25 px aside or one step of the pointer grid, which itself produces observable events.
+
+## Guards
+
+`InputOptions.guard` is called with an `InputCheckpoint` at each checkpoint of an action. When it throws or rejects, the action stops with `InputActionError` and that error as `cause`, and the keys and buttons the action holds are released. `checkpoint.type` is:
+
+- `step`: at the start and end of each step and around pauses.
+- `move` and `wheel`, with `x` and `y`: before each pointer move or wheel event.
+- `mouseDown`, with `button`, `x` and `y`: before a button press. `mousePressed`, with the same fields: after Chrome acknowledged the press and before anything else is sent while the button is held. The release follows even when the guard throws, so a click whose target is still under the pointer completes.
+- `keyDown`, with `key` (the name it was pressed with) and `code`: before a key goes down. `char`, with the same fields: the key is down, and its character, keypress and text input are next. A guard that throws at `char` sends no character, and the key is released. Keys without a character, and keys pressed while Control, Alt or Meta is held, have no `char` checkpoint.
+- `text`: before `Input.insertText`. `composition`: before a composition update or commit.
+
+The guard counts against the action's deadline and stops with its signal. Element actions add checks of their own: `type()` checks that the element has focus at `keyDown`, `char` and `text`, and `click()` hit-tests the target at `mouseDown`.
+
+```ts
+const field = await tab.waitForSelector('#code');
+await field.focus();
+await tab.keyboard.type('1234', {
+  // Each character goes in only while the field has focus.
+  guard: async (checkpoint) => {
+    if (checkpoint.type !== 'char' && checkpoint.type !== 'text') return;
+    if (!(await field.evaluate((el) => el === document.activeElement)))
+      throw new Error('Focus moved');
+  },
+});
+```
 
 ## Serialization and cancellation
 
@@ -81,7 +111,18 @@ Tab input, standalone `new Mouse(session)` / `new Keyboard(session)` and raw inp
 
 `InputOptions.timeout` is one budget for the input stage, 10000 ms by default, starting when the action is called and including queue time and preparation; element `click`, `hover`, `fill`, `type` and `setChecked` include their preparation in it. Each input command receives the remaining time and the combined cancellation signal through `sendWith()`. A nested scope operation may shorten the budget or add a signal/guard; it cannot extend the scope deadline or replace its guard.
 
-Cancellation and deadlines reject promptly with `InputActionError`, preserving the cause. `error.report` captures the action when it stops; `error.cleanup` resolves to `{ status, report }` after cleanup, with status `completed`, `failed` or `disconnected`. Reports include `phase` (`queued`, `running`, `cleaning`, `done`), `cleanup`, acknowledged event/segment counts, `dispatched` (input commands sent that can change the page: presses, releases, keys, text and composition, including releases sent during cleanup; moves and wheel scrolling are not counted), the seed, the action-start `randomState`, a trace of up to 2000 entries and cleanup errors; input text is not stored. Commands whose callers stopped waiting remain visible through the cleanup result and the connection lifecycle.
+Cancellation and deadlines reject promptly with `InputActionError`, preserving the cause. `error.report` captures the action when it stops; `error.cleanup` resolves to `{ status, report }` after cleanup, with status `completed`, `failed` or `disconnected`. Reports include:
+
+- `phase` (`queued`, `running`, `cleaning`, `done`), `cleanup` and cleanup errors.
+- `events` and `completedSegments`: acknowledged events and text segments.
+- `sent`: the input commands the action sent, by kind, counted when sent rather than when answered: `moves`, `wheels`, `presses`, `keys` (key downs), `characters` (the `char` after a key down), `releases` (button and key releases, including those sent during cleanup), `text` (`Input.insertText`, including composition commits) and `composition` (updates and cancels). `dispatched` is the sum of the kinds that can change the page, every kind except moves and wheel events; a hover can still change a page, so only `sent` shows that no input was sent at all. Raw input commands that a scope callback sends during its run are counted too.
+- `skippedMoves`: pointer samples dropped under `lateMoves: 'skip'`.
+- `lateReplies`: replies to the action's own requests that arrived after their caller had stopped waiting, such as a command in flight when the action timed out, which cleanup then waited for.
+- `presentationRecoveries`: see [pages that draw no frames](#pages-that-draw-no-frames).
+- `plannedMs` and `actualMs`: the milliseconds of planned delays (pointer motion, pauses, press and key intervals, and scope `wait()` calls), and the time from acquiring input until the input ended, before cleanup. In instant mode only scope waits are planned.
+- The seed, the action-start `randomState` and a trace of up to 2000 entries. Input text is not stored.
+
+Commands whose callers stopped waiting remain visible through the cleanup result and the connection lifecycle.
 
 `cleanupTimeout`, 5000 ms by default and independent of the input timeout and an aborted signal, bounds releases and late-response draining. The next managed input waits until cleanup completes; after a failed cleanup, later managed input is rejected with `InputBlockedError` as the cause. Input actions keep their original command results and never resend commands. Cleanup waits only for the action's own late replies: its input commands, element preparation and raw commands issued from its callback on any connection, including those whose callers stopped waiting, plus the detach the library sends for an attach of the action that answers late. Other pending commands, such as another tab's evaluation, neither delay nor fail cleanup.
 
@@ -107,6 +148,10 @@ try {
 ```
 
 The cleanup result describes managed releases and protocol replies. The application owns the final document state, and delivered input cannot be reversed. User callbacks should observe the supplied cancellation signal. Controllers retained after a scope ends reject further input.
+
+## Pages that draw no frames
+
+Chrome delivers pointer and key input to a page as the page draws frames, and answers an input command once the page has handled it. A page that draws no frames, such as one in a minimized window, holds input back, and the command stalls. When an input command of an action stays unanswered for `presentationRecovery` milliseconds (250 by default), the action sends one `Page.captureScreenshot`, which makes Chrome draw a frame. Chrome captures only top-level targets, so the request goes through a session attached to the command's top-level page: input to an out-of-process frame recovers through its page. A raw command that a scope callback sends on another connection recovers, and waits for dialogs, through the pages known on that connection. Each command gets at most one such request, and input is never sent again. Commands whose callers stopped waiting, because the action timed out or was cancelled, are recovered the same way, so that cleanup can drain them, and cleanup also waits for the screenshot. Nothing is requested while a JavaScript dialog is open on the page. `report.presentationRecoveries` counts the requests, and the trace records `presentationRecovery` for each. `presentationRecovery: false` turns this off.
 
 ## Explicit composition
 
@@ -136,7 +181,9 @@ The first `update()` fails before any composition command unless the focus can t
 
 ## Raw input scopes
 
-`browser.inputScope(session)` or the exported `createInputScope(session, { policy?, mac?, pageEvents? })` creates a reusable scope factory for a target session. Each `run()` supplies fresh mouse, keyboard and composition controllers, one deadline, the original guard and one final report. Sibling controller calls serialize, and held keys, buttons and compositions are cleaned up in reverse order before the connection queue changes owner. Explicit `up()` or `cancel()` releases a resource early. A click or drag cannot replace a button that is already held.
+Pointer moves acknowledged during cancellation cleanup also update the scope's next starting point. A failed or unacknowledged move does not. The `sent` counters include raw input commands issued from the scope callback, including on another connection; they count transport dispatch, not merely a queued call.
+
+`browser.inputScope(session)` or the exported `createInputScope(session, { policy?, mac?, pageEvents?, pointer? })` creates a reusable scope factory for a target session. Each `run()` supplies fresh mouse, keyboard and composition controllers, one deadline, the original guard and one final report. The pointer carries over: each run's mouse starts where Chrome last acknowledged the previous run's pointer, so a run sends no move just to put the pointer back. `pointer` gives the position for the first run, such as `tab.mouse.position` when the scope drives a tab's page; without it the first run starts as a new `Mouse` does, at (0, 0) or at a random viewport point in human mode. Sibling controller calls serialize, and held keys, buttons and compositions are cleaned up in reverse order before the connection queue changes owner. Explicit `up()` or `cancel()` releases a resource early. A click or drag cannot replace a button that is already held.
 
 ```ts
 const session = await browser.attachSession(tab.id);

@@ -27,6 +27,25 @@ export interface InputPolicy {
   scrollSteps?: [number, number];
   /** Inertial touchpad packets (default), or discrete wheel notches. */
   wheelProfile?: 'trackpad' | 'wheel';
+  /**
+   * Pixels one notch of the wheel scrolls, for wheelProfile "wheel": each wheel event then scrolls
+   * one notch along one axis, and a distance is rounded to whole notches. Omit to scroll the exact
+   * distance in equal events of up to 100 px.
+   */
+  wheelNotch?: number;
+  /**
+   * Places pointer coordinates on the device pixel grid, as a physical mouse reports them: each
+   * coordinate becomes a multiple of 1 / scale CSS pixels, offset by phase. scale is the device
+   * pixels per CSS pixel, which is devicePixelRatio including page zoom. Omit for exact coordinates.
+   */
+  pointerGrid?: { scale: number; phase?: { x: number; y: number } };
+  /**
+   * What a human pointer path does with a sample whose planned time has passed because Chrome
+   * answered the previous one late: "send" sends every sample, "skip" drops it once the next one is
+   * due as well. The last sample of a path is always sent, and moves with a button held are never
+   * skipped. Defaults to "send".
+   */
+  lateMoves?: 'send' | 'skip';
   /** Fraction of the visible target excluded at each edge, in [0, .45]. */
   targetInset?: number;
   /**
@@ -36,6 +55,51 @@ export interface InputPolicy {
   typing?: 'auto' | 'keys' | 'insertText';
   /** How element actions scroll: "auto" uses wheel events in human mode, DOM scrolling otherwise. */
   scroll?: 'auto' | 'wheel' | 'dom';
+  /**
+   * Milliseconds an input command may go unanswered before the action asks Chrome to draw a frame
+   * with Page.captureScreenshot, once per command: a page that draws no frames, such as one in a
+   * minimized window, holds input back. false never does. Defaults to 250.
+   */
+  presentationRecovery?: number | false;
+}
+/**
+ * Where an action calls its guard. The guard runs before each input is sent, and also after a
+ * press: `char` comes between a key's keydown and its character, and `mousePressed` once a button
+ * press is acknowledged. A guard that throws stops the action; keys and buttons it holds are still
+ * released.
+ */
+export type InputCheckpoint =
+  /** At the start and end of each step and around pauses. */
+  | { readonly type: 'step' }
+  | { readonly type: 'move' | 'wheel'; readonly x: number; readonly y: number }
+  | {
+      readonly type: 'mouseDown' | 'mousePressed';
+      readonly button: Protocol.Input.MouseButton;
+      readonly x: number;
+      readonly y: number;
+    }
+  /** `key` is the name the key was pressed with, such as "a", "Shift" or "Numpad1". */
+  | { readonly type: 'keyDown' | 'char'; readonly key: string; readonly code: string }
+  /** Before Input.insertText, and before a composition update or commit. */
+  | { readonly type: 'text' | 'composition' };
+/** Input commands an action sent, by kind, counted when sent rather than when acknowledged. */
+export interface InputSent {
+  /** Pointer moves. */
+  moves: number;
+  /** Wheel events. */
+  wheels: number;
+  /** Button presses. */
+  presses: number;
+  /** Key downs. */
+  keys: number;
+  /** The characters keys produce, sent after their key down. */
+  characters: number;
+  /** Button and key releases, including those sent during cleanup. */
+  releases: number;
+  /** Input.insertText, including composition commits. */
+  text: number;
+  /** Composition updates and cancels. */
+  composition: number;
 }
 export interface InputReport {
   action: string;
@@ -46,11 +110,21 @@ export interface InputReport {
   completedSegments: number;
   events: number;
   /**
-   * Input commands sent that can change the page: button presses and releases, keys, text and
-   * composition, counted when sent rather than when acknowledged. Moves and wheel scrolling are not
-   * counted.
+   * Input commands sent that can change the page: every kind in `sent` except moves and wheel
+   * events.
    */
   dispatched: number;
+  sent: InputSent;
+  /** Pointer path samples not sent because their time had passed; see `lateMoves`. */
+  skippedMoves: number;
+  /** Replies to the action's own requests that arrived after their caller had stopped waiting. */
+  lateReplies: number;
+  /** Frames requested because an input command went unanswered; see `presentationRecovery`. */
+  presentationRecoveries: number;
+  /** Milliseconds of planned delays: pointer motion, pauses, press and key intervals, and waits. */
+  plannedMs: number;
+  /** Milliseconds from acquiring input until the input ended, before cleanup. */
+  actualMs: number;
   trace: Array<{ type: string; x?: number; y?: number; delay?: number }>;
   cleanupErrors: string[];
   phase: 'queued' | 'running' | 'cleaning' | 'done';
@@ -100,6 +174,10 @@ export class InputCoordinator {
   /** @internal Capture ownership before a session can detach or its page can disappear. */
   pageFor(session: Session): InputPage | undefined {
     return this.targets?.pageFor(session);
+  }
+  /** @internal A live session of the page's own target, by default the session's page. */
+  pageSession(session: Session, page?: InputPage): Session | undefined {
+    return this.targets?.pageSession(session, page);
   }
   /** @internal Whether a JavaScript dialog is open on the page, by default the session's page. */
   dialogOpen(session: Session, page?: InputPage): boolean {
@@ -252,9 +330,9 @@ export function inputCoordinator(connection: Connection): InputCoordinator {
   if (!value) coordinators.set(connection, (value = new InputCoordinator(connection)));
   return value;
 }
-type AutomaticRanges = 'moveDuration' | 'moveSteps' | 'scrollSteps';
-type ResolvedInputPolicy = Omit<Required<InputPolicy>, AutomaticRanges> &
-  Pick<InputPolicy, AutomaticRanges>;
+/** Fields whose absence means automatic planning or no adjustment. */
+type Optional = 'moveDuration' | 'moveSteps' | 'scrollSteps' | 'wheelNotch' | 'pointerGrid';
+type ResolvedInputPolicy = Omit<Required<InputPolicy>, Optional> & Pick<InputPolicy, Optional>;
 const defaults = {
   mode: 'instant' as 'instant' | 'human',
   pause: [0, 15],
@@ -264,6 +342,8 @@ const defaults = {
   targetInset: 0.2,
   typing: 'auto' as 'auto' | 'keys' | 'insertText',
   scroll: 'auto' as 'auto' | 'wheel' | 'dom',
+  presentationRecovery: 250 as number | false,
+  lateMoves: 'send' as 'send' | 'skip',
 } satisfies Omit<ResolvedInputPolicy, 'seed'>;
 /** @internal Rejects a policy configure() would reject; returns a copy to keep. */
 export function checkedInputPolicy(policy: InputPolicy): InputPolicy {
@@ -326,6 +406,27 @@ export class InputBehavior {
     if (!['auto', 'wheel', 'dom'].includes(next.scroll)) throw new TypeError('Invalid scroll mode');
     if (!['trackpad', 'wheel'].includes(next.wheelProfile))
       throw new TypeError('Invalid wheelProfile');
+    if (!['send', 'skip'].includes(next.lateMoves)) throw new TypeError('Invalid lateMoves');
+    if (next.wheelNotch !== undefined) {
+      if (!Number.isFinite(next.wheelNotch) || next.wheelNotch < 1 || next.wheelNotch > 1000)
+        throw new RangeError('Invalid wheelNotch');
+      if (next.wheelProfile !== 'wheel')
+        throw new TypeError('wheelNotch requires wheelProfile "wheel"');
+      if (next.scrollSteps !== undefined)
+        throw new TypeError('wheelNotch and scrollSteps both set the number of wheel events');
+    }
+    const grid = next.pointerGrid;
+    if (
+      grid !== undefined &&
+      (typeof grid !== 'object' ||
+        grid === null ||
+        !Number.isFinite(grid.scale) ||
+        grid.scale < 0.25 ||
+        grid.scale > 20 ||
+        (grid.phase !== undefined &&
+          (!Number.isFinite(grid.phase?.x) || !Number.isFinite(grid.phase?.y))))
+    )
+      throw new RangeError('Invalid pointerGrid');
     for (const field of [
       'moveDuration',
       'moveSteps',
@@ -353,6 +454,12 @@ export class InputBehavior {
     }
     if (!Number.isFinite(next.targetInset) || next.targetInset < 0 || next.targetInset > 0.45)
       throw new RangeError('Invalid targetInset');
+    const recovery = next.presentationRecovery;
+    if (
+      recovery !== false &&
+      (typeof recovery !== 'number' || !(recovery >= 10 && recovery <= 60000))
+    )
+      throw new RangeError('Invalid presentationRecovery');
     this.policy = next;
     // Reconfiguration without an explicit seed preserves the stream, even when changing mode.
     if (policy.seed !== undefined) this.state = next.seed >>> 0;
@@ -454,6 +561,6 @@ export class InputBehavior {
 export interface InputOptions extends WaitOptions {
   /** Independent total budget for releases and late responses. Defaults to 5000 ms. */
   cleanupTimeout?: number;
-  /** Internal/action guard, checked between each irreversible input. */
-  guard?: () => void | Promise<void>;
+  /** Called at each checkpoint of the action; throwing stops it. See {@link InputCheckpoint}. */
+  guard?: (checkpoint: InputCheckpoint) => void | Promise<void>;
 }

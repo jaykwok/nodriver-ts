@@ -651,9 +651,18 @@ export function createBrowserMcpServer(
     keyDelay: range.optional(),
     scrollSteps: steps.optional(),
     wheelProfile: z.enum(['trackpad', 'wheel']).optional(),
+    wheelNotch: z.number().min(1).max(1000).optional(),
+    pointerGrid: z
+      .strictObject({
+        scale: z.number().min(0.25).max(20),
+        phase: z.strictObject({ x: z.number(), y: z.number() }).optional(),
+      })
+      .optional(),
+    lateMoves: z.enum(['send', 'skip']).optional(),
     targetInset: z.number().min(0).max(0.45).optional(),
     typing: z.enum(['auto', 'keys', 'insertText']).optional(),
     scroll: z.enum(['auto', 'wheel', 'dom']).optional(),
+    presentationRecovery: z.union([z.literal(false), z.number().min(10).max(60000)]).optional(),
   });
   tool(
     'browser_input_policy',

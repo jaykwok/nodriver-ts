@@ -132,10 +132,22 @@ interface Unanswered {
   transportAt?: number;
   /** The session detached; Chrome never answers a detached session's requests. */
   detached?: boolean;
+  /** Told when the reply arrives, and whether its caller had stopped waiting by then. */
+  replied?: (late: boolean, succeeded: boolean) => void;
 }
 const ATTACH_CLEANUP_TIMEOUT = 5000;
-/** @internal Receives the ID of each request a connection creates for its owner, and its session. */
-export type RequestRecorder = (connection: Connection, id: number, session?: Session) => void;
+/**
+ * @internal Receives the ID and method of each request a connection creates for its owner, and
+ * its session and parameters. Its listeners observe transport dispatch and the reply, including
+ * replies that arrive after the caller stopped waiting.
+ */
+export type RequestRecorder = (
+  connection: Connection,
+  id: number,
+  method: string,
+  session?: Session,
+  params?: unknown,
+) => void | { sent?: () => void; replied?: (late: boolean, succeeded: boolean) => void };
 /** @internal Options key: records the ID of the request sent with these options. */
 export const REQUEST_LEDGER = Symbol('nodriver.requestLedger');
 /** @internal */
@@ -345,6 +357,10 @@ export class Connection {
       this.options.onError?.(error);
     } catch {}
   }
+  /** @internal The session with this ID if one exists; unlike session(), never creates one. */
+  knownSession(id: string): Session | undefined {
+    return this.sessions.get(id);
+  }
   session(id: string): Session {
     let session = this.sessions.get(id);
     if (!session) {
@@ -436,7 +452,14 @@ export class Connection {
     const timeout = timeoutValue(options.timeout ?? this.timeout);
     const id = ++this.nextId;
     const recorder = (options as LedgerOptions)[REQUEST_LEDGER] ?? requestLedger.getStore();
-    recorder?.(this, id, sessionId === undefined ? undefined : this.sessions.get(sessionId));
+    const recorded =
+      recorder?.(
+        this,
+        id,
+        method,
+        sessionId === undefined ? undefined : this.sessions.get(sessionId),
+        params[0],
+      ) ?? undefined;
     const trace = this.trace;
     const observer = this.options.observe;
     const metrics = observer?.onPerformance;
@@ -501,8 +524,11 @@ export class Connection {
           const message = JSON.stringify({ id, method, params: params[0], sessionId });
           started = performance.now();
           sentOnWire = true;
-          const wire: Unanswered = { method, sessionId, at: started };
+          const wire: Unanswered = { method, sessionId, at: started, replied: recorded?.replied };
           this.unanswered.set(id, wire);
+          try {
+            recorded?.sent?.();
+          } catch {}
           try {
             observer?.onSend?.({ seq: id, method, sessionId, at: started });
           } catch {}
@@ -625,6 +651,9 @@ export class Connection {
           error: m.error ? String(m.error.code) : undefined,
         };
         this.unanswered.delete(m.id);
+        try {
+          wire.replied?.(!p, !m.error);
+        } catch {}
         if (!p) {
           const abandoned = this.abandoned.get(m.id);
           if (abandoned) {

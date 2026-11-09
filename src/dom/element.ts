@@ -7,7 +7,7 @@ import { argument, checkException, valueOf, type Frame, type World } from '../pa
 import { ActionabilityError, ProtocolError, StaleElementError } from '../errors.ts';
 import { bounded, budget, delay, poll, type WaitOptions } from '../utils.ts';
 import { query, type QueryOptions, type Selector } from './query.ts';
-import type { InputOptions, InputReport } from '../input/behavior.ts';
+import type { InputCheckpoint, InputOptions, InputReport } from '../input/behavior.ts';
 import { targetCoordinate } from '../input/human.ts';
 type Point = { x: number; y: number };
 export interface ElementEvaluateOptions extends WaitOptions {
@@ -131,6 +131,10 @@ export class Element {
         .sendWith('Runtime.releaseObjectGroup', { timeout: 1000 }, { objectGroup })
         .catch(() => {});
   }
+  /**
+   * The remaining budget of the current input action and operation. Nested input calls take this,
+   * not the caller's options: the action already calls the caller's guard at each checkpoint.
+   */
   private step(): WaitOptions {
     const action = this.frame.tab.inputBehavior.current;
     action?.observe(this.session);
@@ -517,13 +521,9 @@ export class Element {
       if (!state.objectId) throw new StaleElementError('Element pointer probe failed');
       try {
         // OOPIF compositor hit-test data may lag layout after a transform or scroll.
-        // Wait for real hover delivery before dispatching the one irreversible press.
-        const previous = this.frame.tab.mouse.position;
-        // Only stationary re-hit needs a subpixel nudge. A real trajectory
-        // already delivers hover; avoid an unconditional extra round trip.
-        if (Math.hypot(previous.x - point.x, previous.y - point.y) < 0.01)
-          await this.frame.tab.mouse.move(point.x + 0.25, point.y, options);
-        await this.frame.tab.mouse.move(point.x, point.y, options);
+        // Wait for real hover delivery before dispatching the one irreversible press. Only a
+        // pointer already resting there moves aside first; a real trajectory delivers hover.
+        await this.frame.tab.mouse.reach(point.x, point.y, this.step());
         const end = performance.now() + 100;
         do {
           const r = await this.send(this.session, 'Runtime.callFunctionOn', {
@@ -592,14 +592,14 @@ export class Element {
       this.assertValid();
       const { mode, scroll } = this.frame.tab.inputBehavior.policy;
       if (scroll === 'wheel' || (scroll === 'auto' && mode === 'human'))
-        if (this.frame === this.frame.tab.mainFrame) await this.wheelIntoView(options);
+        if (this.frame === this.frame.tab.mainFrame) await this.wheelIntoView();
       // A no-op when already visible; also covers clipped scroll containers and nested frames.
       await this.send(this.session, 'DOM.scrollIntoViewIfNeeded', {
         backendNodeId: this.backendNodeId,
       });
     });
   }
-  private async wheelIntoView(options: WaitOptions): Promise<void> {
+  private async wheelIntoView(): Promise<void> {
     const tab = this.frame.tab;
     const random = () => tab.inputBehavior.random();
     const box = () =>
@@ -619,7 +619,7 @@ export class Element {
         dy = offset(current.y, current.h);
       if (!dx && !dy) return;
       // The wheel stops at the limit, also within a round; Chrome scrolls the rest.
-      await tab.mouse.wheel(dx, dy, { ...options, ...this.step(), until });
+      await tab.mouse.wheel(dx, dy, { ...this.step(), until });
       // The pause between rounds spends the same budget; the next read fails once it is spent.
       const { timeout = Infinity, signal } = this.step();
       await delay(Math.min(40 + 60 * random(), timeout), signal);
@@ -675,14 +675,16 @@ export class Element {
           this.session === this.frame.tab.session
             ? this.unobscured({ x, y }, options).catch(() => false)
             : Promise.resolve(false),
-        guard: () => this.assertValid(),
-        beforePress: async () => {
+        guard: async (checkpoint) => {
+          this.assertValid();
+          if (checkpoint.type !== 'mouseDown') return;
           const current = await this.localPoint(u, v);
           if (!current || Math.hypot(current.x - point.x, current.y - point.y) > 0.5)
             throw new ActionabilityError(
               'Target moved or became obstructed during pointer movement; click not dispatched',
             );
-          if (!(await this.unobscured(point, options)))
+          // The press goes where the pointer is, which a pointer grid can set apart from the point.
+          if (!(await this.unobscured({ x: checkpoint.x, y: checkpoint.y }, options)))
             throw new ActionabilityError(
               this.session === this.frame.tab.session
                 ? 'Pointer is obstructed; click not dispatched'
@@ -795,8 +797,11 @@ export class Element {
       }, replace === true);
       const guarded = {
         ...input,
-        guard: async () => {
+        // Focus matters where text goes in: before each key, between a key and its character,
+        // and before inserted text.
+        guard: async (checkpoint: InputCheckpoint) => {
           this.assertValid();
+          if (!['keyDown', 'char', 'text'].includes(checkpoint.type)) return;
           const focused = await this.evaluateIsolated(
             (el) => (el.getRootNode() as Document | ShadowRoot).activeElement === el,
           );

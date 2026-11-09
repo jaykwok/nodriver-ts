@@ -2,6 +2,31 @@
 
 All notable changes are recorded here. The project follows [Semantic Versioning](https://semver.org/); before 1.0, minor versions may contain breaking changes.
 
+## Unreleased
+
+### Breaking changes
+
+- A key that produces a character is sent as `rawKeyDown` followed by `char`, instead of a single `keyDown` with text, and `report.dispatched` counts both. A keydown handler that prevents the default still suppresses the character.
+- `mouse.click()` no longer takes `beforePress`; a guard that handles the `mouseDown` checkpoint runs at the same point.
+- The keyboard holds keys by their physical key: `press()` refuses a chord that names one key twice, such as `Control+ControlLeft`, and `up('ControlLeft')` releases a key pressed with `down('Control')`.
+- Mouse actions reject a button other than `left`, `right`, `middle`, `back` or `forward` with a `TypeError`.
+- Human-mode delays count from when the previous input was sent, not from when Chrome answered it: a reply that takes as long as the planned delay no longer adds to it. Pointer paths, presses, scrolling and typing therefore take about as long as planned rather than longer by every reply's latency.
+
+### Input
+
+- `ShiftLeft`/`ShiftRight`, `ControlLeft`/`ControlRight`, `AltLeft`/`AltRight`, `MetaLeft`/`MetaRight` and the numpad keys (`Numpad0`–`Numpad9`, `NumpadAdd`, `NumpadSubtract`, `NumpadMultiply`, `NumpadDivide`, `NumpadDecimal`, `NumpadEnter`) can be pressed by name. Their events set `KeyboardEvent.location`, and `Shift`, `Control`, `Alt` and `Meta`, which are the left keys, now report location 1 instead of 0. keydown, char and keyup describe a key alike. `keyDefinition()` returns `location`, and the `KeyDefinition` type is exported.
+- `InputOptions.guard` receives an `InputCheckpoint` that says where the action is: before each move, wheel event, press, key or text, after a button press (`mousePressed`), and between a key's keydown and its character (`char`). A guard that stops after a press still releases the key or button. Each checkpoint calls the guard once; it used to run twice around some inputs. Element `type()` checks focus only where text goes in. See [guards](docs/input.md#guards).
+- An input command that stays unanswered for `presentationRecovery` ms (250 by default) gets one `Page.captureScreenshot` through a session of its top-level page, which makes a page in a minimized window draw and deliver the input, also for input to an out-of-process frame and for raw input a scope callback sends on another connection. Input is never sent again, and commands left by a timed-out or cancelled action are recovered during cleanup. `report.presentationRecoveries` counts the requests; `presentationRecovery: false` turns it off, also in `browser_input_policy`. See [pages that draw no frames](docs/input.md#pages-that-draw-no-frames).
+- An input scope keeps the pointer position Chrome acknowledged from one `run()` to the next, including moves answered while a cancelled run cleaned up, so a run moves on from where the previous one left the pointer instead of starting from (0, 0) or a new random point. The scope option `pointer` gives the position for the first run, such as `tab.mouse.position`.
+- `lateMoves: 'skip'` drops a pointer path sample whose time has passed once the next one is due as well, so slow replies, as in a background window, do not stretch the path. The last point of a path and moves with a button held are always sent, as are presses, keys and wheel events. The default `'send'` sends every sample.
+- `pointerGrid: { scale, phase? }` places the coordinates of moves, presses, releases and wheel events on the device pixel grid, and planned samples that would not move the pointer are not sent. `wheelNotch` makes each wheel event of `wheelProfile: 'wheel'` scroll one notch of the given size along one axis. Neither has a default; both are in `browser_input_policy`.
+- Input reports count what was sent by kind in `sent` (moves, wheel events, presses, keys, characters, releases, text and composition), including raw input a scope callback sends, and add `skippedMoves`, `lateReplies` (replies that arrived after their caller stopped waiting), `plannedMs` and `actualMs`. The `InputSent` type is exported.
+
+### CI
+
+- The macOS regression and platform jobs use `macos-latest` to follow GitHub's latest stable image, without separate jobs pinned to older macOS versions.
+- Windows and Linux regression runs collect API call traces and upload regenerated English and Chinese test maps. A Windows CI test checks input recovery in a minimized headful browser without replaying input or restoring the window.
+
 ## 0.9.1 — 2026-11-09
 
 - A remote handoff waits for a stream its viewer disconnected from to stop before it opens the next one or ends: reconnecting during that stop no longer fails with "Presentation session already has an active lease", and other MCP tools run again only once the stream has stopped.

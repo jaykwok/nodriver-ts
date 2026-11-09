@@ -142,3 +142,21 @@ export function scrollPlan(x: number, y: number, steps: number, profile: 'trackp
     return { deltaX, deltaY, delay: profile === 'trackpad' ? 1000 / 120 : 45 };
   });
 }
+/**
+ * Whole wheel notches, each along one axis, with the two axes interleaved evenly. A distance
+ * rounds to whole notches.
+ */
+export function* notchPlan(x: number, y: number, notch: number) {
+  const nx = Math.round(Math.abs(x) / notch),
+    ny = Math.round(Math.abs(y) / notch),
+    total = nx + ny;
+  if (!Number.isSafeInteger(total)) throw new RangeError('Too many wheel notches');
+  for (let i = 0; i < total; i++) {
+    const horizontal = Math.floor(((i + 1) * nx) / total) > Math.floor((i * nx) / total);
+    yield {
+      deltaX: horizontal ? Math.sign(x) * notch : 0,
+      deltaY: horizontal ? 0 : Math.sign(y) * notch,
+      delay: 45,
+    };
+  }
+}

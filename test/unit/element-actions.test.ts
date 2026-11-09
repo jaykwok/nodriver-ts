@@ -81,9 +81,10 @@ test('setChecked reports a click that did not change the state, without repeatin
 test('dispatched counts every sent press, release and key', async () => {
   await using f = await scriptedElement();
   const report = await new Keyboard(f.tab.cdp).press('a');
-  assert.equal(report.dispatched, 2);
+  // rawKeyDown, char and keyUp.
+  assert.equal(report.dispatched, 3);
   const keys = f.chrome.commands.filter(({ method }) => method === 'Input.dispatchKeyEvent');
-  assert.equal(keys.length, 2);
+  assert.equal(keys.length, 3);
 });
 
 test('every locator action queries again and reaches the element', async () => {
@@ -281,4 +282,30 @@ test('the wheel sends nothing once an async guard outlasts its limit', async () 
     },
   });
   assert.deepEqual(sent, []);
+});
+
+test('scrolling an element into view calls the caller guard once per wheel event', async () => {
+  await using f = await scriptedElement();
+  f.tab.setInputPolicy({
+    mode: 'human',
+    scrollSteps: [1, 1],
+    moveSteps: [1, 1],
+    moveDuration: [0, 0],
+    pause: [0, 0],
+  });
+  // Below the viewport, and still there after the wheel: one round of wheel events.
+  f.dom.box = { x: 50, y: 900, w: 800, h: 600 };
+  let checks = 0;
+  await f.element.hover({
+    guard: (checkpoint) => {
+      if (checkpoint.type === 'wheel') checks++;
+    },
+  });
+  const wheels = f.chrome.commands.filter(
+    (c) =>
+      c.method === 'Input.dispatchMouseEvent' &&
+      (c.params as { type: string }).type === 'mouseWheel',
+  ).length;
+  assert.equal(wheels, 1);
+  assert.equal(checks, wheels);
 });

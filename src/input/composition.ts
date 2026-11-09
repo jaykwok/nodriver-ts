@@ -363,9 +363,8 @@ export class Composition {
       )
         throw new RangeError('Composition selection must be UTF-16 offsets within the text');
       if (this.state === 'idle') await this.captureFocus();
-      await action.check();
       await this.checkFocus();
-      await action.check();
+      await action.check({ type: 'composition' });
       if (this.state === 'idle') {
         this.release = action.release(
           async () => {
@@ -399,7 +398,7 @@ export class Composition {
       if (!value.length || value.length > 100000)
         throw new RangeError('Composition commit must contain 1–100000 UTF-16 units');
       await this.checkFocus();
-      await action.check();
+      await action.check({ type: 'composition' });
       this.state = 'committing';
       await action.send(this.session, 'Input.insertText', { text: value });
       this.state = 'committed';

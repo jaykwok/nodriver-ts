@@ -26,6 +26,8 @@ export interface ScriptedDom {
   typed: string[];
   /** Times the query ran. */
   queries: number;
+  /** The element's center and the viewport size, as scrolling into view reads them. */
+  box: { x: number; y: number; w: number; h: number };
 }
 const detached = {
   result: { type: 'undefined' },
@@ -52,6 +54,7 @@ export function scriptDom(chrome: ScriptedChrome, frameId: () => string): Script
     pressed: [],
     typed: [],
     queries: 0,
+    box: { x: 10, y: 10, w: 800, h: 600 },
   };
   const ids: Record<string, number> = { control: CONTROL, label: LABEL };
   const value = (value: unknown) =>
@@ -122,6 +125,7 @@ export function scriptDom(chrome: ScriptedChrome, frameId: () => string): Script
       dom.queries++;
       return { result: { type: 'object', objectId: 'matches' } };
     }
+    if (code.includes('w: innerWidth')) return value(dom.box);
     if (code.includes('textContent ??') || code.includes('getAttribute(key)')) {
       await new Promise((resolve) => setTimeout(resolve, dom.readDelay));
       return value(code.includes('textContent ??') ? dom.text : dom.attribute);

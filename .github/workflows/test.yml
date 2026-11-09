@@ -4,7 +4,7 @@ permissions:
   contents: read
 jobs:
   guardian-macos:
-    name: Supervised lifecycle (macOS)
+    name: Supervised lifecycle (macOS latest)
     runs-on: macos-latest
     timeout-minutes: 10
     steps:
@@ -67,11 +67,18 @@ jobs:
         run: |
           echo "directory=$(node -p "require('node:path').resolve('test-results/close-diagnostics')")" >> "$GITHUB_OUTPUT"
           echo "import=--import=$(node -p "require('node:url').pathToFileURL('test/ci-close-diagnostics.ts').href")" >> "$GITHUB_OUTPUT"
+      - name: Configure API tracing
+        id: api-trace
+        shell: bash
+        run: |
+          mkdir -p dev/api-trace
+          echo "import=--import=$(node -p "require('node:url').pathToFileURL('test/api-trace.ts').href")" >> "$GITHUB_OUTPUT"
       - name: Unit tests
         shell: bash
         env:
-          NODE_OPTIONS: ${{ steps.diagnostics.outputs.import }}
+          NODE_OPTIONS: ${{ steps.diagnostics.outputs.import }} ${{ steps.api-trace.outputs.import }}
           NODRIVER_CLOSE_DIAGNOSTICS: ${{ steps.diagnostics.outputs.directory }}
+          NODRIVER_API_TRACE: ${{ github.workspace }}/dev/api-trace
         run: npm test
       # Real-browser tests depend on runner timing; retry once before failing the job. The first
       # attempt's log is kept and its failures are reported, so a passing retry does not hide them.
@@ -80,14 +87,28 @@ jobs:
         timeout-minutes: 20
         shell: bash
         env:
-          NODE_OPTIONS: ${{ steps.diagnostics.outputs.import }}
+          NODE_OPTIONS: ${{ steps.diagnostics.outputs.import }} ${{ steps.api-trace.outputs.import }}
           NODRIVER_CLOSE_DIAGNOSTICS: ${{ steps.diagnostics.outputs.directory }}
+          NODRIVER_API_TRACE: ${{ github.workspace }}/dev/api-trace
         run: |
           if npm run test:integration 2>&1 | tee test-results/integration-1.log; then exit 0; fi
           node test/ci-failures.ts test-results/integration-1.log > test-results/integration-1-failures.txt
           while IFS= read -r line; do echo "::warning title=Integration first attempt::${line//%/%25}"; done < test-results/integration-1-failures.txt
           { echo '### Integration first attempt failed'; echo '```'; cat test-results/integration-1-failures.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           npm run test:integration 2>&1 | tee test-results/integration-2.log
+      - name: Generate API test maps from this run
+        run: node test/api-map.ts --reuse
+      - name: Upload API test maps and traces
+        if: success()
+        uses: actions/upload-artifact@v7
+        with:
+          name: api-test-map-${{ matrix.os }}
+          path: |
+            docs/test-map.md
+            docs/zh-CN/test-map.md
+            dev/api-trace/
+          if-no-files-found: error
+          retention-days: 30
       - name: Worker startup capability experiment
         shell: bash
         env:

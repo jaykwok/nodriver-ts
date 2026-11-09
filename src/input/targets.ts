@@ -24,8 +24,10 @@ export class InputTargets {
   private dialogs = new Map<string, InputPage | undefined>();
   /** Emits after a page is destroyed, a dialog opens or closes, or the connection closes. */
   readonly changes = new EventHub<void>();
+  private readonly connection: Connection;
 
   constructor(connection: Connection) {
+    this.connection = connection;
     const off = connection.events.on((event) => {
       if (event.method === 'Target.targetCreated' || event.method === 'Target.targetInfoChanged') {
         const { targetInfo } = event.params as Protocol.Target.TargetCreatedEvent;
@@ -146,6 +148,22 @@ export class InputTargets {
       (session.id && this.pageForSession(session.id)) ||
       (session instanceof TargetSession ? this.pageForTarget(session.targetId) : undefined)
     );
+  }
+
+  /**
+   * A live session attached to the page's own target, by default the session's page: the session
+   * itself when it is one. A frame's session cannot act on the whole page, such as to capture it.
+   * Sessions the library registered for a page belong to its target.
+   */
+  pageSession(session: Session, page = this.pageFor(session)): Session | undefined {
+    if (!page || page.destroyed) return undefined;
+    for (const id of [session.id, ...this.sessions.keys()]) {
+      const attached = id && this.sessions.get(id);
+      if (!attached || attached.page !== page || (attached.targetId ?? page.id) !== page.id)
+        continue;
+      const own = id === session.id ? session : this.connection.knownSession(id);
+      if (own && !own.closed) return own;
+    }
   }
 
   /** Whether a JavaScript dialog is open on the page, by default the session's page. */

@@ -17,14 +17,17 @@ const policy = {
   scrollSteps: [4, 4] as [number, number],
 };
 for (const transport of ['pipe', 'websocket'] as const) {
-  test(`${transport}: seeded input events, graphemes, selection, chords, four frames and scroll`, async () => {
-    const fixture = await fixtureServer(),
-      audit = recordWire(transport),
-      browser = await Browser.launch({
-        transport,
-        headless: process.env.NODRIVER_HEADFUL !== '1',
-        args: ['--site-per-process'],
-      });
+  test(`${transport}: seeded input events, graphemes, selection, chords, four frames and scroll`, async (t) => {
+    // Cleanup is registered as each resource opens, so a failed launch still stops the server.
+    const fixture = await fixtureServer();
+    t.after(() => fixture.server.stop());
+    const audit = recordWire(transport);
+    t.after(() => audit.restore());
+    const browser = await Browser.launch({
+      transport,
+      headless: process.env.NODRIVER_HEADFUL !== '1',
+      args: ['--site-per-process'],
+    });
     try {
       const tab = await browser.newTab(fixture.base + '/input-events');
       tab.setInputPolicy(policy);
@@ -95,13 +98,12 @@ for (const transport of ['pipe', 'websocket'] as const) {
       );
     } finally {
       await browser.close();
-      await fixture.server.stop();
-      audit.restore();
     }
   });
-  test(`${transport}: changed hit target, cancellation, partial text and navigation never replay input`, async () => {
-    const fixture = await fixtureServer(),
-      browser = await Browser.launch({ transport, headless: true });
+  test(`${transport}: changed hit target, cancellation, partial text and navigation never replay input`, async (t) => {
+    const fixture = await fixtureServer();
+    t.after(() => fixture.server.stop());
+    const browser = await Browser.launch({ transport, headless: true });
     try {
       const tab = await browser.newTab(fixture.base + '/input-events');
       tab.setInputPolicy({ ...policy, pressDelay: [600, 600] });
@@ -171,7 +173,175 @@ for (const transport of ['pipe', 'websocket'] as const) {
       expect(await tab.evaluate('document.querySelector("#plain").value')).toBe('');
     } finally {
       await browser.close();
-      await fixture.server.stop();
     }
   });
 }
+test('key locations, keydown suppressing its character, and guards that stop after a press', async (t) => {
+  const fixture = await fixtureServer();
+  t.after(() => fixture.server.stop());
+  const browser = await Browser.launch({ headless: true });
+  try {
+    const tab = await browser.newTab(fixture.base + '/input-events');
+    const input = await tab.waitForSelector('#plain');
+    const value = () => input.evaluate((el) => (el as HTMLInputElement).value);
+    const keys = async () =>
+      (await tab.evaluate<any[]>('window.__events'))
+        .filter((e) => ['keydown', 'keypress', 'keyup'].includes(e.type))
+        .map((e) => `${e.type}:${e.code}:${e.location}`);
+    await input.focus();
+    await tab.evaluate('window.__clear()');
+    for (const key of ['ControlRight', 'ShiftLeft', 'Numpad1', 'a']) await tab.keyboard.press(key);
+    expect(await keys()).toEqual([
+      'keydown:ControlRight:2',
+      'keyup:ControlRight:2',
+      'keydown:ShiftLeft:1',
+      'keyup:ShiftLeft:1',
+      'keydown:Numpad1:3',
+      'keypress:Numpad1:3',
+      'keyup:Numpad1:3',
+      'keydown:KeyA:0',
+      'keypress:KeyA:0',
+      'keyup:KeyA:0',
+    ]);
+    expect(await value()).toBe('1a');
+    // A keydown handler that prevents the default suppresses the character, as with a physical key.
+    await tab.evaluate(
+      "document.querySelector('#plain').addEventListener('keydown',e=>e.preventDefault(),{once:true})",
+    );
+    await tab.keyboard.press('b');
+    expect(await value()).toBe('1a');
+
+    await tab.evaluate('window.__clear()');
+    const keyError = await tab.keyboard
+      .press('c', {
+        guard: (checkpoint) => {
+          if (checkpoint.type === 'char') throw new Error('stop before the character');
+        },
+      })
+      .catch((e) => e);
+    expect(keyError).toBeInstanceOf(InputActionError);
+    expect((await keyError.cleanup).status).toBe('completed');
+    expect(await keys()).toEqual(['keydown:KeyC:0', 'keyup:KeyC:0']);
+    expect(await value()).toBe('1a');
+    expect(tab.keyboard.pressedKeys).toEqual([]);
+
+    const point = await (await tab.waitForSelector('#target')).clickablePoint();
+    await tab.evaluate('window.__clear()');
+    const pressError = await tab.mouse
+      .click(point.x, point.y, {
+        guard: (checkpoint) => {
+          if (checkpoint.type === 'mousePressed') throw new Error('stop after the press');
+        },
+      })
+      .catch((e) => e);
+    expect(pressError).toBeInstanceOf(InputActionError);
+    expect((await pressError.cleanup).status).toBe('completed');
+    const buttons = (await tab.evaluate<any[]>('window.__events'))
+      .filter((e) => e.type === 'mousedown' || e.type === 'mouseup')
+      .map((e) => `${e.type}:${e.id}`);
+    expect(buttons).toEqual(['mousedown:target', 'mouseup:target']);
+    expect(tab.mouse.position.buttons).toBe(0);
+  } finally {
+    await browser.close();
+  }
+});
+
+test('a scope carries the pointer between runs and wheels whole notches', async (t) => {
+  const fixture = await fixtureServer();
+  t.after(() => fixture.server.stop());
+  const browser = await Browser.launch({ headless: true });
+  try {
+    const tab = await browser.newTab(fixture.base + '/input-events');
+    const session = await browser.attachSession(tab.id);
+    const scope = browser.inputScope(session, {
+      pointer: { x: 20, y: 20 },
+      policy: { ...policy, wheelProfile: 'wheel', wheelNotch: 100, scrollSteps: undefined },
+    });
+    await scope.run(async (input) => {
+      await input.mouse.move(200, 150);
+    });
+    await tab.evaluate('window.__clear()');
+    const report = await scope.run(async (input) => {
+      await input.mouse.wheel(0, 250);
+    });
+    expect(report.sent).toMatchObject({ moves: 0, wheels: 3 });
+    const events = await tab.evaluate<any[]>('window.__events');
+    const wheels = events.filter((e) => e.type === 'wheel');
+    expect(wheels.map((e) => [e.x, e.y, e.dy])).toEqual([
+      [200, 150, 100],
+      [200, 150, 100],
+      [200, 150, 100],
+    ]);
+    // The second run sent no move to put the pointer back. Chrome may move the hover after the
+    // page scrolls, so only events before the first wheel event count.
+    const before = events.slice(0, events.indexOf(wheels[0]));
+    expect(before.filter((e) => e.type === 'mousemove')).toHaveLength(0);
+  } finally {
+    await browser.close();
+  }
+});
+
+test(
+  'CI Windows: minimized-window input recovers without replay or activation',
+  {
+    skip: process.platform !== 'win32' || !process.env.CI,
+  },
+  async (t) => {
+    const fixture = await fixtureServer();
+    t.after(() => fixture.server.stop());
+    const browser = await Browser.launch({ headless: false });
+    let windowId: number | undefined;
+    try {
+      const tab = await browser.newTab(fixture.base + '/input-events');
+      const field = await tab.waitForSelector('#plain');
+      await field.focus();
+      const window = await browser.cdp.send('Browser.getWindowForTarget', { targetId: tab.id });
+      windowId = window.windowId;
+      const session = await browser.attachSession(tab.id);
+      const scope = browser.inputScope(session, {
+        pointer: { x: 20, y: 20 },
+        policy: { presentationRecovery: 100 },
+      });
+      await browser.cdp.send('Browser.setWindowBounds', {
+        windowId,
+        bounds: { windowState: 'minimized' },
+      });
+      await poll(
+        async () => {
+          const { bounds } = await browser.cdp.send('Browser.getWindowBounds', {
+            windowId: windowId!,
+          });
+          return bounds.windowState === 'minimized' || undefined;
+        },
+        { timeout: 5000 },
+      );
+      const report = await scope.run(
+        async ({ mouse, keyboard }) => {
+          await mouse.move(30, 30);
+          await keyboard.press('a');
+        },
+        { timeout: 15000 },
+      );
+      expect(report.sent).toMatchObject({ moves: 1, keys: 1, characters: 1, releases: 1 });
+      expect(report.presentationRecoveries).toBeGreaterThan(0);
+      expect(await field.evaluate((el) => (el as HTMLInputElement).value)).toBe('a');
+      expect(
+        (await browser.cdp.send('Browser.getWindowBounds', { windowId })).bounds.windowState,
+      ).toBe('minimized');
+      t.diagnostic(`Recovered ${report.presentationRecoveries} input requests while minimized`);
+    } finally {
+      if (windowId !== undefined)
+        await browser.cdp
+          .sendWith(
+            'Browser.setWindowBounds',
+            { timeout: 5000 },
+            {
+              windowId,
+              bounds: { windowState: 'normal' },
+            },
+          )
+          .catch(() => {});
+      await browser.close();
+    }
+  },
+);
