@@ -131,7 +131,7 @@ export function scriptDom(chrome: ScriptedChrome, frameId: () => string): Script
         dom.replaceBeforeInput = false;
         return detached;
       }
-      return value({ valid: true, x: 10, y: 10 });
+      return value({ valid: true, u: 0.5, v: 0.5 });
     }
     if (code.includes('checkVisibility')) return value(dom.control);
     if (code.includes('.checked')) return value(dom.control.checked);

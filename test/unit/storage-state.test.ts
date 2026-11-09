@@ -94,20 +94,24 @@ test('changing any part of an encrypted state fails authentication', async () =>
   }
 });
 
-test('a passphrase state with excessive KDF costs is refused before deriving', async () => {
-  const header = JSON.stringify({
-    iv: Buffer.alloc(12).toString('base64'),
-    scrypt: { salt: 'AA==', N: 2 ** 30, r: 8, p: 1 },
-  });
-  const length = Buffer.alloc(4);
-  length.writeUInt32BE(Buffer.byteLength(header));
-  const forged = Buffer.concat([
-    Buffer.from('NDSTATE1', 'latin1'),
-    length,
-    Buffer.from(header),
-    Buffer.alloc(32),
-  ]);
-  await assert.rejects(decryptState(forged, 'x'), /Cannot decrypt/);
+test('a passphrase state with excessive KDF costs or no header is refused before deriving', async () => {
+  const iv = Buffer.alloc(12).toString('base64');
+  for (const header of [
+    JSON.stringify({ iv, scrypt: { salt: 'AA==', N: 2 ** 30, r: 8, p: 1 } }),
+    JSON.stringify({ iv, scrypt: { salt: 'AA==', N: 2 ** 20, r: 32, p: 16 } }),
+    JSON.stringify({ iv, scrypt: { salt: 'AA==', N: 2 ** 17, r: 8, p: 64 } }),
+    'null',
+  ]) {
+    const length = Buffer.alloc(4);
+    length.writeUInt32BE(Buffer.byteLength(header));
+    const forged = Buffer.concat([
+      Buffer.from('NDSTATE1', 'latin1'),
+      length,
+      Buffer.from(header),
+      Buffer.alloc(32),
+    ]);
+    await assert.rejects(decryptState(forged, 'x'), /Cannot decrypt/);
+  }
 });
 
 test('a state directory with a key stores ciphertext and refuses plain files', async () => {

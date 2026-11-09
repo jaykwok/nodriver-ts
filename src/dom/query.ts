@@ -235,9 +235,11 @@ export async function query(
       const items = properties
         .filter((p) => /^\d+$/.test(p.name) && p.value?.objectId)
         .sort((a, b) => Number(a.name) - Number(b.name));
+      // One budget for the batch: a step() that throws midway would orphan sent requests.
+      const wait = step();
       const nodes = await Promise.all(
         items.map((p) =>
-          session.sendWith('DOM.describeNode', step(), { objectId: p.value!.objectId! }),
+          session.sendWith('DOM.describeNode', wait, { objectId: p.value!.objectId! }),
         ),
       );
       for (const { node } of nodes)

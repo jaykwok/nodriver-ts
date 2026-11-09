@@ -10,6 +10,7 @@ import {
 import { StaleElementError } from '../errors.ts';
 import type { InputRelease } from './action.ts';
 import { Composition, type CompositionOptions } from './composition.ts';
+import { motionPlan, keyInterval, scrollPlan } from './human.ts';
 export interface ComposeOptions extends InputOptions, CompositionOptions {
   /**
    * false never sends Page.enable. Navigation then stops the action only if the Page domain is
@@ -94,24 +95,27 @@ export class Mouse {
     this.placed = true;
     action.record('move', { x, y });
   }
-  private async path(x: number, y: number, action: InputAction) {
+  private async path(x: number, y: number, action: InputAction, width?: number) {
     if (this.behavior.policy.mode === 'instant') return this.dispatch(x, y, action);
+    if (!Number.isFinite(x) || !Number.isFinite(y))
+      throw new RangeError('Invalid pointer coordinates');
     await this.place(action);
-    const from = this.position,
-      dx = x - from.x,
-      dy = y - from.y;
-    const bend = (this.behavior.random() - 0.5) * Math.min(100, Math.hypot(dx, dy) * 0.25);
-    const length = Math.hypot(dx, dy) || 1,
-      nx = (-dy / length) * bend,
-      ny = (dx / length) * bend;
-    const steps = this.behavior.range('moveSteps'),
-      duration = this.behavior.range('moveDuration');
-    for (let i = 1; i <= steps; i++) {
-      const t = i / steps,
-        u = t * t * (3 - 2 * t),
-        curve = 4 * u * (1 - u);
-      await this.dispatch(from.x + dx * u + nx * curve, from.y + dy * u + ny * curve, action);
-      await action.wait(duration / steps);
+    for (const point of motionPlan(this.position, { x, y }, () => this.behavior.random(), {
+      width,
+      duration:
+        this.behavior.policy.moveDuration !== undefined
+          ? this.behavior.range('moveDuration')
+          : undefined,
+      steps:
+        this.behavior.policy.moveSteps !== undefined ? this.behavior.range('moveSteps') : undefined,
+      // An explicit duration or sample count is kept exactly, with no correction after it.
+      overshoot:
+        !this.buttons &&
+        this.behavior.policy.moveSteps === undefined &&
+        this.behavior.policy.moveDuration === undefined,
+    })) {
+      await action.wait(point.delay);
+      await this.dispatch(point.x, point.y, action);
     }
     await action.wait(this.behavior.range('pause'));
   }
@@ -195,11 +199,15 @@ export class Mouse {
       button?: Protocol.Input.MouseButton;
       clickCount?: number;
       beforePress?: () => Promise<void>;
+      /** @internal Root viewport target width for motion planning. */
+      targetWidth?: number;
+      /** @internal Confirm that a small held-pointer move remains on the target. */
+      beforeSlip?: (x: number, y: number) => Promise<boolean>;
     } = {},
   ): Promise<InputReport> {
     return this.action('click', options, async (action) => {
       if (this.buttons) throw new Error('Cannot click while a mouse button is held');
-      await this.path(x, y, action);
+      await this.path(x, y, action, options.targetWidth);
       if (options.beforePress) await action.waitFor(options.beforePress());
       await action.check();
       const params = {
@@ -213,11 +221,13 @@ export class Mouse {
           this.buttons = 0;
           await action.sendCleanup(this.session, 'Input.dispatchMouseEvent', {
             ...params,
+            x: this.x,
+            y: this.y,
             type: 'mouseReleased',
             buttons: 0,
             modifiers: this.behavior.modifiers,
           });
-          action.record('up', { x, y });
+          action.record('up', { x: this.x, y: this.y });
         },
         { session: this.session },
       );
@@ -232,8 +242,20 @@ export class Mouse {
           modifiers: this.behavior.modifiers,
         });
         action.record('down', { x, y });
-        if (this.behavior.policy.mode === 'human')
-          await action.wait(this.behavior.range('pressDelay'));
+        if (this.behavior.policy.mode === 'human') {
+          const hold = this.behavior.range('pressDelay');
+          await action.wait(hold / 2);
+          if (this.behavior.random() < 0.18) {
+            const angle = this.behavior.random() * Math.PI * 2;
+            const sx = x + Math.cos(angle),
+              sy = y + Math.sin(angle);
+            // The press has been delivered: a slip that fails is skipped, and a stopped action
+            // still ends at the next wait.
+            if (!options.beforeSlip || (await action.waitFor(options.beforeSlip(sx, sy))))
+              await this.dispatch(sx, sy, action).catch(() => {});
+          }
+          await action.wait(hold / 2);
+        }
       } finally {
         await release.run();
       }
@@ -244,21 +266,32 @@ export class Mouse {
       if (!Number.isFinite(deltaX) || !Number.isFinite(deltaY))
         throw new RangeError('Invalid scroll delta');
       await this.place(action);
-      const steps = this.behavior.policy.mode === 'human' ? this.behavior.range('scrollSteps') : 1;
-      for (let i = 0; i < steps; i++) {
+      const human = this.behavior.policy.mode === 'human';
+      const profile = this.behavior.policy.wheelProfile;
+      const steps = !human
+        ? 1
+        : this.behavior.policy.scrollSteps !== undefined
+          ? this.behavior.range('scrollSteps')
+          : Math.max(
+              1,
+              Math.min(
+                120,
+                Math.ceil(Math.hypot(deltaX, deltaY) / (profile === 'wheel' ? 100 : 18)),
+              ),
+            );
+      for (const packet of scrollPlan(deltaX, deltaY, steps, profile)) {
         await action.check();
         await action.send(this.session, 'Input.dispatchMouseEvent', {
           type: 'mouseWheel',
           x: this.x,
           y: this.y,
-          deltaX: deltaX / steps,
-          deltaY: deltaY / steps,
+          deltaX: packet.deltaX,
+          deltaY: packet.deltaY,
           buttons: this.buttons,
           modifiers: this.behavior.modifiers,
         });
         action.record('wheel', { x: this.x, y: this.y });
-        if (this.behavior.policy.mode === 'human')
-          await action.wait(this.behavior.range('pause') + 10);
+        if (human) await action.wait(packet.delay + this.behavior.range('pause'));
       }
     });
   }
@@ -624,7 +657,8 @@ export class Keyboard {
       action.record('keyDown');
     }
     try {
-      if (needShift) await action.wait(this.behavior.range('pressDelay') / 2);
+      if (needShift && this.behavior.policy.mode === 'human')
+        await action.wait(this.behavior.range('pressDelay') / 2);
       const release = await this.downRaw(char, action);
       action.record('keyDown');
       try {
@@ -657,9 +691,49 @@ export class Keyboard {
         : text;
     return this.action('type', options, async (action) => {
       const keys = this.typesKeys && !(this.modifiers & ~8);
-      for (const segment of segments) {
+      for (let i = 0; i < segments.length; i++) {
+        const segment = segments[i]!;
         await action.check();
         const character = characters.get(segment);
+        const next = segments[i + 1];
+        // Overlap only distinct lowercase letter keys without caller-held modifiers or keys.
+        // Every downRaw registers its release before dispatch, including a failed second press.
+        if (
+          keys &&
+          this.behavior.policy.mode === 'human' &&
+          this.pressed.size === 0 &&
+          segment.length === 1 &&
+          next?.length === 1 &&
+          ['th', 'he', 'in', 'er'].includes(segment + next) &&
+          this.behavior.random() < 0.15
+        ) {
+          const first = await this.downRaw(segment, action);
+          action.record('keyDown');
+          let second: InputRelease | undefined;
+          try {
+            await action.wait(this.behavior.range('pressDelay'));
+            second = await this.downRaw(next, action);
+            action.record('keyDown');
+            await action.wait(5 + this.behavior.random() * 7);
+            await first.run();
+            action.report.completedSegments++;
+            await action.wait(this.behavior.range('pressDelay'));
+          } finally {
+            await second?.run();
+            await first.run();
+          }
+          action.report.completedSegments++;
+          i++;
+          await action.wait(
+            keyInterval(
+              () => this.behavior.random(),
+              this.behavior.policy.keyDelay,
+              next,
+              segments[i + 1] ?? '',
+            ),
+          );
+          continue;
+        }
         // A held Shift would turn a character typed without Shift into its shifted one.
         if (keys && character && (character.shift || !(this.modifiers & 8)))
           await this.typeKey(segment, action);
@@ -669,7 +743,14 @@ export class Keyboard {
         }
         action.report.completedSegments++;
         if (this.behavior.policy.mode === 'human')
-          await action.wait(this.behavior.range('keyDelay'));
+          await action.wait(
+            keyInterval(
+              () => this.behavior.random(),
+              this.behavior.policy.keyDelay,
+              segment,
+              next ?? '',
+            ),
+          );
       }
     });
   }

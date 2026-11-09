@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
+import { connect } from 'node:net';
 import { test } from 'node:test';
 import { Browser, ProtocolError } from '../../src/index.ts';
 import { BrowserProcess } from '../../src/browser/launcher.ts';
 import { WebSocketTransport } from '../../src/transport/websocket.ts';
 import { ScriptedChrome } from '../../src/testing/index.ts';
+import { poll } from '../../src/utils.ts';
 
 test('a page that closes during the initial attachment does not fail connect()', async () => {
   await using chrome = await ScriptedChrome.start();
@@ -137,4 +139,23 @@ test('release() refuses a browser on a virtual display before giving anything up
   assert.equal(browser.owned, true);
   assert.equal(browser.closed, false);
   await browser.close();
+});
+
+test('a lost connection stops the forwarders of the contexts Chrome disposes with it', async () => {
+  await using chrome = await ScriptedChrome.start();
+  const browser = await chrome.connect();
+  const context = await browser.newContext({ proxy: 'http://user:secret@127.0.0.1:9' });
+  const port = Number(new URL(context.proxy!.url).port);
+  const reachable = () =>
+    new Promise<boolean>((resolve) => {
+      const socket = connect(port, '127.0.0.1');
+      socket.once('connect', () => {
+        socket.destroy();
+        resolve(true);
+      });
+      socket.once('error', () => resolve(false));
+    });
+  assert.equal(await reachable(), true);
+  await browser.disconnect();
+  await poll(async () => !(await reachable()) || undefined, { timeout: 2000 }, 'forwarder close');
 });

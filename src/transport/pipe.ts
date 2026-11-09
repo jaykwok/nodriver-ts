@@ -14,15 +14,14 @@ export class PipeDecoder {
   push(chunk: Uint8Array): void {
     const bytes = Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
     let start = 0;
-    for (let i = 0; i < bytes.length; i++)
-      if (bytes[i] === 0) {
-        this.append(bytes.subarray(start, i));
-        const message = Buffer.concat(this.chunks, this.length).toString('utf8');
-        this.chunks = [];
-        this.length = 0;
-        start = i + 1;
-        if (message) this.emit(message);
-      }
+    for (let end = bytes.indexOf(0); end !== -1; end = bytes.indexOf(0, start)) {
+      this.append(bytes.subarray(start, end));
+      const message = Buffer.concat(this.chunks, this.length).toString('utf8');
+      this.chunks = [];
+      this.length = 0;
+      start = end + 1;
+      if (message) this.emit(message);
+    }
     this.append(bytes.subarray(start));
   }
   private append(bytes: Buffer): void {

@@ -3,12 +3,17 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { resolve } from 'node:path';
 import { access } from 'node:fs/promises';
 import type { Session, Command, Params, Result } from '../protocol/connection.ts';
-import { argument, checkException, valueOf, type Frame } from '../page/frames.ts';
+import { argument, checkException, valueOf, type Frame, type World } from '../page/frames.ts';
 import { ActionabilityError, ProtocolError, StaleElementError } from '../errors.ts';
-import { budget, delay, poll, type WaitOptions } from '../utils.ts';
+import { bounded, budget, delay, poll, type WaitOptions } from '../utils.ts';
 import { query, type QueryOptions, type Selector } from './query.ts';
 import type { InputOptions, InputReport } from '../input/behavior.ts';
+import { targetCoordinate } from '../input/human.ts';
 type Point = { x: number; y: number };
+export interface ElementEvaluateOptions extends WaitOptions {
+  /** Isolated by default; main exposes page-owned properties on the DOM wrapper. */
+  world?: World;
+}
 export interface TypeOptions extends InputOptions {
   /** Select the whole value first, so the typed text replaces it. */
   replace?: boolean;
@@ -21,6 +26,19 @@ export interface SetCheckedResult {
 let objectGroupId = 0;
 /** The budget of an element operation outside an input action, shared by its CDP steps. */
 const operation = new AsyncLocalStorage<() => WaitOptions>();
+/** How long human-mode scrolling wheels toward an element before Chrome finishes. */
+const WHEEL_INTO_VIEW = 3000;
+/** The earlier deadline and both signals: a nested budget can only shorten the outer one. */
+function narrower(outer: WaitOptions, inner: WaitOptions): WaitOptions {
+  const timeouts = [outer.timeout, inner.timeout].filter((t): t is number => t !== undefined);
+  const signals = [outer.signal, inner.signal].filter((s): s is AbortSignal => !!s);
+  return {
+    ...(timeouts.length ? { timeout: Math.min(...timeouts) } : {}),
+    ...(signals.length
+      ? { signal: signals.length > 1 ? AbortSignal.any(signals) : signals[0] }
+      : {}),
+  };
+}
 /** Maps viewport coordinates through a perspective transformed iframe content quad. */
 export function project(point: Point, width: number, height: number, q: number[]): Point {
   if (q.length !== 8 || width <= 0 || height <= 0)
@@ -86,9 +104,11 @@ export class Element {
     ...params: Params<M>
   ): Promise<Result<M>> {
     const action = this.frame.tab.inputBehavior.current;
-    return action
-      ? action.send(session, method, ...params)
-      : session.sendWith(method, operation.getStore()?.() ?? {}, ...params);
+    const own = operation.getStore()?.();
+    if (!action) return session.sendWith(method, own ?? {}, ...params);
+    // Inside an input action, a read's own budget still applies, on top of the action's.
+    const sending = action.send(session, method, ...params);
+    return own ? bounded(sending, own, 'Element read') : sending;
   }
   /** Undoes a probe, best effort; inside an action, cleanup still awaits the reply. */
   private async undo<M extends Command>(
@@ -114,7 +134,9 @@ export class Element {
   private step(): WaitOptions {
     const action = this.frame.tab.inputBehavior.current;
     action?.observe(this.session);
-    return action?.step() ?? operation.getStore()?.() ?? {};
+    const own = operation.getStore()?.();
+    const outer = action?.step();
+    return outer && own ? narrower(outer, own) : (outer ?? own ?? {});
   }
   private async input<T>(name: string, options: InputOptions, task: () => Promise<T>): Promise<T> {
     let result!: T;
@@ -127,12 +149,29 @@ export class Element {
     return result;
   }
   /**
-   * Runs `fn` with a handle to the element in the isolated world. Objects that `fn` creates in
-   * `group` are released together with the handle.
+   * Runs `fn` with a handle to the element in the selected world (isolated by default). Objects
+   * that `fn` creates in `group` are released together with the handle.
    */
-  async withObject<T>(fn: (objectId: string, group: string) => Promise<T>): Promise<T> {
+  async withObject<T>(
+    fn: (objectId: string, group: string) => Promise<T>,
+    options: ElementEvaluateOptions = {},
+  ): Promise<T> {
+    if (options.world !== undefined && !['main', 'isolated'].includes(options.world))
+      throw new TypeError('Invalid execution world');
+    return this.read('element handle', options, () =>
+      this.withWorldObject(options.world ?? 'isolated', fn),
+    );
+  }
+  /** Internal probes never inherit the world selected by a public evaluation. */
+  private withIsolatedObject<T>(fn: (objectId: string, group: string) => Promise<T>): Promise<T> {
+    return this.withWorldObject('isolated', fn);
+  }
+  private async withWorldObject<T>(
+    world: World,
+    fn: (objectId: string, group: string) => Promise<T>,
+  ): Promise<T> {
     this.assertValid();
-    const context = await this.frame.context('isolated', this.step());
+    const context = await this.frame.context(world, this.step());
     const group = `nodriver-element-${++objectGroupId}`;
     try {
       const { object } = await this.send(this.session, 'DOM.resolveNode', {
@@ -149,7 +188,8 @@ export class Element {
       });
       if (connected.result.value !== true)
         throw new StaleElementError('Element was removed from its document');
-      return await fn(object.objectId, group);
+      const wait = this.step();
+      return await bounded(fn(object.objectId, group), wait, 'Element callback');
     } finally {
       await this.releaseGroup(group);
     }
@@ -157,10 +197,12 @@ export class Element {
   async evaluate<T = unknown, A = unknown>(
     fn: (element: HTMLElement, arg: A) => T | Promise<T>,
     arg?: A,
+    options: ElementEvaluateOptions = {},
   ): Promise<T> {
-    return this.withObject(async (objectId) => {
+    return this.withObject(async (objectId, objectGroup) => {
       const result = await this.send(this.session, 'Runtime.callFunctionOn', {
         objectId,
+        objectGroup,
         functionDeclaration: `function(arg){if(!this.isConnected)throw new Error('Node is detached');return (${fn.toString()})(this,arg)}`,
         arguments: [argument(arg)],
         returnByValue: true,
@@ -169,22 +211,30 @@ export class Element {
       checkException(result);
       this.assertValid();
       return valueOf(result.result) as T;
-    });
+    }, options);
+  }
+  private evaluateIsolated<T = unknown, A = unknown>(
+    fn: (element: HTMLElement, arg: A) => T | Promise<T>,
+    arg?: A,
+  ): Promise<T> {
+    return this.evaluate(fn, arg, { world: 'isolated' });
   }
   /** Runs a read under one timeout and signal shared by all of its CDP requests. */
   private read<T>(label: string, options: WaitOptions, fn: () => Promise<T>): Promise<T> {
     if (options.timeout === undefined && !options.signal) return fn();
-    return operation.run(budget(options, label), fn);
+    const own = budget(options, label),
+      outer = operation.getStore();
+    return operation.run(outer ? () => narrower(outer(), own()) : own, fn);
   }
   async text(options: WaitOptions = {}): Promise<string> {
-    return this.read('text', options, () => this.evaluate((el) => el.textContent ?? ''));
+    return this.read('text', options, () => this.evaluateIsolated((el) => el.textContent ?? ''));
   }
   async html(options: WaitOptions = {}): Promise<string> {
-    return this.read('html', options, () => this.evaluate((el) => el.outerHTML));
+    return this.read('html', options, () => this.evaluateIsolated((el) => el.outerHTML));
   }
   async attribute(name: string, options: WaitOptions = {}): Promise<string | null> {
     return this.read('attribute', options, () =>
-      this.evaluate((el, key) => el.getAttribute(key), name),
+      this.evaluateIsolated((el, key) => el.getAttribute(key), name),
     );
   }
   async describe(): Promise<Protocol.DOM.Node> {
@@ -213,7 +263,7 @@ export class Element {
   async setChecked(checked: boolean, options: InputOptions = {}): Promise<SetCheckedResult> {
     return this.input('setChecked', options, async () => {
       const read = () =>
-        this.evaluate((el) => {
+        this.evaluateIsolated((el) => {
           if (!(el instanceof HTMLInputElement) || !['checkbox', 'radio'].includes(el.type))
             throw new Error('setChecked requires checkbox or radio');
           return {
@@ -253,7 +303,7 @@ export class Element {
         });
       else await this.click({ signal: options.signal });
       const settled = performance.now() + 1000;
-      while ((await this.evaluate((el) => (el as HTMLInputElement).checked)) !== checked) {
+      while ((await this.evaluateIsolated((el) => (el as HTMLInputElement).checked)) !== checked) {
         if (performance.now() >= settled)
           throw new ActionabilityError(
             'Input did not reach requested checked state; the click was not repeated',
@@ -281,7 +331,7 @@ export class Element {
       }
       return Array.from(el.labels ?? []).find((label) => box(label)) ?? null;
     };
-    return this.withObject(async (objectId, objectGroup) => {
+    return this.withIsolatedObject(async (objectId, objectGroup) => {
       const result = await this.send(this.session, 'Runtime.callFunctionOn', {
         objectId,
         functionDeclaration: `function(){return (${pick.toString()})(this)}`,
@@ -309,7 +359,7 @@ export class Element {
     });
     const point = await this.localPoint();
     if (!point) throw new ActionabilityError('Element is not visible');
-    const rect = await this.evaluate((el) => {
+    const rect = await this.evaluateIsolated((el) => {
       const r = el.getBoundingClientRect();
       return { width: r.width, height: r.height };
     });
@@ -340,9 +390,12 @@ export class Element {
       files: paths,
     });
   }
-  private async localPoint(u = 0.5, v = 0.5): Promise<Point | undefined> {
+  private async localPoint(
+    u = 0.5,
+    v = 0.5,
+  ): Promise<(Point & { targetWidth: number }) | undefined> {
     this.assertValid();
-    const state = await this.evaluate(
+    const state = await this.evaluateIsolated(
       (el, { u, v }) => {
         const style = getComputedStyle(el);
         const rect = el.getBoundingClientRect();
@@ -373,8 +426,9 @@ export class Element {
             !el.matches(':disabled') &&
             el.getAttribute('aria-disabled') !== 'true' &&
             reaches,
-          x,
-          y,
+          // The same point as a fraction of the whole element, which the quad below spans.
+          u: (x - rect.left) / rect.width,
+          v: (y - rect.top) / rect.height,
         };
       },
       { u, v },
@@ -386,7 +440,10 @@ export class Element {
     const quad = quads[0];
     if (!quad) return undefined;
     // CDP returns coordinates in the viewport of the session root, including in-process frame offsets.
-    let point = project({ x: u, y: v }, 1, 1, quad);
+    let point = project({ x: state.u, y: state.v }, 1, 1, quad);
+    let edgeX = project({ x: 1, y: 0 }, 1, 1, quad);
+    let edgeY = project({ x: 0, y: 1 }, 1, 1, quad);
+    let corner = project({ x: 0, y: 0 }, 1, 1, quad);
     let session = this.session;
     const seen = new Set<string>();
     while (session !== this.frame.tab.session) {
@@ -409,11 +466,23 @@ export class Element {
       if (point.x < 0 || point.y < 0 || point.x >= size.width || point.y >= size.height)
         return undefined;
       point = project(point, size.width, size.height, ownerQuad);
+      edgeX = project(edgeX, size.width, size.height, ownerQuad);
+      edgeY = project(edgeY, size.width, size.height, ownerQuad);
+      corner = project(corner, size.width, size.height, ownerQuad);
       const hit = await this.hitTest(parent.session, point);
       if (hit?.backendNodeId !== backendNodeId && hit?.frameId !== root.id) return undefined;
       session = parent.session;
     }
-    return point;
+    return {
+      ...point,
+      targetWidth: Math.max(
+        1,
+        Math.min(
+          Math.hypot(edgeX.x - corner.x, edgeX.y - corner.y),
+          Math.hypot(edgeY.x - corner.x, edgeY.y - corner.y),
+        ),
+      ),
+    };
   }
   /**
    * The topmost node at a viewport point of the session's root frame, possibly inside a shadow
@@ -429,6 +498,7 @@ export class Element {
       return await this.send(session, 'DOM.getNodeForLocation', {
         x: Math.round(point.x + metrics.cssLayoutViewport.pageX),
         y: Math.round(point.y + metrics.cssLayoutViewport.pageY),
+        includeUserAgentShadowDOM: false,
       });
     } catch (error) {
       if (error instanceof ProtocolError && /No node found/i.test(error.message)) return undefined;
@@ -436,7 +506,7 @@ export class Element {
     }
   }
   private async receivesPointer(point: Point, options: WaitOptions): Promise<boolean> {
-    return this.withObject(async (objectId, group) => {
+    return this.withIsolatedObject(async (objectId, group) => {
       // The probe state stays in the isolated world, held by a handle rather than on the node.
       const { result: state } = await this.send(this.session, 'Runtime.callFunctionOn', {
         objectId,
@@ -481,6 +551,7 @@ export class Element {
     if (this.session !== tab.session) return this.receivesPointer(point, options);
     const hit = await this.hitTest(tab.session, point);
     if (!hit) return false;
+    if (hit.frameId === this.frame.id && hit.backendNodeId === this.backendNodeId) return true;
     let node = hit.backendNodeId;
     if (hit.frameId !== this.frame.id) {
       // A hit in a frame below this element's frame counts through that frame's owner element;
@@ -492,7 +563,7 @@ export class Element {
         frameId: frame.id,
       }));
     }
-    return this.withObject(async (objectId, group) => {
+    return this.withIsolatedObject(async (objectId, group) => {
       const { object } = await this.send(this.session, 'DOM.resolveNode', {
         backendNodeId: node,
         executionContextId: await this.frame.context('isolated', this.step()),
@@ -530,7 +601,7 @@ export class Element {
     const tab = this.frame.tab;
     const random = () => tab.inputBehavior.random();
     const box = () =>
-      this.evaluate((el) => {
+      this.evaluateIsolated((el) => {
         const r = el.getBoundingClientRect();
         return { x: r.left + r.width / 2, y: r.top + r.height / 2, w: innerWidth, h: innerHeight };
       });
@@ -539,7 +610,9 @@ export class Element {
         ? 0
         : Math.max(-2 * extent, Math.min(2 * extent, center - extent * (0.3 + 0.3 * random())));
     let current = await box();
-    for (let attempt = 0; attempt < 12; attempt++) {
+    // Distant targets would spend the input budget on wheel packets; Chrome scrolls the rest.
+    const until = performance.now() + WHEEL_INTO_VIEW;
+    for (let attempt = 0; attempt < 12 && performance.now() < until; attempt++) {
       const dx = offset(current.x, current.w),
         dy = offset(current.y, current.h);
       if (!dx && !dy) return;
@@ -567,9 +640,13 @@ export class Element {
       const behavior = this.frame.tab.inputBehavior;
       const inset = behavior.policy.targetInset;
       const u =
-        behavior.policy.mode === 'human' ? inset + (1 - 2 * inset) * behavior.random() : 0.5;
+        behavior.policy.mode === 'human'
+          ? targetCoordinate(() => behavior.random(), inset, 0.5)
+          : 0.5;
       const v =
-        behavior.policy.mode === 'human' ? inset + (1 - 2 * inset) * behavior.random() : 0.5;
+        behavior.policy.mode === 'human'
+          ? targetCoordinate(() => behavior.random(), inset, 0.45)
+          : 0.5;
       const point = await poll(
         async () => {
           const first = await this.localPoint(u, v);
@@ -586,6 +663,13 @@ export class Element {
       this.assertValid();
       await this.frame.tab.mouse.click(point.x, point.y, {
         ...options,
+        targetWidth: point.targetWidth,
+        // OOPIF hit confirmation itself moves the pointer; never run it with a held button. A
+        // failed check, such as a page removing the element on mousedown, only skips the slip.
+        beforeSlip: (x, y) =>
+          this.session === this.frame.tab.session
+            ? this.unobscured({ x, y }, options).catch(() => false)
+            : Promise.resolve(false),
         guard: () => this.assertValid(),
         beforePress: async () => {
           const current = await this.localPoint(u, v);
@@ -611,10 +695,12 @@ export class Element {
       await this.scrollIntoView(options);
       const behavior = this.frame.tab.inputBehavior;
       const inset = behavior.policy.targetInset;
-      const pick = () =>
-        behavior.policy.mode === 'human' ? inset + (1 - 2 * inset) * behavior.random() : 0.5;
-      const u = pick(),
-        v = pick();
+      const pick = (mean: number) =>
+        behavior.policy.mode === 'human'
+          ? targetCoordinate(() => behavior.random(), inset, mean)
+          : 0.5;
+      const u = pick(0.5),
+        v = pick(0.45);
       const point = await poll(
         async () => {
           const local = await this.localPoint(u, v);
@@ -627,7 +713,7 @@ export class Element {
         ...options,
         guard: () => this.assertValid(),
       });
-      return point;
+      return { x: point.x, y: point.y };
     });
   }
   /** Viewport point inside the element, scrolling it into view first. */
@@ -635,13 +721,14 @@ export class Element {
     const step = budget({ ...options, timeout: options.timeout ?? 10_000 }, 'clickablePoint');
     return operation.run(step, async () => {
       await this.scrollIntoView(step());
-      return poll(() => this.localPoint(), step(), 'visible element');
+      const point = await poll(() => this.localPoint(), step(), 'visible element');
+      return { x: point.x, y: point.y };
     });
   }
   async fill(text: string, options: InputOptions = {}): Promise<void> {
     await this.input('fill', options, async () => {
       if (options.signal?.aborted) throw options.signal.reason;
-      await this.evaluate((el) => {
+      await this.evaluateIsolated((el) => {
         if (el.matches(':disabled') || (el as HTMLInputElement).readOnly)
           throw new Error('Element is disabled or read-only');
         el.focus();
@@ -657,7 +744,7 @@ export class Element {
       this.assertValid();
       options.signal?.throwIfAborted();
       if (
-        !(await this.evaluate(
+        !(await this.evaluateIsolated(
           (el) => (el.getRootNode() as Document | ShadowRoot).activeElement === el,
         ))
       )
@@ -679,7 +766,7 @@ export class Element {
     return this.input('type', input, async () => {
       input.signal?.throwIfAborted();
       this.assertValid();
-      const selected = await this.evaluate((el, replace) => {
+      const selected = await this.evaluateIsolated((el, replace) => {
         if (
           el.matches(':disabled') ||
           (el as HTMLInputElement).readOnly ||
@@ -705,7 +792,7 @@ export class Element {
         ...input,
         guard: async () => {
           this.assertValid();
-          const focused = await this.evaluate(
+          const focused = await this.evaluateIsolated(
             (el) => (el.getRootNode() as Document | ShadowRoot).activeElement === el,
           );
           if (!focused)
@@ -719,7 +806,7 @@ export class Element {
   }
   async select(values: string | string[]): Promise<string[]> {
     return this.frame.tab.withInput(() =>
-      this.evaluate((el, values) => {
+      this.evaluateIsolated((el, values) => {
         if (!(el instanceof HTMLSelectElement))
           throw new Error('select() requires a select element');
         const wanted = new Set(Array.isArray(values) ? values : [values]);

@@ -27,6 +27,8 @@ export type {
 } from './browser/startup.ts';
 export { XvfbSession } from './optional/xvfb.ts';
 export type { XvfbOptions, XvfbStartOptions } from './optional/xvfb.ts';
+export { resolveProxyEnvironment } from './optional/native-environment.ts';
+export type { NativeEnvironment, ProxyEnvironmentOptions } from './optional/native-environment.ts';
 export { Download } from './browser/download.ts';
 export { Tab } from './page/tab.ts';
 export type { Environment } from './page/tab.ts';
@@ -50,7 +52,12 @@ export type { EvaluateOptions, World, EvaluationInput } from './page/frames.ts';
 export type { NavigationOptions } from './page/navigation.ts';
 export { Network, Route } from './page/network.ts';
 export type { Response } from './page/network.ts';
-export { Element, type SetCheckedResult, type TypeOptions } from './dom/element.ts';
+export {
+  Element,
+  type SetCheckedResult,
+  type TypeOptions,
+  type ElementEvaluateOptions,
+} from './dom/element.ts';
 export type { FetchOptions, FetchResponse } from './page/fetch.ts';
 export { Locator } from './dom/locator.ts';
 export type { Selector, QueryOptions } from './dom/query.ts';

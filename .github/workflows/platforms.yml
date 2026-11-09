@@ -44,6 +44,9 @@ jobs:
       - name: Install Xvfb
         if: runner.os == 'Linux'
         run: sudo apt-get install -y xvfb
+      - name: Install native environment test locales
+        if: runner.os == 'Linux'
+        run: sudo locale-gen fr_FR.UTF-8
       - name: Resolve the previous Chrome major
         if: matrix.chrome == 'previous'
         id: previous

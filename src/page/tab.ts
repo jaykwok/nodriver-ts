@@ -220,9 +220,10 @@ export class Tab {
     const watcher = new NavigationWatcher(this, options, false);
     try {
       const result = await this.session.sendWith('Page.navigate', options, { url });
-      if (result.errorText) throw new NodriverError(`Navigation failed: ${result.errorText}`);
+      // A navigation that becomes a download can also report net::ERR_ABORTED.
       if (result.isDownload)
         throw new NodriverError('Navigation became a download; use waitForDownload()');
+      if (result.errorText) throw new NodriverError(`Navigation failed: ${result.errorText}`);
       watcher.expect(result.loaderId);
       return await watcher.promise;
     } catch (e) {
@@ -414,28 +415,11 @@ export class Tab {
     if (environment.userAgentMetadata && !environment.userAgent && !this.environment.userAgent)
       throw new TypeError('UA metadata requires an explicit UA');
     this.environmentBaseline ??= await this.inspectEnvironment();
-    if (environment.acceptLanguage && !environment.userAgent && !this.environment.userAgent) {
-      const native = await this.inspectEnvironment();
-      const ch = native.document.userAgentData;
-      environment = {
-        ...environment,
-        userAgent: native.document.userAgent,
-        userAgentMetadata: ch
-          ? ({
-              brands: ch.brands,
-              fullVersionList: ch.fullVersionList,
-              platform: ch.platform,
-              platformVersion: ch.platformVersion,
-              architecture: ch.architecture,
-              model: ch.model,
-              mobile: ch.mobile,
-              bitness: ch.bitness,
-              wow64: ch.wow64,
-            } as Protocol.Emulation.UserAgentMetadata)
-          : undefined,
-      };
-    }
-    this.environment = { ...this.environment, ...environment };
+    // A field set to undefined keeps its earlier value, as an omitted one does.
+    const given = Object.fromEntries(
+      Object.entries(environment).filter(([, value]) => value !== undefined),
+    ) as Environment;
+    this.environment = { ...this.environment, ...given };
     this.environmentApplications = [];
     for (const s of this.framesManager.sessions)
       if (!s.closed) {
@@ -468,10 +452,11 @@ export class Tab {
       await session.send('Emulation.setLocaleOverride', { locale: e.locale });
       this.appliedLocale = e.locale;
     }
-    if (e.userAgent)
+    // An empty userAgent overrides Accept-Language alone; Chrome keeps its own UA and UA-CH.
+    if (e.userAgent || e.acceptLanguage)
       await session.send('Emulation.setUserAgentOverride', {
-        userAgent: e.userAgent,
-        userAgentMetadata: e.userAgentMetadata,
+        userAgent: e.userAgent ?? '',
+        ...(e.userAgent ? { userAgentMetadata: e.userAgentMetadata } : {}),
         acceptLanguage: e.acceptLanguage ?? e.locale,
       });
     if (e.geolocation)

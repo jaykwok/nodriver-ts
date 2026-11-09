@@ -4,6 +4,54 @@ All notable changes are recorded here. The project follows [Semantic Versioning]
 
 ## Unreleased
 
+### Breaking changes
+
+- `moveDuration`, `moveSteps` and `scrollSteps` have no default range: omitting them means automatic planning from the distance, the target and `wheelProfile`, and an explicit range replaces it. `inputBehavior.policy` and the `browser_input_policy` result include these fields only when they are set, and a seed plans different trajectories than in 0.9.0.
+- `tab.setEnvironment({ acceptLanguage })` without a `userAgent` overrides Accept-Language alone, and Chrome keeps its own UA and UA-CH. It used to copy the page's UA and UA-CH into a UA override, which `environmentState().requested` reported.
+
+### Input
+
+- The human policy plans Fitts-law move durations from the distance and the target size, cubic Bézier paths with minimum-jerk progress and fading motion noise, occasional overshoot and correction on long moves, truncated Gaussian landing points, an occasional 1 px held-pointer move during presses, bounded log-normal key intervals weighted by key distance, and limited rollover of lowercase digraphs. See [human motion planning](docs/input.md#human-motion-planning).
+- `wheelProfile: 'trackpad' | 'wheel'` selects accelerating then decaying trackpad packets (the default) or equal wheel notches. Scrolling an element into view in human mode uses the wheel for up to 3 s, and Chrome scrolls the rest.
+- `click()` and `hover()` aim at the part of the element inside the viewport, also when the element is larger than the viewport or partly scrolled out of it.
+- A policy field set to `undefined` takes its default, as an omitted one does; it used to be rejected.
+- In instant mode, `typing: 'keys'` types characters that need Shift without waiting after pressing it.
+
+### Environment
+
+- `Browser.launch({ nativeEnvironment: { timezone, locale } })` sets the timezone and language of the Chrome process on Linux, for a temporary or empty profile, and checks them in the document and in Dedicated, Shared and Service Workers before `launch()` returns. `autoAlignEnv` looks up the timezone through `proxyServer` from an endpoint the caller names, and `resolveProxyEnvironment()` runs that lookup alone. Nothing is emulated per target or patched in JavaScript. See [Native launch environment](docs/native-environment.md); the options are typed `NativeEnvironment` and `ProxyEnvironmentOptions`.
+- `webRtcIPHandlingPolicy` is written to the profile preferences only, without the `--force-webrtc-ip-handling-policy` switch, and merged again after `prepareProfile` returns, so the hook cannot drop it.
+- A field set to `undefined` in `tab.setEnvironment()` keeps its earlier value, as an omitted one does.
+- `alignEnvironment()` stops applying the environment at its own timeout or signal.
+
+### Pages and queries
+
+- `Element.evaluate(fn, arg, { world, timeout, signal })` and `Element.withObject(fn, options)` run in the isolated world by default, or in the main world with `world: 'main'`, where they can read properties the page sets on DOM wrappers. Built-in probes always use the isolated world. Inside an input action, the timeout and signal apply together with the action's deadline. The options are typed `ElementEvaluateOptions`.
+- `waitForFunction()` with an element handle as its argument throws `StaleElementError` once the handle's document has gone, instead of waiting out its timeout.
+- `tab.goto()` to a URL that becomes a download reports the download, also when Chrome reports `net::ERR_ABORTED` with it.
+- `queryAll()` running out of time while it describes its matches leaves no unhandled rejections.
+- `fetch()` rejects an invalid `timeout` before sending the request, and accepts timeouts up to the maximum.
+
+### MCP
+
+- `browser_input_policy` takes `wheelProfile`, and its description says which fields are planned when omitted.
+- A remote handoff whose link is not opened within `tokenTtl` ends as `expired`.
+- A remote handoff that cannot start, for example at capacity, no longer keeps its lease from being reclaimed.
+- Concurrent `/frames` requests of a remote handoff open in turn, so only the newest stream stays open.
+- `browser_handoff_wait` on a handoff that is ending reports `ended` once the lease's other tools can run again.
+- `resumeCondition.url` patterns match in linear time.
+- An invalid `inputPolicy` fails when the MCP manager is created, not when each lease opens a tab.
+- `browser_snapshot` handles accessibility trees of any depth.
+
+### Browser and process lifecycle
+
+- Under `supervised: true`, a `release()` the guardian refuses, such as for a browser on a virtual display, rejects that call only, and the guardian keeps supervising the browser.
+- A profile lock left by an exited process whose PID the current process has reused, as PID 1 is after a container restarts, is replaced instead of reported as in use. Locks record the process start time for this.
+- When the browser connection closes, the `ProxyForwarder` of each context created with its own `proxy` stops, because Chrome disposes the context with the connection.
+- `PresentationLease` acknowledges a frame also when `deliver` throws.
+- `decryptState()` refuses a `null` header, and scrypt parameters that need more than four times the memory or work of its own, before deriving a key.
+- The pipe transport splits a chunk that holds many messages in one pass.
+
 ## 0.9.0 — 2026-11-08
 
 ### License

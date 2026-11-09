@@ -4,6 +4,7 @@ import { spyOn } from 'jest-mock';
 import { Frame, type FrameManager } from '../../src/page/frames.ts';
 import { Connection } from '../../src/protocol/connection.ts';
 import { ProtocolError, StaleElementError, TimeoutError } from '../../src/errors.ts';
+import { ScriptedChrome } from '../../src/testing/index.ts';
 
 test('environment sampling rejects navigation between document and Worker without replay', async () => {
   const connection = new Connection({ send() {}, close() {} });
@@ -91,4 +92,19 @@ test('a document that goes away during sampling is stale, with the protocol erro
     context.mockRestore();
     await connection.close();
   }
+});
+
+test('Accept-Language alone leaves the UA and UA-CH to Chrome, also on insecure pages', async (t) => {
+  await using chrome = await ScriptedChrome.start();
+  await using browser = await chrome.connect();
+  const tab = browser.tabs[0]!;
+  // An insecure document: navigator.userAgentData is missing.
+  t.mock.method(tab, 'inspectEnvironment', async () => ({
+    document: { userAgent: 'Mozilla/5.0 Chrome/140' },
+  }));
+  chrome.handle('Emulation.setUserAgentOverride', () => {});
+  await tab.setEnvironment({ acceptLanguage: 'fr-FR,fr', timezone: undefined });
+  const sent = chrome.commands.filter((c) => c.method === 'Emulation.setUserAgentOverride');
+  expect(sent.map((c) => c.params)).toEqual([{ userAgent: '', acceptLanguage: 'fr-FR,fr' }]);
+  expect(tab.environmentState().requested).toEqual({ acceptLanguage: 'fr-FR,fr' });
 });

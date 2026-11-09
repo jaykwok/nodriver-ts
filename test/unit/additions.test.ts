@@ -129,6 +129,13 @@ test('profile lock reclaims a dead local owner but refuses a live or remote one'
     await handle.close();
     await writeFile(lock, `2147483646\nanother-host\n`);
     await expect(acquireProfileLock(profile)).rejects.toThrow('another-host');
+    // This PID, recorded by an earlier process (another start time), is stale; without a start
+    // time the owner cannot be told apart from this process.
+    await writeFile(lock, `${process.pid}\n${hostname()}\n`);
+    await expect(acquireProfileLock(profile)).rejects.toThrow(`PID ${process.pid}`);
+    await writeFile(lock, `${process.pid}\n${hostname()}\n1\n`);
+    await (await acquireProfileLock(profile)).close();
+    expect((await readFile(lock, 'utf8')).split('\n')[2]).toBe(String(performance.timeOrigin));
   } finally {
     await rm(profile, { recursive: true, force: true });
   }

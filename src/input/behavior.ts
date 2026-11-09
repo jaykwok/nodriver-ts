@@ -16,12 +16,17 @@ export { InputAction } from './action.ts';
 export interface InputPolicy {
   mode?: 'instant' | 'human';
   seed?: number;
+  /** Override distance/target-width based movement timing. Omit for automatic timing. */
   moveDuration?: [number, number];
+  /** Override movement sampling. Omit for automatic sampling. */
   moveSteps?: [number, number];
   pause?: [number, number];
   pressDelay?: [number, number];
   keyDelay?: [number, number];
+  /** Override packet count. Omit to derive it from distance and wheelProfile. */
   scrollSteps?: [number, number];
+  /** Inertial touchpad packets (default), or discrete wheel notches. */
+  wheelProfile?: 'trackpad' | 'wheel';
   /** Fraction of the visible target excluded at each edge, in [0, .45]. */
   targetInset?: number;
   /**
@@ -247,18 +252,19 @@ export function inputCoordinator(connection: Connection): InputCoordinator {
   if (!value) coordinators.set(connection, (value = new InputCoordinator(connection)));
   return value;
 }
+type AutomaticRanges = 'moveDuration' | 'moveSteps' | 'scrollSteps';
+type ResolvedInputPolicy = Omit<Required<InputPolicy>, AutomaticRanges> &
+  Pick<InputPolicy, AutomaticRanges>;
 const defaults = {
   mode: 'instant' as 'instant' | 'human',
-  moveDuration: [90, 220],
-  moveSteps: [8, 18],
   pause: [0, 15],
   pressDelay: [25, 70],
   keyDelay: [35, 110],
-  scrollSteps: [3, 8],
+  wheelProfile: 'trackpad' as 'trackpad' | 'wheel',
   targetInset: 0.2,
   typing: 'auto' as 'auto' | 'keys' | 'insertText',
   scroll: 'auto' as 'auto' | 'wheel' | 'dom',
-} satisfies Omit<Required<InputPolicy>, 'seed'>;
+} satisfies Omit<ResolvedInputPolicy, 'seed'>;
 /** @internal Rejects a policy configure() would reject; returns a copy to keep. */
 export function checkedInputPolicy(policy: InputPolicy): InputPolicy {
   new InputBehavior(
@@ -268,7 +274,7 @@ export function checkedInputPolicy(policy: InputPolicy): InputPolicy {
   return structuredClone(policy);
 }
 export class InputBehavior {
-  policy: Required<InputPolicy>;
+  policy: ResolvedInputPolicy;
   /** @internal Modifier state shared by this behavior's mouse and keyboard. */
   modifiers = 0;
   private state: number;
@@ -304,9 +310,13 @@ export class InputBehavior {
   configure(policy: InputPolicy): void {
     if ([...this.active].some((action) => action.report.phase !== 'done'))
       throw new Error('Cannot change input policy during an action');
+    // A field set to undefined is omitted, so it takes its default too.
+    const given = Object.fromEntries(
+      Object.entries(policy).filter(([, value]) => value !== undefined),
+    ) as InputPolicy;
     const next = {
       ...structuredClone(defaults),
-      ...structuredClone(policy),
+      ...structuredClone(given),
       seed: policy.seed === undefined ? this.policy.seed : policy.seed,
     };
     if (!['instant', 'human'].includes(next.mode) || !Number.isSafeInteger(next.seed))
@@ -314,6 +324,8 @@ export class InputBehavior {
     if (!['auto', 'keys', 'insertText'].includes(next.typing))
       throw new TypeError('Invalid typing mode');
     if (!['auto', 'wheel', 'dom'].includes(next.scroll)) throw new TypeError('Invalid scroll mode');
+    if (!['trackpad', 'wheel'].includes(next.wheelProfile))
+      throw new TypeError('Invalid wheelProfile');
     for (const field of [
       'moveDuration',
       'moveSteps',
@@ -323,8 +335,10 @@ export class InputBehavior {
       'scrollSteps',
     ] as const) {
       const range = next[field];
+      if (range === undefined && !(field in defaults)) continue;
       const steps = field.endsWith('Steps');
       if (
+        !Array.isArray(range) ||
         range.length !== 2 ||
         range.some(
           (n) =>
@@ -353,7 +367,9 @@ export class InputBehavior {
   range(
     field: 'moveDuration' | 'moveSteps' | 'pause' | 'pressDelay' | 'keyDelay' | 'scrollSteps',
   ): number {
-    const [low, high] = this.policy[field];
+    const range = this.policy[field];
+    if (!range) throw new TypeError(`${field} uses automatic planning; no range is configured`);
+    const [low, high] = range;
     const value = low + (high - low) * this.random();
     return field.endsWith('Steps') ? Math.round(value) : value;
   }

@@ -2,7 +2,7 @@ import type { Tab, Environment } from './tab.ts';
 import type { EnvironmentReport, NavigatorSnapshot } from './environment.ts';
 import type { WaitOptions } from '../utils.ts';
 import { StaleElementError, TimeoutError } from '../errors.ts';
-import { budget, timeoutValue } from '../utils.ts';
+import { bounded, budget, timeoutValue } from '../utils.ts';
 /** Optional measurements for a diagnostic run; these do not apply environment overrides. */
 export interface DiagnoseEnvironmentOptions extends WaitOptions {
   /** Sample a new temporary Dedicated Worker per frame, not existing/Shared/Service Workers. */
@@ -511,8 +511,14 @@ export async function alignEnvironment(
     signal.throwIfAborted();
     let applicationError: string | undefined;
     try {
-      await tab.setEnvironment(requested);
+      // Overrides still in flight at the deadline may land later; the report keeps the error.
+      await bounded(
+        tab.setEnvironment(requested),
+        { timeout: remaining(), signal },
+        'Environment application',
+      );
     } catch (error) {
+      options.signal?.throwIfAborted();
       applicationError = String(error);
     }
     let after: EnvironmentDiagnostics | undefined;

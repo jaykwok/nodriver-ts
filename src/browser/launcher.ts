@@ -7,7 +7,6 @@ import {
   access,
   open,
   mkdir,
-  writeFile,
   type FileHandle,
 } from 'node:fs/promises';
 import { tmpdir, homedir, hostname } from 'node:os';
@@ -22,6 +21,15 @@ import type { InputPolicy } from '../input/behavior.ts';
 import { StartupTracker, type StartupProcessDiagnostics } from './startup.ts';
 import { Guardian, ReleaseUncertainError } from './guardian.ts';
 import { checkXvfbOptions, XvfbSession, type XvfbOptions } from '../optional/xvfb.ts';
+import {
+  nativeEnvironment,
+  nativeVariables,
+  checkNativeHost,
+  resolveProxyEnvironment,
+  type NativeEnvironment,
+  type ProxyEnvironmentOptions,
+} from '../optional/native-environment.ts';
+import { updateProfileSettings, type ProfileSettings } from './profile.ts';
 import { DisconnectedError, NodriverError, ProfileInUseError } from '../errors.ts';
 import {
   abortReason,
@@ -56,7 +64,8 @@ export interface LaunchOptions extends WaitOptions, ConnectionOptions {
    * `Local State` (see updateProfileSettings()): for a temporary profile after the library has
    * prepared it, for a userDataDir while this process holds its lock. `options` says which kind
    * of profile it is and whether it holds data from before this launch. Bounded by the launch
-   * timeout; its signal also aborts at that deadline, so stop writing when it does.
+   * timeout; its signal also aborts at that deadline, so stop writing when it does. Preferences
+   * of `webRtcIPHandlingPolicy` and `nativeEnvironment` are merged after it returns.
    */
   prepareProfile?: (directory: string, options: ProfilePreparation) => void | Promise<void>;
   args?: string[];
@@ -78,6 +87,13 @@ export interface LaunchOptions extends WaitOptions, ConnectionOptions {
    */
   supervised?: boolean;
   env?: NodeJS.ProcessEnv;
+  /**
+   * Linux process timezone and locale for a temporary or empty profile, checked in documents and
+   * Workers before launch returns. Nothing is emulated per target or patched in JavaScript.
+   */
+  nativeEnvironment?: NativeEnvironment;
+  /** Like nativeEnvironment, with the timezone looked up through proxyServer before launch. */
+  autoAlignEnv?: ProxyEnvironmentOptions;
   /**
    * Runs headful Chrome on its own Xvfb server, ended with the browser, for Linux machines without
    * a display. Cannot be combined with headless: true.
@@ -337,9 +353,49 @@ export class BrowserProcess {
   static async start(
     options: LaunchOptions = {},
     startup = new StartupTracker(options.signal),
-  ): Promise<{ process: BrowserProcess; transport: Transport; endpoint?: string }> {
+  ): Promise<{
+    process: BrowserProcess;
+    transport: Transport;
+    endpoint?: string;
+    nativeEnvironment?: NativeEnvironment;
+  }> {
     timeoutValue(options.timeout ?? CONNECT_TIMEOUT);
     if (options.signal?.aborted) throw abortReason(options.signal);
+    if (options.nativeEnvironment && options.autoAlignEnv)
+      throw new TypeError('Choose nativeEnvironment or autoAlignEnv');
+    const native = !!(options.nativeEnvironment || options.autoAlignEnv);
+    if (native) {
+      if (options.attach === 'none')
+        throw new TypeError('Native environment requires page attachment for startup verification');
+      nativeEnvironment(
+        options.nativeEnvironment ?? { timezone: 'UTC', locale: options.autoAlignEnv!.locale },
+      );
+      if (
+        options.maskHeadless ||
+        options.lang ||
+        options.args?.some((a) => /^--(?:lang|accept-lang)(?:=|$)/.test(a)) ||
+        ['TZ', 'LANG', 'LANGUAGE', 'LC_ALL', 'LC_MESSAGES'].some(
+          (k) => options.env?.[k] !== undefined,
+        )
+      )
+        throw new TypeError(
+          'Native environment conflicts with language, timezone or maskHeadless overrides',
+        );
+      if (
+        options.autoAlignEnv &&
+        (!options.proxyServer ||
+          options.proxyBypassList ||
+          options.args?.some((a) => a.startsWith('--proxy-')))
+      )
+        throw new TypeError(
+          'autoAlignEnv requires one proxyServer and no bypass/extra proxy flags',
+        );
+      if (
+        options.autoAlignEnv &&
+        (new URL(options.proxyServer!).username || new URL(options.proxyServer!).password)
+      )
+        throw new TypeError('Use ProxyForwarder for authenticated browser proxies');
+    }
     if (options.supervised && (!options.detached || options.transport === 'pipe'))
       throw new TypeError('supervised requires detached: true and WebSocket transport');
     if (options.supervised && !['win32', 'darwin', 'linux'].includes(process.platform))
@@ -381,6 +437,44 @@ export class BrowserProcess {
       throw new TypeError(
         'WebRTC policy preparation requires an owned temporary profile; persistent profiles must be configured by their owner',
       );
+    if (options.lang) new Intl.Locale(options.lang);
+    if (options.windowSize) {
+      const { width, height } = options.windowSize;
+      if (![width, height].every((n) => Number.isSafeInteger(n) && n > 0 && n <= 16384))
+        throw new RangeError('Invalid windowSize');
+    }
+    const extraArgs = [...(options.args ?? [])];
+    if (options.automationControlled !== true) {
+      const disabled = new Set(['AutomationControlled']);
+      for (let i = extraArgs.length - 1; i >= 0; i--) {
+        const arg = extraArgs[i]!;
+        if (arg.startsWith('--disable-blink-features=')) {
+          for (const feature of arg.slice('--disable-blink-features='.length).split(','))
+            if (feature) disabled.add(feature);
+          extraArgs.splice(i, 1);
+        } else if (
+          arg.startsWith('--enable-blink-features=') &&
+          arg.slice('--enable-blink-features='.length).split(',').includes('AutomationControlled')
+        ) {
+          throw new TypeError('Use automationControlled: true to enable AutomationControlled');
+        }
+      }
+      extraArgs.push(`--disable-blink-features=${[...disabled].join(',')}`);
+    }
+    if (native) {
+      // The proxy and the host are consulted only once every option is known to be valid.
+      startup.enter('environment-configuration');
+      const environment = options.nativeEnvironment
+        ? nativeEnvironment(options.nativeEnvironment)
+        : await resolveProxyEnvironment(options.proxyServer!, options.autoAlignEnv!, options);
+      await checkNativeHost(environment, options);
+      options = {
+        ...options,
+        nativeEnvironment: environment,
+        lang: environment.locale,
+        env: { ...options.env, ...nativeVariables(environment) },
+      };
+    }
     startup.enter('profile-preparation');
     const profile = temporary
       ? await mkdtemp(join(tmpdir(), 'nodriver-'))
@@ -391,11 +485,11 @@ export class BrowserProcess {
     let empty = temporary;
     try {
       if (options.webRtcIPHandlingPolicy) {
-        await mkdir(join(profile, 'Default'), { recursive: true });
-        await writeFile(
-          join(profile, 'Default', 'Preferences'),
-          JSON.stringify({ webrtc: { ip_handling_policy: options.webRtcIPHandlingPolicy } }),
-        );
+        await updateProfileSettings(profile, {
+          preferences: {
+            webrtc: { ip_handling_policy: options.webRtcIPHandlingPolicy },
+          },
+        });
       }
       if (!temporary) {
         await mkdir(profile, { recursive: true });
@@ -406,6 +500,8 @@ export class BrowserProcess {
         await removeStaleActivePort(profile);
         await checkNativeProfileLock(profile);
       }
+      if (options.nativeEnvironment && !empty)
+        throw new TypeError('Native environment requires a new or empty profile');
       if (options.prepareProfile) {
         const timeout = timeoutValue(options.timeout ?? CONNECT_TIMEOUT);
         const signal = AbortSignal.any(
@@ -419,44 +515,28 @@ export class BrowserProcess {
           'Profile preparation',
         );
       }
-      const extraArgs = [...(options.args ?? [])];
-      if (options.automationControlled !== true) {
-        const disabled = new Set(['AutomationControlled']);
-        for (let i = extraArgs.length - 1; i >= 0; i--) {
-          const arg = extraArgs[i]!;
-          if (arg.startsWith('--disable-blink-features=')) {
-            for (const feature of arg.slice('--disable-blink-features='.length).split(','))
-              if (feature) disabled.add(feature);
-            extraArgs.splice(i, 1);
-          } else if (
-            arg.startsWith('--enable-blink-features=') &&
-            arg.slice('--enable-blink-features='.length).split(',').includes('AutomationControlled')
-          ) {
-            throw new TypeError('Use automationControlled: true to enable AutomationControlled');
-          }
-        }
-        extraArgs.push(`--disable-blink-features=${[...disabled].join(',')}`);
-      }
+      // Library-owned preferences follow the hook. The WebRTC policy, which the hook can inspect,
+      // is merged again so that the hook cannot drop it.
+      const preferences: ProfileSettings = {};
+      if (options.webRtcIPHandlingPolicy && options.prepareProfile)
+        preferences.webrtc = { ip_handling_policy: options.webRtcIPHandlingPolicy };
+      if (options.nativeEnvironment)
+        preferences.intl = {
+          accept_languages: options.nativeEnvironment.locale,
+          selected_languages: options.nativeEnvironment.locale,
+        };
+      if (Object.keys(preferences).length) await updateProfileSettings(profile, { preferences });
       const args = ['--no-first-run', '--no-default-browser-check', `--user-data-dir=${profile}`];
       if (options.headless === true) args.push('--headless=new');
       if (options.preset === 'agent')
         for (const flag of AGENT_ARGS)
           if (!extraArgs.some((a) => a.split('=')[0] === flag.split('=')[0])) args.push(flag);
       if (options.userAgent) args.push(`--user-agent=${options.userAgent}`);
-      if (options.lang) {
-        new Intl.Locale(options.lang);
-        args.push(`--lang=${options.lang}`);
-      }
-      if (options.windowSize) {
-        const { width, height } = options.windowSize;
-        if (![width, height].every((n) => Number.isSafeInteger(n) && n > 0 && n <= 16384))
-          throw new RangeError('Invalid windowSize');
-        args.push(`--window-size=${width},${height}`);
-      }
+      if (options.lang) args.push(`--lang=${options.lang}`);
+      if (options.windowSize)
+        args.push(`--window-size=${options.windowSize.width},${options.windowSize.height}`);
       if (options.proxyServer) args.push(`--proxy-server=${options.proxyServer}`);
       if (options.proxyBypassList) args.push(`--proxy-bypass-list=${options.proxyBypassList}`);
-      if (options.webRtcIPHandlingPolicy)
-        args.push(`--force-webrtc-ip-handling-policy=${options.webRtcIPHandlingPolicy}`);
       const pipe = options.transport === 'pipe';
       args.push(
         ...(pipe
@@ -521,7 +601,7 @@ export class BrowserProcess {
       if (options.handleSignals) watchSignals(processHandle, options.onError ?? (() => {}));
       if (pipe) {
         const transport = new PipeTransport(child.stdio[4] as Readable, child.stdio[3] as Writable);
-        return { process: processHandle, transport };
+        return { process: processHandle, transport, nativeEnvironment: options.nativeEnvironment };
       }
       const owner = processHandle;
       startup.enter('port-file');
@@ -548,7 +628,7 @@ export class BrowserProcess {
       );
       startup.enter('websocket-connect');
       const transport = await WebSocketTransport.connect(endpoint, options);
-      return { process: owner, transport, endpoint };
+      return { process: owner, transport, endpoint, nativeEnvironment: options.nativeEnvironment };
     } catch (e) {
       await processHandle?.captureDiagnostics();
       startup.fail(e);
@@ -770,6 +850,8 @@ async function checkNativeProfileLock(profile: string): Promise<void> {
 const LOCK = '.nodriver.lock';
 /** Exists while a process checks whether the lock's owner has exited. */
 const RECLAIM = `${LOCK}.reclaim`;
+/** Tells this process from an earlier one with the same PID. */
+const INSTANCE = String(performance.timeOrigin);
 function alive(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -779,15 +861,15 @@ function alive(pid: number): boolean {
   }
 }
 /**
- * Exclusive profile lock containing "pid\nhostname". A lock left by a dead local process (crash,
- * kill -9) is replaced; locks held by live processes or other hosts are respected.
+ * Exclusive profile lock containing "pid\nhostname\nstart time". A lock left by a dead local
+ * process (crash, kill -9) is replaced; locks held by live processes or other hosts are respected.
  */
 export async function acquireProfileLock(profile: string): Promise<FileHandle> {
   const path = join(profile, LOCK);
   const create = async () => {
     const handle = await open(path, 'wx');
     try {
-      await handle.writeFile(`${process.pid}\n${hostname()}\n`);
+      await handle.writeFile(`${process.pid}\n${hostname()}\n${INSTANCE}\n`);
       return handle;
     } catch (e) {
       await handle.close();
@@ -830,11 +912,16 @@ export async function acquireProfileLock(profile: string): Promise<FileHandle> {
       if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
       return await claim();
     }
-    const [pid, host] = contents.split('\n');
+    const [pid, host, instance] = contents.split('\n');
     const owner = Number(pid);
-    if (!Number.isSafeInteger(owner) || owner <= 0 || host !== hostname() || alive(owner)) {
+    // This PID with another start time was an exited process whose PID this one reuses, as
+    // happens to PID 1 when a container restarts.
+    const live =
+      !(owner === process.pid && host === hostname() && instance && instance !== INSTANCE) &&
+      alive(owner);
+    if (!Number.isSafeInteger(owner) || owner <= 0 || host !== hostname() || live) {
       const message = `Profile is locked by ${owner > 0 ? `PID ${owner} on ${host || 'an unknown host'}` : 'another process'}; remove ${path} only after confirming it has exited`;
-      if (host === hostname() && Number.isSafeInteger(owner) && owner > 0 && alive(owner))
+      if (host === hostname() && Number.isSafeInteger(owner) && owner > 0 && live)
         throw new ProfileInUseError(profile, message);
       throw new NodriverError(message);
     }

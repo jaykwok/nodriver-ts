@@ -164,6 +164,24 @@ test('a release that the browser exit overtakes is refused; a helper lost mid-re
   await assert.rejects(lost.release(), ReleaseUncertainError);
 });
 
+test('a release the helper refuses by id leaves the browser supervised', async () => {
+  const refusing = scriptedHelper((command) => [
+    JSON.stringify({
+      type: 'error',
+      id: command.id,
+      error: 'A virtual display cannot be handed off',
+    }),
+  ]);
+  await refusing.waitReady({ timeout: 1000 });
+  await assert.rejects(
+    refusing.release(),
+    (error) => !(error instanceof ReleaseUncertainError) && /virtual display/.test(String(error)),
+  );
+  // The refusal is not a helper failure: the pipes stay open and commands still go through.
+  assert.equal((refusing as unknown as { failure?: Error }).failure, undefined);
+  await assert.rejects(refusing.release(), /virtual display/);
+});
+
 test('the sweep removes only stale helper directories', async () => {
   const root = await mkdtemp(join(tmpdir(), 'nodriver-sweep-'));
   try {

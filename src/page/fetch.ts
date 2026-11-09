@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Frame } from './frames.ts';
 import { FetchCancelledError } from '../errors.ts';
-import { bounded, type WaitOptions } from '../utils.ts';
+import { bounded, MAX_TIMEOUT, timeoutValue, type WaitOptions } from '../utils.ts';
 export interface FetchOptions extends WaitOptions {
   method?: string;
   headers?: Record<string, string>;
@@ -109,6 +109,7 @@ export async function frameFetch<T>(
     throw new TypeError('responseType must be text, json or base64');
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 0)
     throw new RangeError('maxBytes must be a non-negative integer');
+  timeoutValue(timeout);
   signal?.throwIfAborted();
   const id = randomUUID();
   const { generation, session } = frame;
@@ -116,7 +117,7 @@ export async function frameFetch<T>(
   const request = frame.evaluate(
     pageFetch,
     { id, url, init, responseType, maxBytes },
-    { world: 'isolated', timeout: timeout + 5_000 },
+    { world: 'isolated', timeout: Math.min(timeout + 5_000, MAX_TIMEOUT) },
   );
   // Registered before bounded() subscribes, so it is set before the caller sees the outcome.
   let finished = false;

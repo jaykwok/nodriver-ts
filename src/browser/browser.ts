@@ -12,6 +12,7 @@ import type { TabScope } from './tab-scope.ts';
 import { Tab, type Environment } from '../page/tab.ts';
 import { Download } from './download.ts';
 import { ProxyForwarder } from '../optional/proxy.ts';
+import { verifyNativeEnvironment } from '../optional/native-verification.ts';
 import { WebSocketTransport } from '../transport/websocket.ts';
 import {
   abortReason,
@@ -116,6 +117,8 @@ export class Browser {
       for (const tab of this.tabMap.values()) tab.dispose();
       this.tabMap.clear();
       this.tabCreated.clear();
+      // Chrome disposes a forwarded context with the connection that created it.
+      for (const context of this.contexts) void context.proxy?.close().catch(() => {});
     });
   }
   static async launch(options: LaunchOptions = {}): Promise<Browser> {
@@ -177,6 +180,11 @@ export class Browser {
           await bounded(browser.maskHeadless(), configuring, 'Headless configuration');
         }
         step();
+        if (launched.nativeEnvironment) {
+          startup.enter('environment-configuration');
+          await verifyNativeEnvironment(browser, launched.nativeEnvironment, step);
+          step();
+        }
         return browser;
       } catch (e) {
         await launched.process.captureDiagnostics();

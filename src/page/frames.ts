@@ -328,6 +328,8 @@ export class Frame {
           const result = await this.evaluate(fn, arg, { ...options, ...step });
           return result ? result : undefined;
         } catch (e) {
+          // A handle into a replaced document never becomes valid again.
+          if (arg instanceof JSHandle && e instanceof StaleElementError) arg.assertValid();
           if (this.pending(e)) return undefined;
           throw e;
         }

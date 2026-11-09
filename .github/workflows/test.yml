@@ -46,6 +46,9 @@ jobs:
       - name: Install Xvfb
         if: runner.os == 'Linux'
         run: sudo apt-get install -y xvfb
+      - name: Install native environment test locales
+        if: runner.os == 'Linux'
+        run: sudo locale-gen fr_FR.UTF-8
       - run: npm ci
       # The runner image's Chrome is not pinned; record what this run actually tested.
       - name: Record versions

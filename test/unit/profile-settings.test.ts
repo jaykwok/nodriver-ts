@@ -5,6 +5,25 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import { Browser, NodriverError, updateProfileSettings } from '../../src/index.ts';
 
+test('WebRTC preferences are prepared and readable before the user hook, without launching', async () => {
+  let checked = false;
+  const stop = new Error('stop after inspecting prepared profile');
+  await assert.rejects(
+    Browser.launch({
+      executablePath: process.execPath,
+      webRtcIPHandlingPolicy: 'disable_non_proxied_udp',
+      prepareProfile: async (directory) => {
+        const prefs = JSON.parse(await readFile(join(directory, 'Default', 'Preferences'), 'utf8'));
+        assert.deepEqual(prefs.webrtc, { ip_handling_policy: 'disable_non_proxied_udp' });
+        checked = true;
+        throw stop;
+      },
+    }),
+    (error) => error === stop,
+  );
+  assert.ok(checked);
+});
+
 test('updateProfileSettings merges into Local State and Preferences and keeps other keys', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'nodriver-settings-'));
   t.after(() => rm(directory, { recursive: true, force: true }));

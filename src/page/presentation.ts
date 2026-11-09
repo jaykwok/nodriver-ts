@@ -46,8 +46,8 @@ export interface PresentationLeaseOptions {
   stopTimeout?: number;
   signal?: AbortSignal;
   /**
-   * Receives each frame. The frame is acknowledged once this settles, so Chrome sends no more
-   * frames than the receiver takes.
+   * Receives each frame. The frame is acknowledged once this settles, also when it throws, so
+   * Chrome sends no more frames than the receiver takes; handle errors inside it.
    */
   deliver?: (frame: EventParams<'Page.screencastFrame'>) => void | Promise<void>;
 }
@@ -340,7 +340,9 @@ export class PresentationLease {
         { sessionId: event.sessionId },
       );
     const deliver = this.options.deliver;
-    const ack = (deliver ? (async () => deliver(event))().then(acknowledge) : acknowledge()).then(
+    const ack = (
+      deliver ? (async () => deliver(event))().then(acknowledge, acknowledge) : acknowledge()
+    ).then(
       () => {
         if (!this.report.closed) this.report.acknowledgedFrames++;
       },

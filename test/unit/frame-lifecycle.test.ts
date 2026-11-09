@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import { expect } from '../fixtures/expect.ts';
 import { Connection } from '../../src/protocol/connection.ts';
-import { Frame, FrameManager } from '../../src/page/frames.ts';
+import { Frame, FrameManager, JSHandle } from '../../src/page/frames.ts';
+import { StaleElementError } from '../../src/errors.ts';
 import type { Tab } from '../../src/page/tab.ts';
 import { poll } from '../../src/utils.ts';
 
@@ -148,4 +149,18 @@ test('BFCache restores OOPIF ownership and nested trees omitted by the parent sn
     manager.dispose();
     await connection.close();
   }
+});
+
+test('waitForFunction fails at once on a handle from a replaced document', async () => {
+  const connection = new Connection({ send() {}, close() {} });
+  const session = connection.session('page');
+  const frame = new Frame(new FrameManager({} as Tab, session), 'frame', session);
+  frame.context = async () => 1;
+  const handle = new JSHandle(frame, { type: 'object', objectId: '1.1.1' });
+  frame.invalidate();
+  const started = performance.now();
+  await expect(
+    frame.waitForFunction((value) => !!value, handle, { timeout: 5000 }),
+  ).rejects.toBeInstanceOf(StaleElementError);
+  expect(performance.now() - started).toBeLessThan(1000);
 });

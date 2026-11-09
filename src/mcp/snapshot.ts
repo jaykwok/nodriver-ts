@@ -91,11 +91,15 @@ export function selectNodes(
   const selected: Array<{ node: AXNode; depth: number }> = [];
   const seen = new Set<string>();
   let capped = false;
-  const visit = (node: AXNode, depth: number, parentName: string) => {
-    if (seen.has(node.nodeId)) return;
+  // Depth first in document order, on an explicit stack: a page can nest deeper than the call
+  // stack allows.
+  const stack = starts.map((node) => ({ node, depth: 0, parentName: '' })).reverse();
+  for (let item = stack.pop(); item; item = stack.pop()) {
+    const { node, depth, parentName } = item;
+    if (seen.has(node.nodeId)) continue;
     if (selected.length >= MAX_SNAPSHOT_NODES) {
       capped = true;
-      return;
+      continue;
     }
     seen.add(node.nodeId);
     const role = String(node.role?.value ?? '');
@@ -108,12 +112,17 @@ export function selectNodes(
     if (include && options.interactiveOnly)
       include = INTERACTIVE.has(role) || axProperty(node, 'focusable') === true;
     if (include) selected.push({ node, depth });
-    for (const id of node.childIds ?? []) {
-      const child = byId.get(id);
-      if (child) visit(child, include ? depth + 1 : depth, include ? name : parentName);
+    const children = node.childIds ?? [];
+    for (let i = children.length - 1; i >= 0; i--) {
+      const child = byId.get(children[i]!);
+      if (child)
+        stack.push({
+          node: child,
+          depth: include ? depth + 1 : depth,
+          parentName: include ? name : parentName,
+        });
     }
-  };
-  for (const start of starts) visit(start, 0, '');
+  }
   return { selected, capped, rootFound: starts.length > 0 };
 }
 

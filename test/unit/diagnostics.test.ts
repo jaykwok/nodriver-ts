@@ -300,3 +300,18 @@ test('an unanswered font probe detach cannot hold the diagnostic', async () => {
     await dispose();
   }
 });
+
+test('alignment applies overrides within its deadline and reports a stalled application', async () => {
+  const tab = {
+    mainFrame: { id: 'main' },
+    diagnoseEnvironment: async () => ({ frames: [] }),
+    setEnvironment: () => new Promise(() => {}),
+  } as unknown as Tab;
+  const started = performance.now();
+  const report = await alignEnvironment(tab, {
+    environment: { timezone: 'Europe/Berlin' },
+    timeout: 100,
+  });
+  expect(performance.now() - started).toBeLessThan(2000);
+  expect(report.applicationError).toMatch(/deadline exceeded|timed out/);
+});

@@ -60,8 +60,14 @@ for (const transport of ['pipe', 'websocket'] as const) {
       expect(
         events.filter((e) => e.type === 'mousedown' && e.id === 'target').every((e) => e.trusted),
       ).toBe(true);
-      expect(first.trace.filter((e) => e.type === 'move').length).toBe(5);
-      expect(first.trace.map((e) => e.type).slice(-3)).toEqual(['down', 'pause', 'up']);
+      const types = first.trace.map((e) => e.type);
+      const press = types.indexOf('down');
+      expect(types.slice(0, press).filter((type) => type === 'move')).toHaveLength(5);
+      // The seeded stream decides whether the hold carries one 1 px slip.
+      expect([
+        ['down', 'pause', 'pause', 'up'],
+        ['down', 'pause', 'move', 'pause', 'up'],
+      ]).toContainEqual(types.slice(press));
       for (const frame of tab.frames) {
         const closed = await frame.waitForSelector('#closed-input');
         await closed.fill('');

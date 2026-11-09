@@ -8,17 +8,21 @@ on:
       - '.github/workflows/chromium-preview.yml'
       - 'package.json'
       - 'package-lock.json'
+      - 'src/index.ts'
+      - 'src/errors.ts'
+      - 'src/utils.ts'
       - 'src/browser/**'
-      - 'src/page/environment.ts'
-      - 'src/page/execution-context.ts'
-      - 'src/page/frames.ts'
-      - 'src/page/navigation.ts'
+      - 'src/dom/**'
+      - 'src/input/**'
+      - 'src/optional/**'
+      - 'src/page/**'
       - 'src/protocol/**'
       - 'src/transport/**'
       - 'test/ci-*.ts'
       - 'test/unit/execution-context.test.ts'
       - 'test/integration/runtime.test.ts'
       - 'test/integration/environment.test.ts'
+      - 'test/integration/native-environment.test.ts'
       - 'test/integration/churn.test.ts'
       - 'test/integration/site-data.test.ts'
       - 'test/fixtures/detection.ts'
@@ -69,6 +73,8 @@ jobs:
           sudo sysctl -w kernel.core_pattern=core
           echo "CHROME_PATH=${{ steps.chrome.outputs.chrome-path }}" >> "$GITHUB_ENV"
       - run: npm ci
+      - name: Install native environment test locales
+        run: sudo locale-gen fr_FR.UTF-8
       - name: Record actual browser and runtime versions
         run: |
           mkdir -p test-results
@@ -80,6 +86,9 @@ jobs:
       - name: Navigation, OOPIF and context invalidation (Pipe and WebSocket)
         if: success() || failure()
         run: npm run test:compat 2>&1 | tee test-results/compat.log
+      - name: Native environment across Worker types
+        if: success() || failure()
+        run: node --test --test-timeout=60000 test/integration/native-environment.test.ts 2>&1 | tee test-results/native-environment.log
       - name: Site data clearing (page session commands)
         if: success() || failure()
         run: node --test --test-concurrency=1 --test-timeout=60000 test/integration/site-data.test.ts 2>&1 | tee test-results/site-data.log

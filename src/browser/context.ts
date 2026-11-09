@@ -185,6 +185,10 @@ export class BrowserContext {
     const origin = httpOrigin(url);
     if (origin) this.usedOrigins.add(origin);
   }
+  /** @internal Drops an origin that only a library-owned page used. */
+  forgetOrigin(origin: string): void {
+    this.usedOrigins.delete(origin);
+  }
   /**
    * Visits each origin in one owned temporary tab whose document requests are fulfilled with an
    * empty page: the site is never contacted, cannot redirect, and runs no script.

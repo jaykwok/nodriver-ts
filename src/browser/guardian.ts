@@ -206,7 +206,8 @@ export class Guardian {
           this.state.exited = true;
           this.state.exitCode = message.exitCode ?? null;
           this.state.signal = message.signal ?? null;
-        } else if (message.type === 'error')
+        } else if (message.type === 'error' && message.id === undefined)
+          // An error that names a command refuses only that command, answered below.
           fail(new NodriverError(message.error ?? 'Browser guardian failed'));
         if (message.id !== undefined) {
           const request = this.requests.get(message.id);

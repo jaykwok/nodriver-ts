@@ -159,3 +159,16 @@ test('goto() completes with its document when that reaches the event before bein
   });
   assert.equal(await tab.goto('https://a.test/', { timeout: 2000 }), 'https://a.test/');
 });
+
+test('a navigation that becomes a download points to waitForDownload() despite its error text', async () => {
+  await using chrome = await ScriptedChrome.start();
+  await using browser = await chrome.connect();
+  const tab = browser.tabs[0]!;
+  chrome.handle('Page.navigate', () => ({
+    frameId: tab.mainFrame.id,
+    loaderId: 'download',
+    errorText: 'net::ERR_ABORTED',
+    isDownload: true,
+  }));
+  await assert.rejects(tab.goto('https://example.test/file.zip'), /use waitForDownload\(\)/);
+});

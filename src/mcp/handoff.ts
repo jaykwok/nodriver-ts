@@ -4,7 +4,7 @@ import { z } from 'zod';
 import type { Tab } from '../page/tab.ts';
 import { PresentationLease, type PresentationScreencastOptions } from '../page/presentation.ts';
 import type { EventParams } from '../protocol/connection.ts';
-import { delay } from '../utils.ts';
+import { abortReason, delay } from '../utils.ts';
 
 export interface RemoteHandoffAudit {
   event: 'started' | 'connected' | 'ended';
@@ -105,9 +105,21 @@ function matches(expected: Buffer | undefined, value: string | undefined | null)
   if (!expected || !value) return false;
   return timingSafeEqual(expected, digest(value));
 }
+/** `*` spans any characters. Literal parts are found left to right, never by backtracking. */
 function urlMatches(pattern: string, url: string): boolean {
-  const source = pattern.split('*').map((part) => part.replace(/[.+?^${}()|[\]\\/]/g, '\\$&'));
-  return new RegExp(`^${source.join('.*')}$`, 's').test(url);
+  const parts = pattern.split('*');
+  if (parts.length === 1) return pattern === url;
+  const first = parts[0]!,
+    last = parts.at(-1)!;
+  const end = url.length - last.length;
+  if (end < first.length || !url.startsWith(first) || !url.endsWith(last)) return false;
+  let at = first.length;
+  for (const part of parts.slice(1, -1)) {
+    const found = url.indexOf(part, at);
+    if (found < 0 || found + part.length > end) return false;
+    at = found + part.length;
+  }
+  return true;
 }
 
 /** The point of the tab viewport under a position within a frame, each axis from 0 to 1. */
@@ -209,6 +221,7 @@ export class RemoteHandoff {
   private lease?: PresentationLease;
   private keepAlive?: ReturnType<typeof setInterval>;
   private inputChain: Promise<unknown> = Promise.resolve();
+  private streaming: Promise<unknown> = Promise.resolve();
   private checking = false;
   private readonly offs: Array<() => void> = [];
   private readonly timers: Array<ReturnType<typeof setTimeout>> = [];
@@ -229,8 +242,13 @@ export class RemoteHandoff {
     this.tokenExpires = now + Math.min(init.options.tokenTtl ?? TOKEN_TTL, duration);
     this.ended = new Promise((resolve) => (this.markEnded = resolve));
     const expiry = setTimeout(() => void this.end('expired'), duration);
+    // A link nobody opened can no longer be used; the lease's tools need not wait any longer.
+    const unopened = setTimeout(() => {
+      if (!this.connected) void this.end('expired');
+    }, this.tokenExpires - now);
     expiry.unref();
-    this.timers.push(expiry);
+    unopened.unref();
+    this.timers.push(expiry, unopened);
     this.offs.push(this.tab.session.disconnected.on(() => void this.end('tab-closed')));
     if (init.resume) {
       const check = () => void this.checkCondition();
@@ -305,9 +323,16 @@ export class RemoteHandoff {
   authorized(secret: string | undefined): boolean {
     return this.active && matches(this.sessionHash, secret);
   }
-  /** Replaces any earlier stream: there is one viewer at a time. */
-  async frames(signal: AbortSignal): Promise<Response> {
+  /** Replaces any earlier stream: there is one viewer at a time. Requests open in turn. */
+  frames(signal: AbortSignal): Promise<Response> {
+    const opening = this.streaming.then(() => this.openStream(signal));
+    this.streaming = opening.catch(() => {});
+    return opening;
+  }
+  private async openStream(signal: AbortSignal): Promise<Response> {
     await this.stopStream();
+    if (!this.active) throw new HandoffEndedError();
+    if (signal.aborted) throw abortReason(signal);
     const channel = new FrameChannel(() => void this.stopStream(channel));
     const screencast = this.init.options.screencast ?? {
       format: 'jpeg',

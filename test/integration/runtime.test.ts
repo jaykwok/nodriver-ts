@@ -26,6 +26,14 @@ for (const transport of ['pipe', 'websocket'] as const) {
       ).toBe('input');
       expect(await tab.query('#input')).not.toBeNull();
       expect(await tab.evaluate('__hookCount')).toBe(1);
+      await tab.evaluate("document.getElementById('input').frameworkState = 'page-owned'");
+      const input = (await tab.query('#input'))!;
+      expect(await input.evaluate((el) => (el as any).frameworkState)).toBeUndefined();
+      expect(
+        await input.evaluate((el) => (el as any).frameworkState, undefined, { world: 'main' }),
+      ).toBe('page-owned');
+      expect(await input.attribute('id')).toBe('input');
+      expect(await tab.evaluate('__hookCount')).toBe(1);
       await tab.evaluate(
         "document.querySelector('#input').setAttribute('data-observed','yes')",
         undefined,

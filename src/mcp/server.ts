@@ -650,19 +650,20 @@ export function createBrowserMcpServer(
     pressDelay: range.optional(),
     keyDelay: range.optional(),
     scrollSteps: steps.optional(),
+    wheelProfile: z.enum(['trackpad', 'wheel']).optional(),
     targetInset: z.number().min(0).max(0.45).optional(),
     typing: z.enum(['auto', 'keys', 'insertText']).optional(),
     scroll: z.enum(['auto', 'wheel', 'dom']).optional(),
   });
   tool(
     'browser_input_policy',
-    'Set an explicit per-tab reproducible input policy. Default instant. Human mode is a trajectory/timing model with key-event typing and wheel scrolling, not a claim of physical input or undetectability.',
+    'Set an explicit per-tab reproducible input policy. Omitted fields take their defaults and the seed is kept; omitted moveDuration, moveSteps and scrollSteps are planned for each move and scroll. Default instant. Human mode is a trajectory/timing model with key-event typing and wheel scrolling, not a claim of physical input or undetectability.',
     { tabId, policy },
     write,
     async (args) => {
       const tab = session.tab(args.tabId);
       tab.setInputPolicy(args.policy);
-      return result({ policy: tab.inputBehavior.policy });
+      return result({ policy: structuredClone(tab.inputBehavior.policy) });
     },
   );
   tool(
@@ -1086,7 +1087,8 @@ export function createBrowserMcpServer(
         const handoff = manager.handoffs.get(args.handoffId, principal, leaseId);
         if (!handoff) throw new Error('Unknown or expired handoff');
         if (args.cancel) await handoff.end('cancelled');
-        else if (handoff.active) await waitForHandoff(handoff, args.timeout, signal);
+        // An ending handoff reports ended once the lease's tools can run again.
+        else await waitForHandoff(handoff, args.timeout, signal);
         const status = handoff.status();
         return result(
           status.state === 'ended' && !handoff.tab.closed
@@ -1165,18 +1167,27 @@ export function createBrowserMcpServer(
           const tab = session.tab(args.tabId);
           await tab.bringToFront();
           session.forgetFrontTab();
-          const { handoff, token } = manager.handoffs.create({
-            tab,
-            principal,
-            leaseId,
-            options: remoteOptions,
-            resume: args.resumeCondition,
-            release: manager.retain(principal, leaseId),
-            changed: (type) => session.changed(type, tab.id),
-            onEnded: () => {
-              if (session.remote === handoff) session.remote = undefined;
-            },
-          });
+          const release = manager.retain(principal, leaseId);
+          let created: ReturnType<typeof manager.handoffs.create>;
+          try {
+            created = manager.handoffs.create({
+              tab,
+              principal,
+              leaseId,
+              options: remoteOptions,
+              resume: args.resumeCondition,
+              release,
+              changed: (type) => session.changed(type, tab.id),
+              onEnded: () => {
+                if (session.remote === handoff) session.remote = undefined;
+              },
+            });
+          } catch (error) {
+            // A handoff that never started must not keep its lease from being reclaimed.
+            release();
+            throw error;
+          }
+          const { handoff, token } = created;
           if (handoff.active) session.remote = handoff;
           const url = `${origin}/handoff/${handoff.id}?token=${token}`;
           const { handoffId, expiresAt } = handoff.status();

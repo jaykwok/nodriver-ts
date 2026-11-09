@@ -6,8 +6,12 @@ export type StateKey = Uint8Array | string;
 
 const MAGIC = Buffer.from('NDSTATE1', 'latin1');
 const SCRYPT = { N: 2 ** 17, r: 8, p: 1 };
-/** Bounds a header's work factors, which are read before anything is authenticated. */
-const MAX_COST = 2 ** 20;
+/**
+ * Bounds a header's work factors, which are read before anything is authenticated: at most four
+ * times the memory and the work of the parameters written.
+ */
+const MAX_MEMORY = 4 * 128 * SCRYPT.N * SCRYPT.r;
+const MAX_WORK = 4 * SCRYPT.N * SCRYPT.r * SCRYPT.p;
 const FAILED = 'Cannot decrypt the state: wrong key, or the file was changed';
 interface Header {
   iv: string;
@@ -66,6 +70,7 @@ export async function decryptState(bytes: Uint8Array, key: StateKey): Promise<Sa
   } catch (cause) {
     throw new Error(FAILED, { cause });
   }
+  if (!header || typeof header !== 'object') throw new Error(FAILED);
   const iv = Buffer.from(String(header.iv), 'base64');
   if (iv.length !== 12) throw new Error(FAILED);
   let secret: Buffer;
@@ -73,16 +78,16 @@ export async function decryptState(bytes: Uint8Array, key: StateKey): Promise<Sa
     const kdf = header.scrypt;
     if (
       !kdf ||
-      !Number.isInteger(kdf.N) ||
+      typeof kdf !== 'object' ||
+      !Number.isSafeInteger(kdf.N) ||
       kdf.N < 2 ||
-      kdf.N > MAX_COST ||
       (kdf.N & (kdf.N - 1)) !== 0 ||
-      !Number.isInteger(kdf.r) ||
+      !Number.isSafeInteger(kdf.r) ||
       kdf.r < 1 ||
-      kdf.r > 32 ||
-      !Number.isInteger(kdf.p) ||
+      !Number.isSafeInteger(kdf.p) ||
       kdf.p < 1 ||
-      kdf.p > 16
+      128 * kdf.N * kdf.r > MAX_MEMORY ||
+      kdf.N * kdf.r * kdf.p > MAX_WORK
     )
       throw new Error(FAILED);
     secret = await derive(key, Buffer.from(String(kdf.salt), 'base64'), kdf).catch(

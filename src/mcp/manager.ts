@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { checkedInputPolicy } from '../input/behavior.ts';
 import { EventHub } from '../utils.ts';
 import { BrowserMcpSession, type BrowserMcpOptions } from './session.ts';
 import { BrowserPool } from './pool.ts';
@@ -56,7 +57,10 @@ export class BrowserSessionManager {
   readonly limits;
   readonly options: BrowserSessionManagerOptions;
   constructor(options: BrowserSessionManagerOptions = {}) {
-    this.options = options;
+    // An invalid policy fails here, not after each lease has opened a tab.
+    this.options = options.inputPolicy
+      ? { ...options, inputPolicy: checkedInputPolicy(options.inputPolicy) }
+      : options;
     if (options.launch && options.connect) throw new TypeError('Choose launch or connect');
     this.limits = {
       maxLeases: positive(options.maxLeases ?? 16, 'maxLeases'),
