@@ -258,7 +258,8 @@ test('a scope carries the pointer between runs and wheels whole notches', async 
       policy: { ...policy, wheelProfile: 'wheel', wheelNotch: 100, scrollSteps: undefined },
     });
     await scope.run(async (input) => {
-      await input.mouse.move(200, 150);
+      // The body margin: frames never come under this point, also once the page scrolls.
+      await input.mouse.move(5, 5);
     });
     await tab.evaluate('window.__clear()');
     const report = await scope.run(async (input) => {
@@ -268,9 +269,9 @@ test('a scope carries the pointer between runs and wheels whole notches', async 
     const events = await tab.evaluate<any[]>('window.__events');
     const wheels = events.filter((e) => e.type === 'wheel');
     expect(wheels.map((e) => [e.x, e.y, e.dy])).toEqual([
-      [200, 150, 100],
-      [200, 150, 100],
-      [200, 150, 100],
+      [5, 5, 100],
+      [5, 5, 100],
+      [5, 5, 100],
     ]);
     // The second run sent no move to put the pointer back. Chrome may move the hover after the
     // page scrolls, so only events before the first wheel event count.
