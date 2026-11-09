@@ -266,13 +266,20 @@ test('a scope carries the pointer between runs and wheels whole notches', async 
       await input.mouse.wheel(0, 250);
     });
     expect(report.sent).toMatchObject({ moves: 0, wheels: 3 });
-    const events = await tab.evaluate<any[]>('window.__events');
+    // Chrome answers a wheel event before the page handles it, and can merge events the page has
+    // not handled yet; the page sees the three notches in whole notches.
+    const events = await poll(
+      async () => {
+        const events = await tab.evaluate<any[]>('window.__events');
+        const total = events.filter((e) => e.type === 'wheel').reduce((sum, e) => sum + e.dy, 0);
+        return total >= 300 ? events : undefined;
+      },
+      { timeout: 5000 },
+      'three wheel notches',
+    );
     const wheels = events.filter((e) => e.type === 'wheel');
-    expect(wheels.map((e) => [e.x, e.y, e.dy])).toEqual([
-      [5, 5, 100],
-      [5, 5, 100],
-      [5, 5, 100],
-    ]);
+    expect(wheels.every((e) => e.x === 5 && e.y === 5 && e.dy > 0 && e.dy % 100 === 0)).toBe(true);
+    expect(wheels.reduce((sum, e) => sum + e.dy, 0)).toBe(300);
     // The second run sent no move to put the pointer back. Chrome may move the hover after the
     // page scrolls, so only events before the first wheel event count.
     const before = events.slice(0, events.indexOf(wheels[0]));

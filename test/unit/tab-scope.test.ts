@@ -185,9 +185,11 @@ test('newTab closes a tab Chrome creates after the caller stopped waiting', asyn
   controller.abort(new Error('stop'));
   await assert.rejects(aborted, /stop/);
   const closes = () => chrome.commands.filter((c) => c.method === 'Target.closeTarget').length;
-  for (let i = 0; i < 100 && closes() < 2; i++) await sleep(10);
+  const open = () => browser.pageTargets.some((info) => info.targetId === late);
+  // The target leaves pageTargets once its destruction event arrives, after the close command.
+  for (let i = 0; i < 100 && (closes() < 2 || open()); i++) await sleep(10);
   assert.equal(closes(), 2);
-  assert.ok(!browser.pageTargets.some((info) => info.targetId === late));
+  assert.ok(!open());
 });
 
 test('one timeout covers opening a scope tab and its first navigation', async () => {
