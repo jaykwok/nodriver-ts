@@ -8,12 +8,10 @@ The default `instant` policy performs fast, deterministic actions. `tab.setInput
 tab.setInputPolicy({
   mode: 'human',
   seed: 42,
-  moveDuration: [90, 220],
-  moveSteps: [8, 18],
   pause: [0, 15],
   pressDelay: [25, 70],
   keyDelay: [35, 110],
-  scrollSteps: [3, 8],
+  wheelProfile: 'trackpad', // trackpad | wheel
   targetInset: 0.2,
   typing: 'auto', // auto | keys | insertText; auto uses key events in human mode
   scroll: 'auto', // auto | wheel | dom; auto first wheels the element close to the viewport in human mode
@@ -39,9 +37,24 @@ const popup = await page.waitForPopup(); // human
 
 ## Parameters
 
-Times are in milliseconds and each range is a minimum/maximum: step counts 1–120, times 0–3000, and `targetInset` (the fraction of the visible target excluded at each edge) 0–0.45. Omitted policy fields reset to their defaults, except the seed. When no seed is given, one is generated with Node crypto when the Tab's input behavior is created, and it is kept across actions, mode switches and configure calls that omit it. An explicit seed, even the current one, restarts that behavior's random stream; other tabs are unaffected. The policy cannot be changed while an action is running, and it never introduces typos, extra submits or random business actions.
+Times are in milliseconds and each range is a minimum/maximum: step counts 1–120, times 0–3000, and `targetInset` (the fraction of the visible target excluded at each edge) 0–0.45. Omitted policy fields, and fields set to `undefined`, reset to their defaults, except the seed. When no seed is given, one is generated with Node crypto when the Tab's input behavior is created, and it is kept across actions, mode switches and configure calls that omit it. An explicit seed, even the current one, restarts that behavior's random stream; other tabs are unaffected. The policy cannot be changed while an action is running, and it never introduces typos, extra submits or random business actions.
+
+Omitting `moveDuration`, `moveSteps` or `scrollSteps` means automatic planning, described [below](#human-motion-planning); an explicit range replaces it. The MCP tool `browser_input_policy` takes the same fields.
 
 The same seed, starting point, layout, configuration and call sequence reproduce the same planned trajectory and delays; actual scheduling, frame rate and event timestamps can still differ by milliseconds. The seed alone reproduces an action only together with the random draws before it; `randomState` restarts the PRNG at an action boundary. Reproducing an entire action also requires the same policy, layout, pointer/keyboard state and arguments. Without an explicit seed, separate runs use different random sequences.
+
+## Human motion planning
+
+Human input is planned in Node; nothing runs in the page to produce it.
+
+- **Paths**: cubic Bézier curves with minimum-jerk progress and 8–12 Hz motion noise that fades in and out. A path that starts and ends inside the viewport does not cross its top or left edge.
+- **Duration**: `70 + 90 * log2(1 + distance / targetWidth)` ms, at most 1800 ms, planned at about 120 points per second. `click()` uses the smaller side of the element's box as `targetWidth`; `hover()`, `mouse.move()` and the approach of `drag()` use 24 px. An explicit `moveDuration` or `moveSteps` replaces the planned duration or point count. With the button held, `drag()` moves in its `steps` equal straight steps and waits `pause` plus 10 ms after each.
+- **Overshoot**: a move over 350 px overshoots by 4–12 px in a quarter of cases and adds 3–5 correction points, which can take it past 1800 ms. There is no overshoot while a button is held, or with an explicit `moveDuration` or `moveSteps`.
+- **Timing**: each point waits its planned delay. The host's timer resolution can stretch short waits; on Windows it is often about 16 ms, which lowers the actual rate.
+- **Landing points**: truncated Gaussian sampling within `targetInset` over the part of the element inside the viewport, centred horizontally and slightly above centre vertically.
+- **Presses**: some presses include a 1 px held-pointer move halfway through `pressDelay`. Element clicks hit-test it first and skip it when the check fails, and it never happens inside out-of-process frames. The release uses the final position.
+- **Scrolling**: `wheelProfile: 'trackpad'` (default) sends accelerating then decaying wheel events, one per 18 px of distance and about 8 ms apart; `'wheel'` sends equal events, one per 100 px and 45 ms apart. Both send 1–120 events, add `pause` to each interval and keep the signed, fractional total. An explicit `scrollSteps` sets the number of events. Scrolling an element into view in human mode uses the wheel for up to 3 s, and Chrome scrolls the rest.
+- **Typing**: delays are log-normal, bounded by `keyDelay` and weighted by QWERTY distance and hand alternation. Lowercase `th`, `he`, `in` and `er` can overlap for a planned 5–12 ms; modified keys, repeated keys and non-ASCII segments do not. Cancellation releases both keys.
 
 ## Text and keys
 
@@ -117,7 +130,7 @@ Before each update and commit, the controller checks that the original element s
 
 Pass `{ forceCancel: true }` to `keyboard.compose()` or scope `run()` to send an empty `Input.imeSetComposition` at the session's current focus during explicit `cancel()` and automatic cleanup, even if focus or the document changed. This cancels a composition that followed focus into another editor, and may also cancel that editor's own composition. Once focus has left the original editor, the cancel is sent only if the current focus is an editor the probes can inspect and its selection is collapsed: without a composition, Chrome deletes the selected text on an empty update, and a composition interrupted by a later focus move has already been finished into the original editor. Otherwise no cancel is sent and cleanup fails as without `forceCancel`; this includes a range selection set by the last `update()` and focus in a cross-origin frame. Updates and commits still require the original focus and document, and a failed commit remains an interrupted action even when forced cleanup succeeds. An acknowledged cancel with otherwise successful cleanup leaves the page usable; a failed or unacknowledged cancel still blocks input and is not retried. No cancel is sent if the first update failed its focus checks before dispatch.
 
-Focus checks and CDP input are separate operations, so callers should verify the resulting document. Runtime is not enabled and browser methods are not patched. Focus probes run in an isolated world that the library creates with `Page.createIsolatedWorld` and reuses while the document lives, so page scripts cannot observe them. Pass `executionContextId` to `compose()` or `run()` to use your own context instead; pass an ID of the current document. The controller resolves that context's global object once, before the first update, and probes through that handle, so a newer document that reuses the numeric ID is never probed. The DOM domain is never enabled: closed shadow roots are inspected with `DOM.describeNode` and `DOM.resolveNode`, which do not enable it.
+Focus checks and CDP input are separate operations, so callers should verify the resulting document. Runtime is not enabled and browser methods are not patched. Focus probes run in an isolated world that the library creates with `Page.createIsolatedWorld` and reuses while the document lives, so page scripts cannot replace the JavaScript primitives they use; focus and DOM effects remain observable. Pass `executionContextId` to `compose()` or `run()` to use your own context instead; pass an ID of the current document. The controller resolves that context's global object once, before the first update, and probes through that handle, so a newer document that reuses the numeric ID is never probed. The DOM domain is never enabled: closed shadow roots are inspected with `DOM.describeNode` and `DOM.resolveNode`, which do not enable it.
 
 The first `update()` fails before any composition command unless the focus can take text: a text `input` (`text`, `search`, `url`, `tel`, `email`, `password` or `number`) or a `textarea` that is neither read-only nor disabled (including through a disabled fieldset), or contenteditable content, including `designMode` documents. The failure is an `InputActionError` whose `cause` is an `ActionabilityError`. The controller follows focus into open and closed shadow roots and same-origin frames, and checks contenteditable content by its editing host, because Chrome moves focus from a focusable descendant to the editing host when composition starts. Focus inside a cross-origin frame cannot be inspected from the parent session: its editability is unknown, composition proceeds, the report trace records `compositionFocusUnknown`, and focus changes inside that frame are not detected. Compose through the frame's own target session to get the full checks. Timeouts, disconnects and document changes still stop the action.
 

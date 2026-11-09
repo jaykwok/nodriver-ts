@@ -70,34 +70,34 @@ Run `nodriver-mcp --help` for every option.
 
 The 26 default tools:
 
-| Tool                   | Purpose                                                                                                        |
-| ---------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `browser_tabs`         | Show connection state, tabs, frames and pending JS dialogs; does not launch a browser                          |
-| `browser_open`         | Lazily launch or connect to a browser and open a new tab; returns a tabId                                      |
-| `browser_navigate`     | Navigate an open tab; waitUntil supports commit/domcontentloaded/load/networkidle                              |
-| `browser_history`      | Back, forward or reload; returns moved:false when there is no history entry                                    |
-| `browser_close_tab`    | Close the given tab                                                                                            |
-| `browser_snapshot`     | Indented accessibility tree with `[e12]` refs and layout boxes; interactiveOnly, viewportOnly, root, offset    |
-| `browser_find`         | CSS/XPath/text query returning refs, role, name, tag, text summary and visibility                              |
-| `browser_wait`         | Wait for a matching element (optionally visible) in the selected frame; returns a new ref and description      |
-| `browser_click`        | Click after checking stability, visibility and obstruction; supports button and clickCount                     |
-| `browser_click_at`     | Click viewport coordinates (canvas, maps and so on) without an obstruction check                               |
-| `browser_hover`        | Move the pointer over an element without pressing                                                              |
-| `browser_drag`         | Drag from an element to another element (`to`) or to viewport coordinates (`toX` and `toY`)                    |
-| `browser_fill`         | Replace an input's content; supports Chinese and emoji                                                         |
-| `browser_type`         | Type at the caret/selection; in human mode US-layout characters use key events                                 |
-| `browser_press_key`    | Send a key or chord to the focused element, such as Enter, Shift+Tab, Control+A (Meta+A selects all on macOS)  |
-| `browser_select`       | Change the selected value of a select                                                                          |
-| `browser_check`        | Set the checked state of a checkbox/radio                                                                      |
-| `browser_scroll`       | Scroll an element into view (ref), or send a wheel delta at given coordinates                                  |
-| `browser_dialog`       | Accept or dismiss the current JS dialog; supports promptText                                                   |
-| `browser_screenshot`   | PNG/JPEG/WebP of the viewport, full page or an element (ref); quality, scale, and marks to label refs          |
-| `browser_network`      | Record recent responses on demand (URL, status, type, MIME), without headers or bodies                         |
-| `browser_evaluate`     | Run an async JS function body in a given tab/frame, with JSON arguments and result                             |
-| `browser_input_policy` | Set a tab's instant/human policy, seed, rhythm, typing and scroll mode                                         |
-| `browser_environment`  | Structured diagnostics or explicit alignment; network probes and the GeoIP resolver are configured by the host |
-| `browser_close`        | Close an owned browser or disconnect from an external one; you can open again afterwards                       |
-| `browser_handoff`      | Ask the user to finish a manual step, in a visible window or (mode remote, HTTP) through a private viewer link |
+| Tool                   | Purpose                                                                                                                                                |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `browser_tabs`         | Show connection state, tabs, frames and pending JS dialogs; does not launch a browser                                                                  |
+| `browser_open`         | Lazily launch or connect to a browser and open a new tab; returns a tabId                                                                              |
+| `browser_navigate`     | Navigate an open tab; waitUntil supports commit/domcontentloaded/load/networkidle                                                                      |
+| `browser_history`      | Back, forward or reload; returns moved:false when there is no history entry                                                                            |
+| `browser_close_tab`    | Close the given tab                                                                                                                                    |
+| `browser_snapshot`     | Indented accessibility tree with `[e12]` refs and layout boxes; interactiveOnly, viewportOnly, root, offset                                            |
+| `browser_find`         | CSS/XPath/text query returning refs, role, name, tag, text summary and visibility                                                                      |
+| `browser_wait`         | Wait for a matching element (optionally visible) in the selected frame; returns a new ref and description                                              |
+| `browser_click`        | Click after checking stability, visibility and obstruction; supports button and clickCount                                                             |
+| `browser_click_at`     | Click viewport coordinates (canvas, maps and so on) without an obstruction check                                                                       |
+| `browser_hover`        | Move the pointer over an element without pressing                                                                                                      |
+| `browser_drag`         | Drag from an element to another element (`to`) or to viewport coordinates (`toX` and `toY`)                                                            |
+| `browser_fill`         | Replace an input's content; supports Chinese and emoji                                                                                                 |
+| `browser_type`         | Type at the caret/selection; in human mode US-layout characters use key events                                                                         |
+| `browser_press_key`    | Send a key or chord to the focused element, such as Enter, Shift+Tab, Control+A (Meta+A selects all on macOS)                                          |
+| `browser_select`       | Change the selected value of a select                                                                                                                  |
+| `browser_check`        | Set the checked state of a checkbox/radio                                                                                                              |
+| `browser_scroll`       | Scroll an element into view (ref), or send a wheel delta at given coordinates                                                                          |
+| `browser_dialog`       | Accept or dismiss the current JS dialog; supports promptText                                                                                           |
+| `browser_screenshot`   | PNG/JPEG/WebP of the viewport, full page or an element (ref); quality, scale, and marks to label refs                                                  |
+| `browser_network`      | Record recent responses on demand (URL, status, type, MIME), without headers or bodies                                                                 |
+| `browser_evaluate`     | Run an async JS function body in a given tab/frame, with JSON arguments and result                                                                     |
+| `browser_input_policy` | Set a tab's instant/human policy, seed, time and step ranges, wheel profile, `targetInset`, typing and scroll mode ([parameters](input.md#parameters)) |
+| `browser_environment`  | Structured diagnostics or explicit alignment; network probes and the GeoIP resolver are configured by the host                                         |
+| `browser_close`        | Close an owned browser or disconnect from an external one; you can open again afterwards                                                               |
+| `browser_handoff`      | Ask the user to finish a manual step, in a visible window or (mode remote, HTTP) through a private viewer link                                         |
 
 Optional tools that appear once the host configures a directory:
 
@@ -151,7 +151,7 @@ Text results provide both `structuredContent` and JSON text. Screenshots are ret
 
 ### Input policy and environment
 
-The default policy is instant; human mode is described in [Input](input.md). A tool error from an input action that stopped early carries `partialInput`, the report of that action (`action`, `status`, `completedSegments`, `events`, `phase`, `cleanup`, `cleanupErrors`, `trace`, `seed` and `randomState`; see [Input](input.md)). It shows how far the input got, since nothing is replayed. `browser_tabs` shows the last action of each tab as `lastInput`, reduced to `action`, `status`, `events`, `completedSegments` and `cleanup`.
+The default policy is instant; human mode is described in [Input](input.md). A tool error from an input action that stopped early carries `partialInput`, the report of that action (`action`, `status`, `completedSegments`, `events`, `dispatched`, `phase`, `cleanup`, `cleanupErrors`, `trace`, `seed` and `randomState`; see [Input](input.md)). It shows how far the input got, since nothing is replayed. `browser_tabs` shows the last action of each tab as `lastInput`, reduced to `action`, `status`, `events`, `completedSegments` and `cleanup`.
 
 Environment fields, override verification and network restrictions are described in [Environment](environment.md); nothing on the external network is probed unless the host configures a probe. Diagnostics and alignment create temporary resources or send explicit Emulation configuration, so `browser_environment` is not marked readOnly.
 

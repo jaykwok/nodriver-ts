@@ -23,7 +23,7 @@
 
 Chromium 在未指定上下文时把 DOM 节点包装到所属 frame 的主世界，见 [ResolveNode 源码](https://github.com/chromium/chromium/blob/main/third_party/blink/renderer/core/inspector/resolve_node.cc)。[V8 的 objectId 格式](https://github.com/v8/v8/blob/main/src/inspector/remote-object-id.cc)是内部实现，CDP 不保证其稳定。
 
-独立的 [Chromium 预览版工作流](../../.github/workflows/chromium-preview.yml) 在 Linux/Node.js 24 上运行 Beta、Dev、Canary：每周一次、手动触发，以及修改相关核心/审计文件的 PR。它记录实际浏览器版本，运行 `test:audit`、`test:compat`（Pipe 与 WebSocket 下的主世界发现、导航、OOPIF 和上下文失效）、差分回归门槛和 [Worker 启动环境基准](worker-environment.md)，不重试。其结果不参与发布判定，发布只等待打标签提交上的回归与平台工作流。预览版失败时通过调整发现逻辑处理，绝不增加 `Runtime.enable` 回退。
+独立的 [Chromium 预览版工作流](../../.github/workflows/chromium-preview.yml) 在 Linux/Node.js 24 上运行 Beta、Dev、Canary：每周一次、手动触发，以及修改相关核心/审计文件的 PR。它记录实际浏览器版本，运行 `test:audit`、`test:compat`（Pipe 与 WebSocket 下的主世界发现、导航、OOPIF 和上下文失效）、[原生启动环境](native-environment.md)与站点数据清除测试、差分回归门槛和 [Worker 启动环境基准](worker-environment.md)，不重试。其结果不参与发布判定，发布只等待打标签提交上的回归与平台工作流。预览版失败时通过调整发现逻辑处理，绝不增加 `Runtime.enable` 回退。
 
 在大页面上读取完整 AX 树需要时间（见[分阶段性能结果](performance-phases.md)）；文本编辑与完整 AX 读取交替进行时，Chrome 会保留部分 Blink 内存直到导航（见[长稳测试](soak.md)）。页面自有探针看不到直接的 AX 信号，但这不代表 AX 读取无法被观察。[差分审计](differential-audit.md)分离了启动参数、端点、原始连接、库初始化、覆盖与操作。
 
@@ -68,7 +68,7 @@ CreepJS、BrowserScan 与 Pixelscan，Windows 上的 Chrome 155 / Pipe。每格�
 ## 仍可观察的特征
 
 1. **Headless**：`maskHeadless` 只改 UA 与 UA-CH，屏幕尺寸（如 800×600）等其他 headless 信号不变，有界面模式也不保证隐藏全部特征。推荐有界面模式；无图形桌面时须显式选择 headless，不自动降级。
-2. **执行世界**：`evaluate()` 默认在主世界运行，以便访问页面业务对象，页面可以挂钩自己的方法。通用 DOM 读取可用 `query()` 或 `evaluate(fn, arg, { world: 'isolated' })`；隔离世界也共享 DOM。
+2. **执行世界**：`tab.evaluate()` 和 `frame.evaluate()` 默认在主世界运行，以便访问页面业务对象，页面可以挂钩自己的方法。查询和 `Element.evaluate()` 默认使用隔离世界；其他通用 DOM 读取可传入 `{ world: 'isolated' }`。隔离世界也共享 DOM。
 3. **环境一致性**：UA、Client Hints、语言、时区、屏幕、字体、GPU、Worker 信息和代理出口需要分别测量。有界面和 headless 模式默认都保留原生值；可选的伪装只修改页面/Dedicated Worker 的 UA，可能与 Shared/Service Worker 矛盾。只改一个字段会造成不一致，`setEnvironment()` 不负责完整的 Worker/设备一致性。
 4. **输入**：点击和文字经 CDP Input 派发，页面仍能观察时序与轨迹；select 等 DOM 改值派发合成事件。不承诺所有操作都像物理设备输入。
 5. **外部因素**：连接前已存在的 DevTools 或其他 CDP 客户端、调用者手动启用的域、TLS/IP 信誉、代理与 WebRTC 出口都不在默认行为的覆盖范围内。Pipe 只减少本机调试端口暴露。

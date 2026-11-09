@@ -18,16 +18,16 @@ try {
 
 快照包含 `stage`、`elapsedMs`、`stageElapsedMs` 和可选的 `process`。时间使用单调时钟，在清理失败的自有进程之前采样，因此不含进程终止的等待。子进程尚未创建时以及 `Browser.connect()` 失败时没有 `process`；否则它包含 `pid`、`exited`、`exitCode`、`signal`、`stderr` 和 `stderrStatus`。退出码或信号为 null 表示没有观测到相应的退出状态，并不代表执行成功。快照是冻结的，之后清理终止 Chrome 时也不会改变。
 
-| 阶段                        | 工作                                                   |
-| --------------------------- | ------------------------------------------------------ |
-| `process-launch`            | 查找可执行文件并启动 OS 进程，包括监管辅助进程         |
-| `profile-preparation`       | 创建 profile、加锁和生成启动配置                       |
-| `port-file`                 | 等待有效的 `DevToolsActivePort`（仅 WebSocket launch） |
-| `endpoint-discovery`        | 通过 HTTP `/json/version` 发现端点（仅 connect）       |
-| `websocket-connect`         | 建立 WebSocket 传输                                    |
-| `protocol-handshake`        | `Browser.getVersion`                                   |
-| `target-initialization`     | 上下文/target 发现、自动附加和启动 Tab 就绪            |
-| `environment-configuration` | 可选的 headless UA 配置                                |
+| 阶段                        | 工作                                                                                                                  |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `process-launch`            | 检查选项、查找可执行文件并启动 OS 进程，包括监管辅助进程                                                              |
+| `profile-preparation`       | 创建 profile、加锁和生成启动配置                                                                                      |
+| `port-file`                 | 等待有效的 `DevToolsActivePort`（仅 WebSocket launch）                                                                |
+| `endpoint-discovery`        | 通过 HTTP `/json/version` 发现端点（仅 connect）                                                                      |
+| `websocket-connect`         | 建立 WebSocket 传输                                                                                                   |
+| `protocol-handshake`        | `Browser.getVersion`                                                                                                  |
+| `target-initialization`     | 上下文/target 发现、自动附加和启动 Tab 就绪                                                                           |
+| `environment-configuration` | 准备 profile 之前的[原生环境](native-environment.md)查询与宿主检查；target 初始化之后的 `maskHeadless` 与原生环境检查 |
 
 所有阶段共用一个总初始化期限，`stage` 指出失败或超时的那一步操作。失败清理有独立的终止期限。非法的超时时间参数会在初始化之前被拒绝。
 

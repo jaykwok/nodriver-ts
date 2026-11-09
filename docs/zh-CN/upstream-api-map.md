@@ -146,8 +146,8 @@
 | `element.Element.remote_object`              | Frame.evaluateHandle                                              |
 | `element.Element.object_id`                  | JSHandle.object.objectId（绑定文档代次）                          |
 | `element.Element.click`                      | Element.click                                                     |
-| `element.Element.get_js_attributes`          | Element.evaluate                                                  |
-| `element.Element.apply`                      | Element.evaluate                                                  |
+| `element.Element.get_js_attributes`          | Element.evaluate(fn, arg, { world: 'main' })                      |
+| `element.Element.apply`                      | Element.evaluate(fn, arg, { world: 'main' })                      |
 | `element.Element.get_position`               | DOM.getBoxModel / Element.evaluate(getBoundingClientRect)         |
 | `element.Element.mouse_click`                | Element.click / Mouse.click                                       |
 | `element.Element.mouse_move`                 | Element.hover / Mouse.move                                        |

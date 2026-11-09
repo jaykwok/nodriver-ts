@@ -70,34 +70,34 @@ HTTP 与 socket 服务只接受本机连接，并要求 `NODRIVER_MCP_TOKEN`（�
 
 默认 26 个工具：
 
-| 工具                   | 用途                                                                                                  |
-| ---------------------- | ----------------------------------------------------------------------------------------------------- |
-| `browser_tabs`         | 查看连接状态、标签页、frame 和待处理的 JS 对话框；不启动浏览器                                        |
-| `browser_open`         | 懒启动或连接浏览器并打开新标签页，返回 tabId                                                          |
-| `browser_navigate`     | 导航已打开的标签页；waitUntil 支持 commit/domcontentloaded/load/networkidle                           |
-| `browser_history`      | 后退、前进或刷新；没有历史项时返回 moved:false                                                        |
-| `browser_close_tab`    | 关闭指定标签页                                                                                        |
-| `browser_snapshot`     | 缩进文本形式的可访问性树、`[e12]` 引用与布局框；interactiveOnly、viewportOnly、root 子树、offset 分页 |
-| `browser_find`         | CSS/XPath/文本查询，返回引用、角色、名称、标签、文本摘要与可见性                                      |
-| `browser_wait`         | 在所选 frame 中等待匹配元素出现（可要求可见），返回新引用及描述                                       |
-| `browser_click`        | 检查稳定性、可见性和遮挡后点击；支持 button、clickCount                                               |
-| `browser_click_at`     | 点击视口坐标（canvas、地图等），不做遮挡检查                                                          |
-| `browser_hover`        | 把指针移到元素上，不按下                                                                              |
-| `browser_drag`         | 从元素拖到另一个元素（`to`）或视口坐标（`toX` 与 `toY`）                                              |
-| `browser_fill`         | 替换输入内容，支持中文与 emoji                                                                        |
-| `browser_type`         | 在光标/选区处输入；human 模式下 US 布局字符使用按键事件                                               |
-| `browser_press_key`    | 向焦点元素发送按键或组合键，如 Enter、Shift+Tab、Control+A（macOS 全选用 Meta+A）                     |
-| `browser_select`       | 修改 select 的选中值                                                                                  |
-| `browser_check`        | 设置 checkbox/radio 的选中状态                                                                        |
-| `browser_scroll`       | 把元素滚动进视口（ref），或在指定坐标发送滚轮增量                                                     |
-| `browser_dialog`       | 接受或取消当前 JS 对话框，支持 promptText                                                             |
-| `browser_screenshot`   | 视口、整页或元素（ref）的 PNG/JPEG/WebP，可设 quality、scale，marks 在图上标注 ref                    |
-| `browser_network`      | 按需记录最近的响应（URL、状态、类型、MIME），不含响应头和响应体                                       |
-| `browser_evaluate`     | 在指定标签页/frame 执行异步 JS 函数体，参数与结果均为 JSON                                            |
-| `browser_input_policy` | 设置标签页的 instant/human 策略、种子、节奏、打字与滚动方式                                           |
-| `browser_environment`  | 结构化诊断或显式对齐；网络探针和 GeoIP 解析器由宿主配置                                               |
-| `browser_close`        | 关闭自有浏览器或断开外部浏览器；之后可再次 open                                                       |
-| `browser_handoff`      | 请用户在浏览器中完成手工操作并确认；需要可访问的 UI 和 elicitation.form                               |
+| 工具                   | 用途                                                                                                                      |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `browser_tabs`         | 查看连接状态、标签页、frame 和待处理的 JS 对话框；不启动浏览器                                                            |
+| `browser_open`         | 懒启动或连接浏览器并打开新标签页，返回 tabId                                                                              |
+| `browser_navigate`     | 导航已打开的标签页；waitUntil 支持 commit/domcontentloaded/load/networkidle                                               |
+| `browser_history`      | 后退、前进或刷新；没有历史项时返回 moved:false                                                                            |
+| `browser_close_tab`    | 关闭指定标签页                                                                                                            |
+| `browser_snapshot`     | 缩进文本形式的可访问性树、`[e12]` 引用与布局框；interactiveOnly、viewportOnly、root 子树、offset 分页                     |
+| `browser_find`         | CSS/XPath/文本查询，返回引用、角色、名称、标签、文本摘要与可见性                                                          |
+| `browser_wait`         | 在所选 frame 中等待匹配元素出现（可要求可见），返回新引用及描述                                                           |
+| `browser_click`        | 检查稳定性、可见性和遮挡后点击；支持 button、clickCount                                                                   |
+| `browser_click_at`     | 点击视口坐标（canvas、地图等），不做遮挡检查                                                                              |
+| `browser_hover`        | 把指针移到元素上，不按下                                                                                                  |
+| `browser_drag`         | 从元素拖到另一个元素（`to`）或视口坐标（`toX` 与 `toY`）                                                                  |
+| `browser_fill`         | 替换输入内容，支持中文与 emoji                                                                                            |
+| `browser_type`         | 在光标/选区处输入；human 模式下 US 布局字符使用按键事件                                                                   |
+| `browser_press_key`    | 向焦点元素发送按键或组合键，如 Enter、Shift+Tab、Control+A（macOS 全选用 Meta+A）                                         |
+| `browser_select`       | 修改 select 的选中值                                                                                                      |
+| `browser_check`        | 设置 checkbox/radio 的选中状态                                                                                            |
+| `browser_scroll`       | 把元素滚动进视口（ref），或在指定坐标发送滚轮增量                                                                         |
+| `browser_dialog`       | 接受或取消当前 JS 对话框，支持 promptText                                                                                 |
+| `browser_screenshot`   | 视口、整页或元素（ref）的 PNG/JPEG/WebP，可设 quality、scale，marks 在图上标注 ref                                        |
+| `browser_network`      | 按需记录最近的响应（URL、状态、类型、MIME），不含响应头和响应体                                                           |
+| `browser_evaluate`     | 在指定标签页/frame 执行异步 JS 函数体，参数与结果均为 JSON                                                                |
+| `browser_input_policy` | 设置标签页的 instant/human 策略、种子、时间与步数范围、滚轮类型、`targetInset`、打字与滚动方式（见[参数](input.md#参数)） |
+| `browser_environment`  | 结构化诊断或显式对齐；网络探针和 GeoIP 解析器由宿主配置                                                                   |
+| `browser_close`        | 关闭自有浏览器或断开外部浏览器；之后可再次 open                                                                           |
+| `browser_handoff`      | 请用户在浏览器中完成手工操作并确认；需要可访问的 UI 和 elicitation.form                                                   |
 
 宿主配置目录后出现的可选工具：
 
@@ -151,7 +151,7 @@ HTTP 与 socket 服务只接受本机连接，并要求 `NODRIVER_MCP_TOKEN`（�
 
 ### 输入策略与环境
 
-默认策略为 instant；human 模式见[输入](input.md)。输入动作提前结束时，工具错误带有 `partialInput`，即该动作的报告（`action`、`status`、`completedSegments`、`events`、`phase`、`cleanup`、`cleanupErrors`、`trace`、`seed` 和 `randomState`，见[输入](input.md)）。由于不会重放任何动作，它用来表明输入进行到了哪一步。`browser_tabs` 以 `lastInput` 显示每个标签页的最后一个动作，只含 `action`、`status`、`events`、`completedSegments` 和 `cleanup`。
+默认策略为 instant；human 模式见[输入](input.md)。输入动作提前结束时，工具错误带有 `partialInput`，即该动作的报告（`action`、`status`、`completedSegments`、`events`、`dispatched`、`phase`、`cleanup`、`cleanupErrors`、`trace`、`seed` 和 `randomState`，见[输入](input.md)）。由于不会重放任何动作，它用来表明输入进行到了哪一步。`browser_tabs` 以 `lastInput` 显示每个标签页的最后一个动作，只含 `action`、`status`、`events`、`completedSegments` 和 `cleanup`。
 
 环境字段、覆盖核验和网络限制见[环境](environment.md)；宿主未配置探针时不会探测外网。诊断与对齐会创建临时资源或发送显式 Emulation 配置，因此 `browser_environment` 没有标为 readOnly。
 

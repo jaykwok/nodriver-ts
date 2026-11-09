@@ -145,11 +145,11 @@ SSE 断流会取消对应请求，但不释放租约，也不影响其他请求�
 
 `resumeCondition` 满足、用户点击完成、取消、标签页关闭或过期，任一发生即结束接管。`resumeCondition` 为 `{ url?, selector?, timeout }`：`url` 是主 frame 的完整 URL，`*` 匹配任意字符；`selector` 在隔离世界中查询；同时给出时两者都要满足。`reason` 的取值为 `condition`、`completed`、`cancelled`、`expired`、`tab-closed` 或 `released`。除非主机设置 `maxDuration`，接管最长 15 分钟。
 
-接管期间，该租约的其他工具立即以 `HandoffActiveError` 失败，不会排队，`browser_tabs` 和 `browser_handoff_wait` 除外。闲置清理不会回收该租约。结束后请重新读取快照，原有 ref 可能已失效。
+接管期间，该租约的其他工具立即以 `HandoffActiveError` 失败，不会排队，`browser_tabs` 和 `browser_handoff_wait` 除外。`browser_handoff_wait` 报告 `ended` 后，这些工具即可再次运行。闲置清理不会回收该租约。结束后请重新读取快照，原有 ref 可能已失效。
 
-服务仍只监听本机回环地址，并保留 Host 和 Origin 校验；需要从其他机器访问时，请自行建立隧道，例如 `ssh -L 3100:127.0.0.1:3100 host`，并保持本地端口相同。链接包含 256 位令牌，只能使用一次，5 分钟后过期（`tokenTtl`），并绑定认证主体、租约和标签页。打开链接时，令牌被换成 `HttpOnly; SameSite=Strict`、路径限定在该次接管的 cookie，地址栏里不再保留令牌。页面发出的请求必须同源。页面的 CSP 为 `default-src 'self'` 并设置 `frame-ancestors 'none'`，没有内联脚本。未打开的链接落到谁手里谁就能使用，请按密钥对待。跨机器的传输加密由隧道提供，而不是本服务。
+服务只监听本机回环地址，并保留 Host 和 Origin 校验；需要从其他机器访问时，请自行建立隧道，例如 `ssh -L 3100:127.0.0.1:3100 host`，并保持本地端口相同。链接包含 256 位令牌，只能使用一次，5 分钟后过期（`tokenTtl`），并绑定认证主体、租约和标签页；链接在此期间未被打开时，接管以 `expired` 结束。打开链接时，令牌被换成 `HttpOnly; SameSite=Strict`、路径限定在该次接管的 cookie，地址栏里不再保留令牌。页面发出的请求必须同源。页面的 CSP 为 `default-src 'self'` 并设置 `frame-ancestors 'none'`，没有内联脚本。未打开的链接落到谁手里谁就能使用，请按密钥对待。跨机器的传输加密由隧道提供，而不是本服务。
 
-画面通过 SSE 传输 `Page.startScreencast` 的帧，每帧在查看页读取之后才确认，所以连接较慢时帧率会自动降低。输入通过 POST 回传并转成 CDP 输入：鼠标、滚轮和按键；输入法的合成文本和粘贴走 `Input.insertText`。`audit` 选项接收 `started`、`connected`、`ended` 记录和输入次数，不包含输入内容；CLI 把它们写到 stderr。
+画面通过 SSE 传输 `Page.startScreencast` 的帧，每帧在查看页读取之后才确认，所以连接较慢时帧率会自动降低。同一时刻只有一个查看页接收画面：新的 `/frames` 请求会取代之前的流，多个请求依次打开。输入通过 POST 回传并转成 CDP 输入：鼠标、滚轮和按键；输入法的合成文本和粘贴走 `Input.insertText`。`audit` 选项接收 `started`、`connected`、`ended` 记录和输入次数，不包含输入内容；CLI 把它们写到 stderr。
 
 ## 测试覆盖
 

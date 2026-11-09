@@ -16,7 +16,7 @@
 
 不应用覆盖不等于零开销或不可观察：Worker/WebGL 探针会创建临时资源，字体探针会附加临时 DOM/CSS session，显式请求的 HTTP/STUN 探针会产生流量。只开启排查所需的测量项。衡量某项操作的影响时，对照组和实验组应运行相同的探针，让探针本身成为被测负载的一部分。
 
-`worker` 选项采样的是**新建的 Dedicated Worker**，不检查已有 Worker、Shared Worker、Service Worker、它们的初始脚本请求或首段脚本执行；[差分审计夹具](differential-audit.md)说明了它对 Worker 和请求头的覆盖范围。报告匹配、CDP 命令成功或检测网站的标签，都不能单独证明未测量上下文的一致性。
+`worker` 选项采样的是**新建的 Dedicated Worker**，不检查已有 Worker、Shared Worker、Service Worker、它们的初始脚本请求或首段脚本执行；[差分审计 fixture](differential-audit.md)说明了它对 Worker 和请求头的覆盖范围。报告匹配、CDP 命令成功或检测网站的标签，都不能单独证明未测量上下文的一致性。
 
 `alignEnvironment()` 会改变浏览器状态，且可能只部分成功。它适合显式的测试配置，而不是自动修复设备指纹：它不改变 OS 字体、GPU 硬件或原生窗口装饰。应将几何尺寸、媒体设置和渲染器信息与匹配的原生基线比较，而不是强制固定浏览器工具栏高度，或认定软件渲染就是异常。
 
@@ -83,9 +83,9 @@ await tab.alignEnvironment(
 
 - **应用方式**：时区、locale、视口、UA 与 UA-CH、Accept-Language 和地理位置都通过 CDP 设置，不修补全局 getter 或原型。配置作用于当前及之后附加的页面 session，不会追溯改变页面已有的脚本和网络连接。
 - **GeoIP**：只应用 `fields` 选中的 时区/地理位置字段，显式的 `environment` 优先。品牌、UA-CH、硬件、精确位置和语言绝不从 IP 推导。解析器会收到取消信号和剩余期限，由宿主负责取消其外部工作。
-- **单独设置 Accept-Language**：保留当前 UA 和可取得的 UA-CH，不生成其他品牌身份。
+- **单独设置 Accept-Language**：Chrome 保留自身的 UA 和 UA-CH，在非安全上下文的页面上也是如此；不生成其他品牌身份。
 - **核验**：每个 frame 的文档和新建的 dedicated Worker 分别核验；`expected` 与 `actual` 保留原始值。Worker 不支持的字段（如视口）记为 unavailable，真正不一致的记为 mismatch。视口只在主 frame 上核验，因为 iframe 的视口是它自己的布局框。locale 与时区按规范形式比较，因此 `fr-fr` 与 `fr-FR` 匹配，`Asia/Kolkata` 与 Chrome 报告的 `Asia/Calcutta` 匹配。Accept-Language 按有序的语言标签列表比较，忽略 `;q=` 权重；除非 `httpProbe` 在其 `headers` 中以 `accept-language` 回显该请求头，否则记为 not-tested。locale 只在页面根 session 上设置，因此不保证每个渲染进程/Worker 中的 Intl 都一致。UA-CH 按配置的字段比较，高熵值不可用时不会伪造成功。地理位置绝不自动授权；只有权限已是 granted 时才读取位置用于核验，否则记为 unavailable。
-- **期限与部分失败**：整个调用共用一个期限，默认 10000 ms，可用 `timeout` 与 `signal` 调整，到期时抛出 `TimeoutError`。`inspect` 选项在应用任何配置前校验。覆盖不会原子回滚；`applicationError`、session 记录和实际报告都会保留。如果应用后的采样失败或超时，`after` 为 undefined，`verificationError` 保存原因，所有请求的字段记为 not-tested；从此时起，只有调用方的 `signal` 会让调用拒绝。
+- **期限与部分失败**：整个调用共用一个期限，默认 10000 ms，可用 `timeout` 与 `signal` 调整，到期时抛出 `TimeoutError`。`inspect` 选项在应用任何配置前校验。覆盖不会原子回滚：应用失败或到期时仍未完成，会记入 `applicationError`，session 记录和实际报告都会保留。如果应用后的采样失败或超时，`after` 为 undefined，`verificationError` 保存原因，所有请求的字段记为 not-tested；从此时起，只有调用方的 `signal` 会让调用拒绝。
 
 `setEnvironment()` 是不带核验的显式覆盖接口。UA、Client Hints、时区等覆盖不保证到达每个 Worker、SharedWorker 或 Service Worker。有界面和 headless 模式默认都保留原生值。显式启用的 `maskHeadless: true` 会改变页面 UA/UA-CH 与 Dedicated Worker，但可能与 Shared/Service Worker 及其请求不一致；见[差分审计](differential-audit.md)和[自动化痕迹审计](automation-audit.md)。
 
@@ -93,15 +93,17 @@ MCP 宿主可在 `BrowserSessionManagerOptions.environmentDiagnostics` 中配置
 
 ## 代理与 WebRTC
 
-`launch` / `newContext` 的 `proxyServer` 直接传给 Chrome。`newContext` 的 `proxy` 经由本机转发器，支持带认证的 HTTP(S)/SOCKS 上游，scheme 可以是 `http`、`https`、`socks`、`socks4`、`socks4a`、`socks5` 或 `socks5h`。使用 `socks`、`socks4a` 和 `socks5h` 时，所有主机名都由代理解析；使用 `socks4` 和 `socks5` 时，明文 HTTP 的主机名由转发器自行解析。转发器运行在宿主进程中，因此用 `proxy` 创建的上下文只在创建它的连接存续期间有效：连接关闭时，Chrome 会销毁该上下文及其标签页。诊断报告只记录是否配置了代理，绝不输出代理凭证；对于连接的浏览器，路由来源记为 unknown。
+在 Linux 上，`nativeEnvironment` 和 `autoAlignEnv` 在启动时为整个 Chrome 进程设置时区和语言，作用于主文档和各类 Worker，不改变渲染；见[原生启动环境](native-environment.md)。
 
-`Browser.launch({ webRtcIPHandlingPolicy })` 显式设置 WebRTC 路由策略，取值为 `default`、`default_public_interface_only`、`default_public_and_private_interfaces` 或 `disable_non_proxied_udp`。库会传入启动开关，同时写入 `webrtc.ip_handling_policy` 偏好，因为仅靠启动开关时，Chrome 155 仍会产生 UDP 候选。偏好只写入库自有的临时 profile；对持久 profile，库会拒绝该选项，由其所有者自行配置。测试验证：`disable_non_proxied_udp` 下本地 ICE 没有 UDP 候选；未设置策略时原生数据通道能正常建立。
+`launch` / `newContext` 的 `proxyServer` 直接传给 Chrome。`newContext` 的 `proxy` 经由本机转发器，支持带认证的 HTTP(S)/SOCKS 上游，scheme 可以是 `http`、`https`、`socks`、`socks4`、`socks4a`、`socks5` 或 `socks5h`。使用 `socks`、`socks4a` 和 `socks5h` 时，所有主机名都由代理解析；使用 `socks4` 和 `socks5` 时，明文 HTTP 的主机名由转发器自行解析。转发器运行在宿主进程中，因此用 `proxy` 创建的上下文只在创建它的连接存续期间有效：连接关闭时，Chrome 会销毁该上下文及其标签页，转发器也随之停止。诊断报告只记录是否配置了代理，绝不输出代理凭证；对于连接的浏览器，路由来源记为 unknown。
+
+`Browser.launch({ webRtcIPHandlingPolicy })` 显式设置 WebRTC 路由策略，取值为 `default`、`default_public_interface_only`、`default_public_and_private_interfaces` 或 `disable_non_proxied_udp`。库在 `prepareProfile` 运行之前写入 `webrtc.ip_handling_policy` 偏好，在其返回之后再写入一次，并在 Chrome 启动前读回校验。偏好只写入库自有的临时 profile；对持久 profile，库会拒绝该选项，由其所有者自行配置。集成测试检查以 `disable_non_proxied_udp` 启动时不会收集到 UDP 候选。
 
 该策略可能降低直连和媒体的可用性，因此默认不启用。它不会关闭整个 WebRTC，也不保证 HTTP 与 WebRTC 使用相同的公网出口。定义见 [Chromium WebRTC 偏好](https://chromium.googlesource.com/chromium/src/+/fdaf45e57c902c85d3ff281fe5a56677e6f9b7fa%5E%21/)。库不改写 profile 的 exit_type/exited_cleanly，以免掩盖真实的崩溃。
 
 ## 测试
 
-启动 UA/语言参数、暂停 Worker 后的覆盖、首段脚本观测和初始请求头，请参阅 [Worker 启动环境基准](worker-environment.md)。
+启动 UA/语言参数、暂停 Worker 后的覆盖、首段脚本观测和初始请求头，请参阅 [Worker 启动环境基准](worker-environment.md)。`test/integration/native-environment.test.ts` 检查以 `nativeEnvironment` 启动后主文档、frame 和各类 Worker 中的取值；它只在设置了 `CI` 的 Linux 上运行，需要 `fr_FR.UTF-8` locale（`sudo locale-gen fr_FR.UTF-8`）。
 
 ```sh
 npm run test:compat    # 用 CHROME_PATH 指定待验证的 Chrome

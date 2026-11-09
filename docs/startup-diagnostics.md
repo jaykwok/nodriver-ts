@@ -18,16 +18,16 @@ try {
 
 The snapshot contains `stage`, `elapsedMs`, `stageElapsedMs` and an optional `process`. Times use a monotonic clock and are taken before failure cleanup of an owned process, so they exclude termination waits. `process` is absent before a child exists and for `Browser.connect()`; otherwise it contains `pid`, `exited`, `exitCode`, `signal`, `stderr` and `stderrStatus`. A null exit code or signal means no such exit status was observed, not successful execution. The snapshot is frozen and does not change when cleanup later terminates Chrome.
 
-| Stage                       | Work                                                                     |
-| --------------------------- | ------------------------------------------------------------------------ |
-| `process-launch`            | Executable lookup and OS process spawn, including the supervision helper |
-| `profile-preparation`       | Profile creation, locking and launch configuration                       |
-| `port-file`                 | Waiting for a valid `DevToolsActivePort` (WebSocket launch only)         |
-| `endpoint-discovery`        | HTTP `/json/version` discovery (connect only)                            |
-| `websocket-connect`         | Opening the WebSocket transport                                          |
-| `protocol-handshake`        | `Browser.getVersion`                                                     |
-| `target-initialization`     | Context/target discovery, automatic attachment and startup Tab readiness |
-| `environment-configuration` | Optional headless UA configuration                                       |
+| Stage                       | Work                                                                                                                                                                            |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `process-launch`            | Option checks, executable lookup and OS process spawn, including the supervision helper                                                                                         |
+| `profile-preparation`       | Profile creation, locking and launch configuration                                                                                                                              |
+| `port-file`                 | Waiting for a valid `DevToolsActivePort` (WebSocket launch only)                                                                                                                |
+| `endpoint-discovery`        | HTTP `/json/version` discovery (connect only)                                                                                                                                   |
+| `websocket-connect`         | Opening the WebSocket transport                                                                                                                                                 |
+| `protocol-handshake`        | `Browser.getVersion`                                                                                                                                                            |
+| `target-initialization`     | Context/target discovery, automatic attachment and startup Tab readiness                                                                                                        |
+| `environment-configuration` | The [native environment](native-environment.md) lookup and host checks before profile preparation; after target initialization, `maskHeadless` and the native environment check |
 
 One total initialization deadline covers all stages, and the stage names the operation that failed or timed out. Failure cleanup has its own termination bounds. Invalid timeout arguments are rejected before initialization.
 

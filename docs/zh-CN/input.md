@@ -8,12 +8,10 @@
 tab.setInputPolicy({
   mode: 'human',
   seed: 42,
-  moveDuration: [90, 220],
-  moveSteps: [8, 18],
   pause: [0, 15],
   pressDelay: [25, 70],
   keyDelay: [35, 110],
-  scrollSteps: [3, 8],
+  wheelProfile: 'trackpad', // trackpad | wheel
   targetInset: 0.2,
   typing: 'auto', // auto | keys | insertText；auto 在 human 模式下使用按键事件
   scroll: 'auto', // auto | wheel | dom；auto 在 human 模式下先用滚轮把元素滚到视口附近
@@ -39,9 +37,24 @@ const popup = await page.waitForPopup(); // human
 
 ## 参数
 
-时间单位为毫秒，各 range 为最小/最大值：步数 1–120，时间 0–3000，`targetInset`（目标可见区域每条边排除的比例）0–0.45。省略的策略参数恢复默认值，种子除外。未指定种子时，Tab 的输入行为创建时用 Node crypto 生成一个，之后的动作、模式切换和不带种子的 configure 都沿用它。显式传入种子（即使与当前相同）会重启该行为实例的随机序列，不影响其他标签页。动作执行期间不能修改策略；策略也不会制造错字、额外提交或随机业务动作。
+时间单位为毫秒，各 range 为最小/最大值：步数 1–120，时间 0–3000，`targetInset`（目标可见区域每条边排除的比例）0–0.45。省略的策略参数以及设为 `undefined` 的参数恢复默认值，种子除外。未指定种子时，Tab 的输入行为创建时用 Node crypto 生成一个，之后的动作、模式切换和不带种子的 configure 都沿用它。显式传入种子（即使与当前相同）会重启该行为实例的随机序列，不影响其他标签页。动作执行期间不能修改策略；策略也不会制造错字、额外提交或随机业务动作。
+
+省略 `moveDuration`、`moveSteps` 或 `scrollSteps` 表示自动规划，见[下文](#human-动作规划)；显式配置的范围会取代它。MCP 工具 `browser_input_policy` 接受相同的字段。
 
 相同的种子、起点、布局、配置和调用序列会复现相同的计划轨迹与延迟，但实际调度、帧率和事件时间戳仍可能有毫秒级差异。只凭种子复现某个动作，还需要它之前的全部随机采样；`randomState` 可在动作边界重启 PRNG。完整复现一个动作还需要相同的策略、布局、指针/键盘状态和参数。未显式指定种子时，每次运行使用不同的随机序列。
+
+## human 动作规划
+
+human 输入在 Node 侧规划，页面中不运行任何代码来产生它。
+
+- **路径**：三次贝塞尔曲线，采用最小加加速度（minimum-jerk）进度，叠加首尾渐弱的 8–12 Hz 微颤。起点和终点都在视口内的路径不会越过视口的上边缘和左边缘。
+- **耗时**：`70 + 90 * log2(1 + 距离 / targetWidth)` 毫秒，上限 1800 ms，按每秒约 120 个点规划。`click()` 以元素盒较短的一边作为 `targetWidth`；`hover()`、`mouse.move()` 以及 `drag()` 移向起点的过程使用 24 px。显式的 `moveDuration` 或 `moveSteps` 会取代规划的耗时或点数。按住按键后，`drag()` 按其 `steps` 等分直线移动，每步之后等待 `pause` 加 10 ms。
+- **过冲**：超过 350 px 的移动有四分之一的概率过冲 4–12 px，并追加 3–5 个修正点，因此可能超过 1800 ms。按住鼠标按键时，或显式设置了 `moveDuration` 或 `moveSteps` 时，不会过冲。
+- **计时**：每个点等待其规划的延迟。宿主的计时器精度可能拉长较短的等待；Windows 上常为约 16 ms，实际采样率会因此降低。
+- **落点**：在元素位于视口内的部分中，于 `targetInset` 范围内按截断高斯分布采样，横向居中、纵向略偏上。
+- **按压**：部分按压在 `pressDelay` 过半时产生 1 px 的按住移动。元素点击会先对该位置做命中检查，检查不通过则跳过；跨进程 frame 内从不发生。释放使用最终位置。
+- **滚动**：`wheelProfile: 'trackpad'`（默认）发送先加速再衰减的滚轮事件，每 18 px 距离一个，间隔约 8 ms；`'wheel'` 发送等量的滚轮事件，每 100 px 一个，间隔 45 ms。两者都发送 1–120 个事件，每个间隔再加上 `pause`，并保持有符号、含小数的滚动总量。显式的 `scrollSteps` 指定事件数。human 模式下把元素滚入视口时，最多用滚轮滚动 3 秒，其余由 Chrome 完成。
+- **打字**：间隔服从对数正态分布，限制在 `keyDelay` 范围内，并按 QWERTY 键距和双手交替加权。小写 `th`、`he`、`in`、`er` 可能重叠按住，规划时长 5–12 ms；修饰键、重复键和非 ASCII 片段不重叠。取消时两个键都会释放。
 
 ## 文本与按键
 
@@ -117,7 +130,7 @@ await tab.keyboard.compose(
 
 向 `keyboard.compose()` 或作用域的 `run()` 传入 `{ forceCancel: true }` 后，显式 `cancel()` 和自动清理会向该 session 的当前焦点发送空的 `Input.imeSetComposition`，即使焦点或文档已经改变。这样可以取消跟随焦点转到另一个编辑器的 composition，也可能取消该编辑器自身的 composition。焦点离开原编辑器后，只有当前焦点是探针能检查的编辑器且选区为折叠状态时才发送取消：没有 composition 时，Chrome 收到空更新会删除选中的文字；而被后续焦点移动打断的 composition，已经在原编辑器中结束。其他情况不发送取消，清理与不设 `forceCancel` 时一样失败，包括最后一次 `update()` 设置了范围选区，以及焦点位于跨域 frame 中。更新和提交仍要求原焦点和文档有效；提交失败的动作即使强制清理成功，也仍是中断的动作。取消得到确认且其余清理成功时，页面可以继续使用；取消失败或未得到确认时仍会封锁输入，且不会重试。如果第一次更新在发送前的焦点检查中就已失败，则不发送取消。
 
-焦点检查和 CDP 输入是两个独立操作，因此调用方应验证最终文档。库不启用 Runtime，也不修改浏览器方法。焦点探针运行在库通过 `Page.createIsolatedWorld` 创建的隔离世界中，并在文档存续期间复用，页面脚本无法观察到。向 `compose()` 或 `run()` 传入 `executionContextId` 可改用你自己的上下文，请传入当前文档的 ID。控制器在第一次更新前解析一次该上下文的全局对象，之后都通过这个句柄探测，因此复用同一数字 ID 的新文档不会被探测。始终不启用 DOM 域：closed shadow root 通过 `DOM.describeNode` 和 `DOM.resolveNode` 检查，这两个命令不会启用该域。
+焦点检查和 CDP 输入是两个独立操作，因此调用方应验证最终文档。库不启用 Runtime，也不修改浏览器方法。焦点探针运行在库通过 `Page.createIsolatedWorld` 创建的隔离世界中，并在文档存续期间复用，页面脚本不能替换其使用的 JavaScript 原语；焦点和 DOM 效果仍可观察。向 `compose()` 或 `run()` 传入 `executionContextId` 可改用你自己的上下文，请传入当前文档的 ID。控制器在第一次更新前解析一次该上下文的全局对象，之后都通过这个句柄探测，因此复用同一数字 ID 的新文档不会被探测。始终不启用 DOM 域：closed shadow root 通过 `DOM.describeNode` 和 `DOM.resolveNode` 检查，这两个命令不会启用该域。
 
 第一次 `update()` 会先确认焦点能接收文本，否则在发送任何 composition 命令前失败。能接收文本的焦点包括：既非只读也未禁用（包括被所在 fieldset 禁用）的文本类 `input`（`text`、`search`、`url`、`tel`、`email`、`password` 或 `number`）或 `textarea`，以及 contenteditable 内容（包括 `designMode` 文档）。失败时抛出 `InputActionError`，其 `cause` 为 `ActionabilityError`。控制器会沿焦点进入开放和 closed shadow root 以及同源 frame，并按编辑宿主检查 contenteditable 内容，因为 composition 开始时，Chrome 会把焦点从可聚焦的后代元素移到编辑宿主。跨域 frame 内的焦点无法从父 session 检查：其可编辑性未知，composition 照常进行，报告的 `trace` 记录 `compositionFocusUnknown`，且检测不到该 frame 内的焦点变化。如需完整检查，请通过该 frame 自己的 target session 执行 composition。超时、断连和文档变化仍会中止动作。
 

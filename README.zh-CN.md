@@ -211,7 +211,7 @@ nodriver-mcp --mcp-transport http --port 3100
 - 无界面模式保留原生 UA。`maskHeadless: true` 会去掉页面 UA、UA-CH 和 Dedicated Worker 中的 HeadlessChrome；Shared Worker、Service Worker 及其请求可能保留原生值。见[差分审计](docs/zh-CN/differential-audit.md)。
 - 输入只在标签页不在最前面时才将其置前；按住鼠标键时报告 0.5 的压力，与真实鼠标一致。human 模式还会发送符合 US 布局的成对 keyDown/keyUp，指针从随机位置而不是 (0, 0) 开始。
 
-这些都不是伪装：不伪造字体、WebGL、canvas、音频或硬件，也不解验证码。环境覆盖（时区、locale、UA-CH、视口、地理位置）需要显式启用；见[环境](docs/zh-CN/environment.md)。[自动化痕迹审计](docs/zh-CN/automation-audit.md)列出了仍可观测的信号。
+这些都不是伪装：不伪造字体、WebGL、canvas、音频或硬件，也不解验证码。环境覆盖（时区、locale、UA-CH、视口、地理位置）需要显式启用；见[环境](docs/zh-CN/environment.md)。在 Linux 上，`nativeEnvironment` 改为设置所启动进程的时区和语言；见[原生启动环境](docs/zh-CN/native-environment.md)。[自动化痕迹审计](docs/zh-CN/automation-audit.md)列出了仍可观测的信号。
 
 ## 开发
 
@@ -237,6 +237,7 @@ npm run format:check
 | [API](docs/zh-CN/api.md)                                           | 对象、期限、查询、Locator、页面内请求、标签页作用域、存储 |
 | [输入](docs/zh-CN/input.md)                                        | human 输入策略、打字、指针检查、取消                      |
 | [环境](docs/zh-CN/environment.md)                                  | 环境采样、诊断、显式对齐、WebRTC                          |
+| [原生启动环境](docs/zh-CN/native-environment.md)                   | Linux 进程时区与语言、启动检查、通过代理确定时区          |
 | [浏览器交接](docs/zh-CN/browser-handoff.md)                        | 分离启动、交接与重连、CDP 事件订阅                        |
 | [监管启动](docs/zh-CN/lifecycle-ownership-design.md)               | 进程监管、有界 stderr、显式 release                       |
 | [原始 session](docs/zh-CN/raw-sessions.md)                         | 非托管 target、session 生命周期、drain、发送观察          |

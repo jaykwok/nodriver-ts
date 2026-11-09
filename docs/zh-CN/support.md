@@ -20,7 +20,7 @@
 | Linux ARM64          | Chrome for Testing         |
 | macOS ARM64          | Chrome                     |
 
-每次推送和拉取请求都会在 Windows 与 Ubuntu 上用当前 Node.js 24 运行源码套件，并分别在当前 Node.js 24 与最低版本 24.22.0 上检查构建产物；在 macOS 上运行监管生命周期、输入生命周期与 composition、呈现租约测试，以及构建产物的原始 session 检查。按需触发的平台矩阵（`.github/workflows/platforms.yml`）覆盖 macOS ARM64、Linux ARM64、Windows 上的 Edge，以及比当前稳定版低一个大版本的 Chrome for Testing，每个套件只运行一次、不重试。[Chromium 预览工作流](../../.github/workflows/chromium-preview.yml) 在 Chrome Beta、Dev、Canary 上运行主世界发现、生命周期与差分检查。每个公开 API 由哪些测试调用，见 [测试映射](test-map.md)。
+每次推送和拉取请求都会在 Windows 与 Ubuntu 上用当前 Node.js 24 运行源码套件，并分别在当前 Node.js 24 与最低版本 24.22.0 上检查构建产物；在 macOS 上运行监管生命周期、输入生命周期与 composition、呈现租约测试，以及构建产物的原始 session 检查。按需触发的平台矩阵（`.github/workflows/platforms.yml`）覆盖 macOS ARM64、Linux ARM64、Windows 上的 Edge，以及比当前稳定版低一个大版本的 Chrome for Testing，每个套件只运行一次、不重试。[Chromium 预览工作流](../../.github/workflows/chromium-preview.yml) 在 Chrome Beta、Dev、Canary 上运行主世界发现、生命周期、[原生启动环境](native-environment.md)、站点数据清除与差分检查。每个公开 API 由哪些测试调用，见 [测试映射](test-map.md)。
 
 调用方可用 `await using`，或 `try/finally` 配合 `close()` 管理资源。长时间运行的表现见 [长稳测试](soak.md)。
 
@@ -34,14 +34,14 @@
 | 生命周期 | Chrome 路径探测、临时/持久 profile、回环 WebSocket、Pipe、外部连接；幂等关闭与启动失败清理；关闭时先给 Chrome 10 秒自行退出，之后在 Windows 上终止浏览器进程、在 macOS 和 Linux 上终止其进程组，并等待退出后再删除临时 profile；不删除外部 profile |
 | 页面     | 新建/关闭、弹出页、历史、重定向、hash/SPA、DOMContentLoaded/load/commit/networkidle、BFCache（含嵌套 frame）、渲染进程崩溃与 reload、窗口、内容、资源、PDF                                                                                         |
 | frame    | 同进程 iframe、OOPIF、嵌套 OOPIF、递归附加、进程内外切换、所属 session/上下文、句柄按文档代次失效                                                                                                                                                  |
-| DOM      | CSS、XPath、最小文本、open/closed shadow root、元素作用域；隔离世界 DOM 辅助与主世界用户脚本                                                                                                                                                       |
+| DOM      | CSS、XPath、最小文本、open/closed shadow root、元素作用域；DOM 辅助与 `Element.evaluate` 在隔离世界运行，`Tab`/`Frame.evaluate` 默认在主世界运行                                                                                                   |
 | 输入     | 滚动、稳定/可见/启用/命中检查、遮挡与父 iframe 命中、变换后的 quad、悬停投递确认；中文/emoji、焦点与选择区、物理按键、文件输入、select/checkbox、指针拖动；可选 human 策略                                                                         |
 | 求值     | Promise、exceptionDetails、顶层特殊数值/BigInt/undefined、JSHandle、对象释放、导航与崩溃失效、不重放副作用                                                                                                                                         |
 | 状态     | Cookie 保存与恢复、local/sessionStorage、Cookie + localStorage 快照（含 iframe 与已关闭标签页的源）、按需导出的 sessionStorage 与 IndexedDB、已保存状态的 AES-256-GCM 加密、权限、20 个 BrowserContext 隔离与订阅回收                              |
 | 文件     | PNG/JPEG/WebP、全页与元素截图、PDF、GUID 命名下载及完成/取消、saveAs、上传                                                                                                                                                                         |
 | 网络     | Fetch 拦截/替换/失败、认证、响应与响应体、请求头/缓存/离线；覆盖页面及递归 OOPIF session                                                                                                                                                           |
 | 代理     | Chrome 直接代理、每个上下文独立代理、经 proxy-chain 转发的认证 HTTP(S)/SOCKS 上游                                                                                                                                                                  |
-| 环境     | 显式视口/DPR、时区、locale、UA 与 Client Hints、地理位置；结构化诊断与显式对齐，见 [环境](environment.md)                                                                                                                                          |
+| 环境     | 显式视口/DPR、时区、locale、UA 与 Client Hints、地理位置；结构化诊断与显式对齐，见 [环境](environment.md)；Linux 上的进程时区与语言，见 [原生启动环境](native-environment.md)                                                                      |
 | MCP      | stdio、本地 HTTP、socket、InMemory 共用 26 个默认工具与 3 个目录受限的可选文件工具；租约、受控浏览器池、状态资源与订阅、进度、取消、人工确认和 HTTP 上的远程人工接管，见 [MCP](mcp.md)                                                             |
 
 ## 限制

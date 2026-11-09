@@ -2,7 +2,7 @@
 
 [简体中文](zh-CN/worker-environment.md)
 
-This benchmark compares ways of applying a UA, language and timezone to every execution context, from startup flags to configuring paused targets over CDP. It uses only temporary browsers and local fixture pages, and is separate from the library: `Browser.launch()`, `maskHeadless` and target attachment do not use these strategies.
+This benchmark compares ways of applying a UA, language and timezone to every execution context, from startup flags to configuring paused targets over CDP. It uses only temporary browsers and local fixture pages, and is separate from the library: `Browser.launch()`, `maskHeadless` and target attachment do not use these strategies. On Linux, `nativeEnvironment` sets the timezone and language of the launched process instead; see [Native launch environment](native-environment.md).
 
 ## Reproduce
 
