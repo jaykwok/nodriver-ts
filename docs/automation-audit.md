@@ -37,31 +37,35 @@ npm run test:all
 - `test/integration/runtime.test.ts` captures the real messages passed to `Transport.send` from before the browser starts. It covers both transports, four kinds of frame (including nested OOPIFs), Chinese text input, closed shadow roots, JSHandle, navigation, BFCache, popups and WebSocket reconnection, and asserts zero disabled domains, bindings and automatic init-script commands. As a positive control, a separate browser enables Runtime explicitly, proving that the collector does see those commands and the executionContextCreated/consoleAPICalled events.
 - The input, environment, diagnostics, signal, churn and presentation integration tests, the HTTP/socket/embedded MCP tests and the soak test also assert that no disabled command is sent automatically.
 - A page-owned probe compares main-world globals, element properties, DOM structure and attribute mutations, console functions and the webdriver getter before and after each operation. Queries and input leave none of these traces; in all four kinds of frame, webdriver is false and the getter is native. The page can still observe mouse events, form values and scrolling.
-- In Chrome 155, the Error.stack getter is not read even in the positive control with Runtime enabled, and Error.name is read by the console call itself. The tests therefore assert on protocol commands and events; an old-style stack probe cannot show whether CDP detection is possible.
+- In Chrome 156, the Error.stack getter is not read even in the positive control with Runtime enabled, and Error.name is read by the console call itself. The tests therefore assert on protocol commands and events; an old-style stack probe cannot show whether CDP detection is possible.
 - `test/integration/stealth.test.ts` pins the UA/UA-CH, pointer pressure and key sequences. Unit tests cover incompatible objectIds, wrong worlds or documents, cleanup of temporary handles, navigation during discovery, and recovery after a context disappears.
 
 ## Third-party detectors
 
+Tested with Chrome 156 on GitHub-hosted Windows and Ubuntu runners, without DevTools open. Each run used a new temporary profile. Headful runs on Linux used `virtualDisplay`.
+
 ### Open-source detectors
 
-Tested with Chrome 155 on Windows and Linux (WSLg), in all four combinations of headful/headless × Pipe/WebSocket, without DevTools open and without changing the UA, fonts, timezone or network egress:
+Both detectors are served unchanged from their pinned commits by a local server. Each runs in all four combinations of headful/headless × Pipe/WebSocket, without changing the UA, fonts, timezone or network egress:
 
-- [rebrowser-bot-detector e1a25b1](https://github.com/rebrowser/rebrowser-bot-detector/tree/e1a25b1ff264cc9a5b5ea7fe8a6dfc26e3b1c718): no positive hits in any of the four Windows combinations. On WSL, the UA check notes that Chrome for Testing's brand list lacks Google Chrome. The exposeFunction check does not apply, and runtimeEnableLeak relies on the stack probe described above.
-- [Brotector 98b3309](https://github.com/ttlns/brotector/tree/98b330999e9928a226ca0c8254dddf909d1583bd): each combination runs with the crash probe off and on, under a CSP that allows the required same-origin and Blob workers. No detection callback fires, and nothing crashes with the crash probe on.
+- [rebrowser-bot-detector e1a25b1](https://github.com/rebrowser/rebrowser-bot-detector/tree/e1a25b1ff264cc9a5b5ea7fe8a6dfc26e3b1c718): no positive hits on either system. After the calls its README asks for (a main-world `dummyFn()` call, the sourceURL probe and an isolated-world query), `dummyFn`, `sourceUrlLeak`, `navigatorWebdriver`, `viewport`, `useragent`, `bypassCsp`, `pwInitScripts` and `runtimeEnableLeak` pass, and `mainWorldExecution` does not see the isolated-world query. The exposeFunction check does not apply, and runtimeEnableLeak relies on the stack probe described above.
+- [Brotector 98b3309](https://github.com/ttlns/brotector/tree/98b330999e9928a226ca0c8254dddf909d1583bd): each combination clicks the page's button with the instant and the human (seed=42) policy with the crash probe off, and with the instant policy with it on. No detection callback fires, and nothing crashes with the crash probe on.
 
 ### Online detection pages
 
-CreepJS, BrowserScan and Pixelscan with Chrome 155 on Windows over Pipe. Each cell used a new temporary profile, with no request interception, no UA or environment overrides, and no proxy or WebRTC restrictions. The headless column uses the native HeadlessChrome UA (the default).
+CreepJS, BrowserScan and Pixelscan over Pipe. The runners' egress is a Microsoft datacenter address in the US. There was no request interception and no proxy or WebRTC restriction, and only the columns named below change the UA or the environment. The headless column uses the native HeadlessChrome UA (the default). Once the verdict settled, each cell moved the pointer twice and scrolled down and up; no verdict changed afterwards.
 
-| Check                                       | Headful, instant       | Headless, instant   | Headful, human (seed=42) |
-| ------------------------------------------- | ---------------------- | ------------------- | ------------------------ |
-| CreepJS: like-headless / headless / stealth | 19% / 0% / 0%          | 25% / 67% / 0%      | 19% / 0% / 0%            |
-| BrowserScan                                 | Normal                 | Robot               | Normal                   |
-| Pixelscan: Bot check                        | No automation reported | Automation reported | No automation reported   |
-| Pixelscan: fingerprint consistency          | inconsistent           | inconsistent        | inconsistent             |
+| Check                                                 | Headful, instant       | Headless, instant   | Headless, `maskHeadless` | Headful, human (seed=42) |
+| ----------------------------------------------------- | ---------------------- | ------------------- | ------------------------ | ------------------------ |
+| CreepJS (Windows): like-headless / headless / stealth | 25% / 0% / 0%          | 31% / 67% / 0%      | 31% / 33% / 0%           | 25% / 0% / 0%            |
+| CreepJS (Linux): like-headless / headless / stealth   | 44% / 0% / 0%          | 50% / 67% / 0%      | 50% / 33% / 0%           | 44% / 0% / 0%            |
+| BrowserScan                                           | Normal                 | Robot               | Normal                   | Normal                   |
+| Pixelscan: Bot check                                  | No automation reported | Automation reported | No automation reported   | No automation reported   |
+| Pixelscan: fingerprint consistency                    | inconsistent           | inconsistent        | inconsistent             | inconsistent             |
 
-- On Linux (WSLg) the verdicts were the same: headless was Robot and reported as automated, headful was Normal. CreepJS like-headless was 44% headful and 50% headless.
-- Pixelscan also showed Timezone spoofed and Proxy detected, because the native JS timezone differed from the timezone the site inferred from the egress address; these labels do not mean the library spoofed the environment.
+- BrowserScan's Robot verdict in headless mode comes from its User-Agent check. With `maskHeadless`, its Webdriver, User-Agent, CDP and Navigator checks all pass, while CreepJS still scores 33% headless: the mask changes only the UA and UA-CH.
+- Pixelscan reported Timezone spoofed and Proxy detected, because the runners use UTC while the site places their datacenter address in America/Los_Angeles. These labels do not mean the library spoofed the environment. On Linux, a headful launch with [`nativeEnvironment`](native-environment.md) set to that timezone and `en-US` removed Timezone spoofed and kept the other verdicts of the headful, instant column.
+- On Linux, Pixelscan also reported Masking detected in every cell, including those without any override; on Windows it reported No masking detected. The library does not change canvas, WebGL, audio or font output.
 - The human policy does not change the verdicts. These pages do not score clicks or typing, so this says nothing either way about the human policy.
 - In every cell webdriver was false and no forbidden protocol command was sent. CreepJS scores are not detection probabilities.
 

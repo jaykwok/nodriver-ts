@@ -37,31 +37,35 @@ npm run test:all
 - `test/integration/runtime.test.ts` 在浏览器启动前截取 `Transport.send` 的真实消息，覆盖双传输、四类 frame（含嵌套 OOPIF）、中文输入、closed shadow root、JSHandle、导航、BFCache、弹出页与 WebSocket 重连，断言禁用域、绑定和自动初始化脚本命令为零。作为阳性对照，另一个独立浏览器显式启用 Runtime，证明采集器确实能看到这些命令以及 executionContextCreated/consoleAPICalled 事件。
 - 输入、环境、诊断、信号、压力和呈现集成测试，HTTP/socket/嵌入式 MCP 测试以及长稳测试，同样断言没有自动发送任何禁用命令。
 - 页面自有探针比较操作前后的主世界全局属性、元素属性、DOM 结构与属性变更、console 函数和 webdriver getter；查询与输入没有留下这些痕迹，四类 frame 的 webdriver 均为 false 且 getter 为原生。页面仍能观察鼠标事件、表单值和滚动。
-- Chrome 155 中 Error.stack getter 在启用 Runtime 的阳性对照里也不被读取，Error.name 会在 console 调用本身被读取。因此测试以协议命令与事件为断言对象，老式堆栈探针无法说明 CDP 能否被检测。
+- Chrome 156 中 Error.stack getter 在启用 Runtime 的阳性对照里也不被读取，Error.name 会在 console 调用本身被读取。因此测试以协议命令与事件为断言对象，老式堆栈探针无法说明 CDP 能否被检测。
 - `test/integration/stealth.test.ts` 固化 UA/UA-CH、指针压力与按键序列；单元测试覆盖不兼容 objectId、错误的世界或文档、临时句柄清理、发现期间导航和上下文消失后的恢复。
 
 ## 第三方检测
 
+测试使用 Chrome 156，在 GitHub 托管的 Windows 与 Ubuntu 运行器上进行，不打开 DevTools。每次运行使用新的临时 profile。Linux 上的有界面运行使用 `virtualDisplay`。
+
 ### 开源检测器
 
-测试使用 Chrome 155，在 Windows 与 Linux（WSLg）上以有界面/无界面 × Pipe/WebSocket 四种组合运行，不打开 DevTools，不修改 UA、字体、时区或网络出口：
+两个检测器都按固定提交原样由本地服务器提供，各自在有界面/无界面 × Pipe/WebSocket 四种组合下运行，不修改 UA、字体、时区或网络出口：
 
-- [rebrowser-bot-detector e1a25b1](https://github.com/rebrowser/rebrowser-bot-detector/tree/e1a25b1ff264cc9a5b5ea7fe8a6dfc26e3b1c718)：Windows 四种组合无正向命中；WSL 的 UA 检查提示 Chrome for Testing 的品牌集合缺少 Google Chrome。exposeFunction 检查不适用，runtimeEnableLeak 依赖上文所述的堆栈探针。
-- [Brotector 98b3309](https://github.com/ttlns/brotector/tree/98b330999e9928a226ca0c8254dddf909d1583bd)：每种组合分别在关闭和开启崩溃探针时运行，CSP 允许所需的同源和 Blob Worker。不触发任何检测回调，开启崩溃探针时也不崩溃。
+- [rebrowser-bot-detector e1a25b1](https://github.com/rebrowser/rebrowser-bot-detector/tree/e1a25b1ff264cc9a5b5ea7fe8a6dfc26e3b1c718)：两个系统上均无正向命中。按其 README 的要求调用之后（主世界中调用 `dummyFn()`、sourceURL 探针和一次隔离世界查询），`dummyFn`、`sourceUrlLeak`、`navigatorWebdriver`、`viewport`、`useragent`、`bypassCsp`、`pwInitScripts` 和 `runtimeEnableLeak` 均通过，`mainWorldExecution` 察觉不到隔离世界查询。exposeFunction 检查不适用，runtimeEnableLeak 依赖上文所述的堆栈探针。
+- [Brotector 98b3309](https://github.com/ttlns/brotector/tree/98b330999e9928a226ca0c8254dddf909d1583bd)：每种组合在关闭崩溃探针时分别用 instant 和 human（种子=42）策略点击页面按钮，在开启崩溃探针时用 instant 策略点击。不触发任何检测回调，开启崩溃探针时也不崩溃。
 
 ### 在线检测页
 
-CreepJS、BrowserScan 与 Pixelscan，Windows 上的 Chrome 155 / Pipe。每格使用新的临时 profile，不拦截请求、不覆盖 UA 或环境、不配置代理或 WebRTC 限制。headless 列使用原生 HeadlessChrome UA（默认行为）。
+CreepJS、BrowserScan 与 Pixelscan，使用 Pipe。运行器的出口是位于美国的 Microsoft 数据中心地址。不拦截请求，不配置代理或 WebRTC 限制，只有下表注明的列修改 UA 或环境。headless 列使用原生 HeadlessChrome UA（默认行为）。判定稳定后，每格移动指针两次并上下滚动一次，之后判定均未改变。
 
-| 检测项                                      | 有界面，instant  | headless，instant | 有界面，human（种子=42） |
-| ------------------------------------------- | ---------------- | ----------------- | ------------------------ |
-| CreepJS：like-headless / headless / stealth | 19% / 0% / 0%    | 25% / 67% / 0%    | 19% / 0% / 0%            |
-| BrowserScan                                 | Normal           | Robot             | Normal                   |
-| Pixelscan：Bot check                        | 未报告自动化行为 | 报告自动化行为    | 未报告自动化行为         |
-| Pixelscan：指纹一致性                       | inconsistent     | inconsistent      | inconsistent             |
+| 检测项                                                 | 有界面，instant  | headless，instant | headless，`maskHeadless` | 有界面，human（种子=42） |
+| ------------------------------------------------------ | ---------------- | ----------------- | ------------------------ | ------------------------ |
+| CreepJS（Windows）：like-headless / headless / stealth | 25% / 0% / 0%    | 31% / 67% / 0%    | 31% / 33% / 0%           | 25% / 0% / 0%            |
+| CreepJS（Linux）：like-headless / headless / stealth   | 44% / 0% / 0%    | 50% / 67% / 0%    | 50% / 33% / 0%           | 44% / 0% / 0%            |
+| BrowserScan                                            | Normal           | Robot             | Normal                   | Normal                   |
+| Pixelscan：Bot check                                   | 未报告自动化行为 | 报告自动化行为    | 未报告自动化行为         | 未报告自动化行为         |
+| Pixelscan：指纹一致性                                  | inconsistent     | inconsistent      | inconsistent             | inconsistent             |
 
-- Linux（WSLg）上结果相同：headless 为 Robot 并报告自动化行为，有界面为 Normal；CreepJS like-headless 有界面 44%、headless 50%。
-- Pixelscan 另显示 Timezone spoofed 和 Proxy detected，原因是原生 JS 时区与站点根据出口地址推断的时区不同；这些标签不代表库伪造了环境。
+- BrowserScan 在 headless 模式下判为 Robot，依据是它的 User-Agent 检查。启用 `maskHeadless` 后，其 Webdriver、User-Agent、CDP 和 Navigator 检查全部通过，而 CreepJS 的 headless 分数仍为 33%：该掩码只修改 UA 和 UA-CH。
+- Pixelscan 显示 Timezone spoofed 和 Proxy detected，原因是运行器使用 UTC，而站点把其数据中心地址定位到 America/Los_Angeles。这些标签不代表库伪造了环境。在 Linux 上，以 [`nativeEnvironment`](native-environment.md) 设为该时区和 `en-US` 的有界面启动消除了 Timezone spoofed，其余判定与“有界面，instant”列相同。
+- 在 Linux 上，Pixelscan 每格都显示 Masking detected，包括没有任何覆盖的格；在 Windows 上显示 No masking detected。库不修改 canvas、WebGL、音频或字体输出。
 - human 策略没有改变判定。这些页面不评估点击与打字，因此无法据此判断 human 策略的效果。
 - 每格的 webdriver 均为 false，且未发送任何禁止的协议命令。CreepJS 分数不是检测概率。
 
