@@ -111,10 +111,16 @@ for (const transport of ['pipe', 'websocket'] as const) {
       tab.setInputPolicy(policy);
       await button.click();
       const first = tab.inputBehavior.lastReport!;
+      // Recovery depends on response latency; the seed controls input events and planned delays.
+      const firstTrace = first.trace.filter((event) => event.type !== 'presentationRecovery');
       await tab.mouse.move(0, 0);
       tab.setInputPolicy(policy);
       await button.click();
-      expect(tab.inputBehavior.lastReport!.trace).toEqual(first.trace);
+      expect(
+        tab.inputBehavior.lastReport!.trace.filter(
+          (event) => event.type !== 'presentationRecovery',
+        ),
+      ).toEqual(firstTrace);
       const events = await tab.evaluate<any[]>('window.__events');
       expect(
         events.some(
@@ -128,7 +134,7 @@ for (const transport of ['pipe', 'websocket'] as const) {
       expect(
         events.filter((e) => e.type === 'mousedown' && e.id === 'target').every((e) => e.trusted),
       ).toBe(true);
-      const types = first.trace.map((e) => e.type);
+      const types = firstTrace.map((e) => e.type);
       const press = types.indexOf('down');
       expect(types.slice(0, press).filter((type) => type === 'move')).toHaveLength(5);
       // The seeded stream decides whether the hold carries one 1 px slip.
