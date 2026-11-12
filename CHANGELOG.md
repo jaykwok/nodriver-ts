@@ -2,7 +2,7 @@
 
 All notable changes are recorded here. The project follows [Semantic Versioning](https://semver.org/); before 1.0, minor versions may contain breaking changes.
 
-## Unreleased
+## 1.0.1 — 2026-11-12
 
 - `InputScope.position` exposes a read-only snapshot of the last acknowledged pointer coordinates, including moves answered during cancellation cleanup. Await `error.cleanup` before reading the settled position of an interrupted run.
 - Keyboard, element and locator `type()` accept an awaited `onSegment(segment, index)` callback for reading back each completed grapheme or explicit segment before the next is sent. Physical typing reuses Shift across consecutive shifted characters, including callback waits, and releases it on completion or failure. Callback-enabled typing disables overlapping presses. The `KeyboardTypeOptions` type is exported.
