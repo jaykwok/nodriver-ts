@@ -2,6 +2,12 @@
 
 All notable changes are recorded here. The project follows [Semantic Versioning](https://semver.org/); before 1.0, minor versions may contain breaking changes.
 
+## Unreleased
+
+- `InputScope.position` exposes a read-only snapshot of the last acknowledged pointer coordinates, including moves answered during cancellation cleanup. Await `error.cleanup` before reading the settled position of an interrupted run.
+- Keyboard, element and locator `type()` accept an awaited `onSegment(segment, index)` callback for reading back each completed grapheme or explicit segment before the next is sent. Physical typing reuses Shift across consecutive shifted characters, including callback waits, and releases it on completion or failure. Callback-enabled typing disables overlapping presses. The `KeyboardTypeOptions` type is exported.
+- Public guides describe browser behavior, configuration and measurement scope directly, with matching English and Chinese terminology and unchanged documentation URLs.
+
 ## 1.0.0 — 2026-11-10
 
 ### Breaking changes
@@ -294,7 +300,7 @@ All notable changes are recorded here. The project follows [Semantic Versioning]
 ### Added
 
 - Opt-in MCP 2025-11-25 / 2025-06-18 compatibility (`--mcp-compat`) on stdio and the HTTP `/mcp/compat` route, sharing the browser core, permissions and queues. The default `/mcp` entry point stays strict. Works with Pi 1.3.0's built-in MCP extension; see [agent compatibility](docs/agent-compatibility.md).
-- `npm run bench:audit`, a differential audit with a regression gate over native fields, descriptors, Worker/request consistency and cleanup, plus a manual collector for physical-input baselines.
+- `npm run bench:audit`, a browser comparison benchmark with checks for native fields, descriptors, Worker/request consistency and cleanup, plus a manual collector for physical-input baselines.
 - `npm run bench:worker-environment`, which compares Worker startup configuration strategies across seven execution contexts.
 - `npm run bench:handoff:manual`, an interactive collector for testing human handoff end to end.
 - AX phase and queue benchmarks, and a Chrome Beta/Dev/Canary regression workflow.

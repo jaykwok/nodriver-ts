@@ -131,9 +131,9 @@ SSE 断流会取消对应请求，但不释放租约，也不影响其他请求�
 
 两个标准资源只包含当前租约的信息。`browser://state` 包含标签页、frame、对话框、所属上下文、队列与引用数。`browser://events` 保留最近 64 条有序状态事件（导航、标签页、对话框、下载、被对话框挂起的动作的结果等），不是完整的 DOM 或网络事件总线。在 `/mcp` 上，订阅通过 `subscriptions/listen` 的 resourceSubscriptions 选择 URI，不支持旧的 `resources/subscribe` 和 GET SSE。每个租约有独立的通知总线，状态变化合并后再通知。断开后读取最新资源即可，已淘汰的事件不会补发。
 
-请求携带 progressToken 时，工具依次报告 Queued、Running、Completed 三个阶段。auto 模式在需要通知时升级为 SSE，强制 JSON 模式按 SDK 语义省略中间通知。进度只表示阶段，不代表完成百分比或时延。
+请求携带 progressToken 时，工具依次报告 Queued、Running、Completed 三个阶段。auto 模式在需要通知时升级为 SSE，强制 JSON 模式按 SDK 语义省略中间通知。进度记录当前阶段，不包含完成百分比或时延。
 
-`browser_handoff({ tabId })` 请用户在可访问的浏览器界面中完成手工任务并确认。它不收集密码，不提供远程桌面，也不自动登录或恢复之前的点击。使用条件：显式 `--headful` / `launch.headless: false`，或由已确认界面可访问的宿主设置 `humanInteraction: true`（`--allow-handoff`），并且客户端声明 `elicitation.form`；否则返回明确的错误。默认有窗口不代表远程调用者能访问它，因此人工接管从不自动启用。
+`browser_handoff({ tabId })` 请用户在可访问的浏览器界面中完成手工任务并确认。它不收集密码，不提供远程桌面，也不自动登录或恢复之前的点击。使用条件：显式 `--headful` / `launch.headless: false`，或由已确认界面可访问的宿主设置 `humanInteraction: true`（`--allow-handoff`），并且客户端声明 `elicitation.form`；否则返回明确的错误。启用人工接管前，应为调用方安排浏览器界面的访问方式，远程服务同样如此。
 
 `/mcp` 的人工交互使用 2026-07-28 的 InputRequiredResult/MRTR；兼容入口启用 SDK 的 legacy elicitation shim。requestState 是五分钟后过期的随机标识，服务端保存其标签页、租约和阶段。篡改、跨租约或未知的状态被拒绝，已完成的状态不会再执行前面的步骤。完成后只返回当前页面状态，调用者应重新 snapshot。秘密应由用户直接在浏览器中输入。
 

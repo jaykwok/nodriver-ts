@@ -65,6 +65,14 @@ export class InputScope {
     if (options.policy) this.behavior.configure(options.policy);
   }
   /**
+   * A snapshot of the last acknowledged move in viewport CSS pixels, or the initial `pointer`
+   * (default (0, 0)) before any move is acknowledged. Includes replies received during cleanup;
+   * after an interrupted run, await `error.cleanup` before reading the settled position.
+   */
+  get position(): Readonly<{ x: number; y: number }> {
+    return Object.freeze({ x: this.pointer.x, y: this.pointer.y });
+  }
+  /**
    * Acknowledge that you inspected/restored this page after failed composition cleanup.
    * Await the failed action's cleanup and verify the page before calling. Sends no commands
    * and does not cancel composition itself. Clears only a page-level composition block,

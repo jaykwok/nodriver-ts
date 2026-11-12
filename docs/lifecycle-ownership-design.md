@@ -19,10 +19,10 @@ try {
 
 Readiness does not transfer ownership. Until release commits, EOF on the host control channel, including a hard host exit, makes the helper terminate Chrome. A normal close, cancellation or failure waits for that cleanup before handling the profile. Chrome never inherits the host control handles.
 
-| Platform      | Supervision                                                                                                          | Helper hard death before release                  |
-| ------------- | -------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
-| Windows 10+   | Create Chrome inside a kill-on-close Job Object using PROC_THREAD_ATTRIBUTE_JOB_LIST; descendants inherit membership | Closing the last job handle terminates the job    |
-| macOS / Linux | Independent Node helper creates a new session/process group; host EOF triggers group SIGKILL                         | Not guaranteed; SIGKILL cannot run helper cleanup |
+| Platform      | Supervision                                                                                                          | Helper hard death before release                           |
+| ------------- | -------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| Windows 10+   | Create Chrome inside a kill-on-close Job Object using PROC_THREAD_ATTRIBUTE_JOB_LIST; descendants inherit membership | Closing the last job handle terminates the job             |
+| macOS / Linux | Independent Node helper creates a new session/process group; host EOF triggers group SIGKILL                         | Chrome can remain running; SIGKILL prevents helper cleanup |
 
 POSIX supervision covers processes that remain in the owned group, not descendants that deliberately escape it. No mode protects against external whole-tree termination, Windows parent jobs, containers/cgroups or login-session cleanup.
 

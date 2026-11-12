@@ -2,7 +2,7 @@
 
 [English](../input.md)
 
-默认 `instant` 策略执行快速、确定的动作。`tab.setInputPolicy({ mode: 'human', seed: 42 })` 启用带加减速的连续指针轨迹、停顿、按下/抬起间隔、分段滚动和逐字输入节奏。这是可配置的程序化行为模型，不等同于物理输入，也不承诺通过检测。
+默认 `instant` 策略执行快速、确定的动作。`tab.setInputPolicy({ mode: 'human', seed: 42 })` 启用带加减速的连续指针轨迹、停顿、按下/抬起间隔、分段滚动和逐字输入节奏。策略控制 CDP 输入的时序与轨迹，不生成操作系统级的键盘或鼠标事件。
 
 ```ts
 tab.setInputPolicy({
@@ -70,6 +70,22 @@ human 输入在 Node 侧规划，页面中不运行任何代码来产生它。
 - **macOS 编辑快捷键**：浏览器运行在 macOS 上时，按键事件附带 AppKit 编辑命令（CDP `commands`），因此 `Meta+A` 全选、`Meta+Z` 撤销、`Alt+ArrowLeft` 按词移动、`Control+A` 移到段首等都与 Mac 键盘一致。启动的浏览器按宿主平台判断，`userAgent` 启动选项不影响结果；连接的浏览器按 `Browser.getVersion` 报告的 UA 判断。
 - **`select()`**：通过 DOM 修改选项并派发合成的 input/change 事件，不改写 isTrusted；需要指针或按键交互时由调用者显式执行。
 
+`keyboard.type()`、`element.type()` 和 `locator.type()` 接受同步或异步的完成回调 `onSegment(segment, index)`。字符串输入按完整字素回调，数组输入按数组项回调；每段得到 Chrome 确认且其字符键已释放后调用一次。`index` 从零开始，只属于本次 `type()`；`completedSegments` 在回调前递增。输入会等待回调结束再发送下一段，并关闭相邻字符的重叠按键，确保读回发生在段边界。页面事件处理函数可能阻止或转换输入，可在回调中读取实际值。回调耗时计入动作期限，并受取消信号约束；抛错、Promise 拒绝、超时或取消会停止后续输入并释放托管按键，不重放已完成的文本。中断的段不会调用完成回调，包括清理阶段才得到确认的段。取消会停止等待回调，但无法强制终止其中已运行的任意用户代码。`KeyboardTypeOptions` 已导出，元素和 Locator 的 `TypeOptions` 在其基础上增加 `replace`。
+
+物理按键模式下，同一次 `type()` 内连续的大写字母和上档符号复用一次 Shift 按下，包括等待 `onSegment` 的期间。例如 `['A', 'B', '!']` 在前两次回调期间保持 Shift，在最后一次回调前释放。遇到不需要 Shift 的字符或使用 `insertText` 的段、调用结束或发生错误时，键入流程释放自己取得的 Shift，不释放调用方原本按住的 Shift。多字符数组项仍用一次 `insertText` 输入；不同的 `type()` 调用之间不自动保留 Shift。
+
+```ts
+tab.setInputPolicy({ typing: 'keys' });
+const field = await tab.waitForSelector('#code');
+await field.type(['A', 'B', 'C'], {
+  replace: true,
+  onSegment: async (segment, index) => {
+    const value = await field.evaluate((el) => (el as HTMLInputElement).value);
+    console.log({ segment, index, value }); // A、AB、ABC
+  },
+});
+```
+
 普通 `type()` 不产生 composition 生命周期；显式 CDP composition 由 `keyboard.compose()` 和输入作用域提供。两者都不模拟操作系统输入法候选窗或非 US 键盘布局。
 
 ## 指针与点击
@@ -128,7 +144,7 @@ Tab 输入、独立构造的 `new Mouse(session)` / `new Keyboard(session)` 和�
 
 动作用到的页面上打开了 JavaScript 对话框时，清理预算暂停计时，因为在对话框关闭前，Chrome 会扣住该页面正在处理的输入的响应。对话框关闭后预算重新计时，`trace` 记录 `dialogWait`。页面关闭时，其输入状态随之结束：该页面不再回复的请求、因其 session 结束而失败的步骤都不算清理失败，`trace` 记录 `pageClosed`。已关闭页面上的其他失败仍会报告，但不封锁任何输入。
 
-如果只有 composition 取消未得到确认，其余清理和待响应命令都已完成，并且整条连接上没有仍被按住的托管按键或鼠标按钮，封锁范围仅限该 composition 所属的顶层页面 target，即该页面的所有附加实例和跨域子 frame。其他已知页面可以继续使用同一连接和输入队列。通过所属页面的任一附加实例完成托管释放，或该页面已关闭，按住的按键或按钮即视为已释放。关闭页面后，收到 `Target.targetDestroyed` 时清除该页面的封锁；分离或重新附加 session、导航、渲染进程崩溃、销毁子 frame 都不会清除。原动作仍报告清理失败；缩小封锁范围既不代表 composition 已结束，也不会撤销 Chrome 在失焦时可能已提交的文字。
+如果只有 composition 取消未得到确认，其余清理和待响应命令都已完成，并且整条连接上没有仍被按住的托管按键或鼠标按钮，封锁范围仅限该 composition 所属的顶层页面 target，即该页面的所有附加实例和跨域子 frame。其他已知页面可以继续使用同一连接和输入队列。通过所属页面的任一附加实例完成托管释放，或该页面已关闭，按住的按键或按钮即视为已释放。关闭页面后，收到 `Target.targetDestroyed` 时清除该页面的封锁；分离或重新附加 session、导航、渲染进程崩溃、销毁子 frame 都不会清除。原动作仍报告清理失败；composition 可能仍在进行，Chrome 在失焦时已提交的文字会留在文档中。
 
 如果无法根据 target 元数据和附加实例层级确定页面归属，composition 清理失败仍会封锁整条连接。存在页面封锁时，归属不明的 session 上的托管输入也会被拒绝，以免通过新的原始 frame 附加实例绕过封锁。按键或按钮未释放、其他释放失败、排空超时和断连同样封锁整条连接：请恢复目标状态并建立新连接后再继续。直接发送的原始 CDP 输入既不经过托管按住状态的跟踪，也不受这些封锁限制。
 
@@ -181,7 +197,9 @@ await tab.keyboard.compose(
 
 ## 原始输入作用域
 
-在取消清理期间才收到成功回包的指针移动，也会更新作用域下一次运行的起点；失败或未确认的移动不会更新。`sent` 也统计作用域回调发出的原始输入命令，包括发往其他连接的命令；计数发生在传输派发时，而非调用刚进入队列时。
+`scope.position` 返回最后一次已确认移动的 `{ x, y }` 坐标快照，单位为视口 CSS 像素；快照已冻结且只读。它也包含取消清理阶段才收到成功回包的移动：运行中断后先等待 `error.cleanup`，再读取 `scope.position`。失败或未确认的移动不会更新它。第一次移动确认前，返回创建时传入的 `pointer`，未提供时为 `(0, 0)`；human 模式规划时选出的随机起点不算已确认坐标。它只跟踪本作用域托管鼠标的移动，不查询 Chrome，之前取得的快照也不会改变。下一次运行同样使用这份状态作为起点。
+
+`sent` 也统计作用域回调发出的原始输入命令，包括发往其他连接的命令；计数发生在传输派发时，而非调用刚进入队列时。
 
 `browser.inputScope(session)` 或导出的 `createInputScope(session, { policy?, mac?, pageEvents?, pointer? })` 为 target session 创建可复用的作用域工厂。每次 `run()` 提供新的鼠标、键盘和 composition 控制器，共用一个期限、原 `guard` 和一份最终报告。指针位置会延续：每次运行的鼠标从 Chrome 最后确认的上一次运行的指针位置开始，因此不必为了把指针放回原处而发送移动。`pointer` 指定第一次运行的起始位置，例如作用域驱动标签页的页面时传入 `tab.mouse.position`；不指定时，第一次运行与新建的 `Mouse` 一样，从 (0, 0) 开始，human 模式下从视口内的随机点开始。同级控制器的调用串行执行；按住的按键、按钮和 composition 会按逆序清理，之后连接队列才交给下一个所有者。显式调用 `up()` 或 `cancel()` 可提前释放。已有按钮被按住时，点击或拖动不能替换它。
 
@@ -199,6 +217,7 @@ await scope.run(
   },
   { timeout: 1000, signal, cleanupTimeout: 5000 },
 );
+console.log(scope.position); // { x: 220, y: 100 }
 ```
 
 原始作用域和 `keyboard.compose()` 默认发送 `Page.enable`，使导航能够中断输入；它们从不改变 target 焦点。托管输入是库唯一会在原始 session 上启用域的地方。run 结束后，该域在调用方的 session 上保持启用，作用域自有的监听器则会移除。设置 `pageEvents: false`（`inputScope()`、`createInputScope()` 和 `compose()` 的选项）后不发送任何 `*.enable` 命令。此时只有该 session 已通过其他途径启用 Page 域，导航才会中断 run；否则 run 在到期、你的 `signal` 中止或 session 结束时停止，composition 仍会在每一步前检查焦点和文档。对话框事件同样只经由启用了 Page 域的 session 送达；没有这样的 session 时，清理无法等待对话框关闭。`browser.inputScope()` 与 Tab 输入用相同方式选择 macOS 编辑命令；`createInputScope()` 的 `mac` 默认为 false。在作用域内请使用 `input.composition`，不要嵌套 `keyboard.compose()`。

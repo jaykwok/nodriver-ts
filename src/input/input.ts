@@ -11,6 +11,15 @@ import { StaleElementError } from '../errors.ts';
 import type { InputRelease } from './action.ts';
 import { Composition, type CompositionOptions } from './composition.ts';
 import { motionPlan, keyInterval, notchPlan, scrollPlan } from './human.ts';
+export interface KeyboardTypeOptions extends InputOptions {
+  /**
+   * Awaited after each grapheme or explicit segment is acknowledged and its character key is
+   * released, before the next segment is sent. `index` is zero-based within this type() call.
+   * Disables overlapping presses; Shift may stay held for the next shifted character. Counts
+   * against the action's deadline and signal. Throwing stops typing without replaying the segment.
+   */
+  onSegment?: (segment: string, index: number) => void | Promise<void>;
+}
 export interface ComposeOptions extends InputOptions, CompositionOptions {
   /**
    * false never sends Page.enable. Navigation then stops the action only if the Page domain is
@@ -755,23 +764,16 @@ export class Keyboard {
       }
     });
   }
-  /** Presses one US-layout character with physical key events, adding Shift when needed. */
+  /** Presses one US-layout character; type() owns any Shift shared with adjacent segments. */
   private async typeKey(char: string, action: InputAction): Promise<void> {
-    const { definition, shift } = characters.get(char)!;
+    const { definition } = characters.get(char)!;
     if (this.held.has(definition.code)) throw new Error('Cannot type a key that is already held');
-    const human = this.behavior.policy.mode === 'human';
-    const shiftRelease =
-      shift && !(this.modifiers & 8) ? await this.keyDown('Shift', action) : undefined;
+    const release = await this.keyDown(char, action);
     try {
-      if (shiftRelease && human) await action.pace(this.behavior.range('pressDelay') / 2);
-      const release = await this.keyDown(char, action);
-      try {
-        if (human) await action.pace(this.behavior.range('pressDelay'));
-      } finally {
-        await release.run();
-      }
+      if (this.behavior.policy.mode === 'human')
+        await action.pace(this.behavior.range('pressDelay'));
     } finally {
-      await shiftRelease?.run();
+      await release.run();
     }
   }
   /** Types two letters with overlapping presses: the second goes down before the first comes up. */
@@ -798,9 +800,10 @@ export class Keyboard {
   /**
    * Types whole graphemes or explicit commit segments. With physical-key typing (the human-mode
    * default) US-layout characters use key events; anything else, including line breaks and
-   * tabs, uses Input.insertText. Neither path is native IME composition.
+   * tabs, uses Input.insertText. Consecutive shifted characters share Shift, including across
+   * awaited onSegment callbacks. Neither path is native IME composition.
    */
-  type(text: string | string[], options: InputOptions = {}): Promise<InputReport> {
+  type(text: string | string[], options: KeyboardTypeOptions = {}): Promise<InputReport> {
     if ((typeof text === 'string' ? text.length : text.reduce((n, s) => n + s.length, 0)) > 100000)
       throw new RangeError('Text input exceeds 100000 UTF-16 units');
     const segments =
@@ -808,10 +811,11 @@ export class Keyboard {
         ? [...new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(text)].map(
             (s) => s.segment,
           )
-        : text;
+        : [...text];
+    const { onSegment } = options;
     return this.action('type', options, async (action) => {
       const human = this.behavior.policy.mode === 'human';
-      const keys = this.typesKeys && !(this.modifiers & ~8);
+      let shiftRelease: InputRelease | undefined;
       const pause = async (previous: string, next: string) => {
         if (human)
           await action.pace(
@@ -823,34 +827,58 @@ export class Keyboard {
             ),
           );
       };
-      for (let i = 0; i < segments.length; i++) {
-        const segment = segments[i]!;
-        const next = segments[i + 1];
-        // Overlap only distinct lowercase letter keys without caller-held modifiers or keys.
-        if (
-          keys &&
-          human &&
-          this.held.size === 0 &&
-          segment.length === 1 &&
-          next?.length === 1 &&
-          ROLLOVER.has(segment + next) &&
-          this.behavior.random() < 0.15
-        ) {
-          await this.rollover(segment, next, action);
-          i++;
-          await pause(next, segments[i + 1] ?? '');
-          continue;
+      try {
+        for (let i = 0; i < segments.length; i++) {
+          const segment = segments[i]!;
+          const next = segments[i + 1];
+          const keys = this.typesKeys && !(this.modifiers & ~8);
+          // A segment callback must read this segment before any of the next one's input.
+          if (
+            !onSegment &&
+            keys &&
+            human &&
+            this.held.size === 0 &&
+            segment.length === 1 &&
+            next?.length === 1 &&
+            ROLLOVER.has(segment + next) &&
+            this.behavior.random() < 0.15
+          ) {
+            await this.rollover(segment, next, action);
+            i++;
+            await pause(next, segments[i + 1] ?? '');
+            continue;
+          }
+          const character = characters.get(segment);
+          // A caller-held Shift would change an unshifted character; preserve the requested text.
+          if (keys && character && (character.shift || !(this.modifiers & 8))) {
+            if (character.shift && !(this.modifiers & 8)) {
+              if (this.held.has(character.definition.code))
+                throw new Error('Cannot type a key that is already held');
+              shiftRelease = await this.keyDown('Shift', action);
+              if (human) await action.pace(this.behavior.range('pressDelay') / 2);
+            }
+            await this.typeKey(segment, action);
+          } else {
+            await this.insertRaw(segment, action);
+            action.record('insertText');
+          }
+          // Release only the Shift this call owns, before an unshifted segment or the last callback.
+          if (shiftRelease && !characters.get(next ?? '')?.shift) {
+            await shiftRelease.run();
+            shiftRelease = undefined;
+          }
+          action.report.completedSegments++;
+          if (onSegment)
+            await action.waitFor(
+              Promise.resolve().then(() => {
+                action.step();
+                return onSegment(segment, i);
+              }),
+            );
+          await pause(segment, next ?? '');
         }
-        const character = characters.get(segment);
-        // A held Shift would turn a character typed without Shift into its shifted one.
-        if (keys && character && (character.shift || !(this.modifiers & 8)))
-          await this.typeKey(segment, action);
-        else {
-          await this.insertRaw(segment, action);
-          action.record('insertText');
-        }
-        action.report.completedSegments++;
-        await pause(segment, next ?? '');
+      } finally {
+        await shiftRelease?.run();
       }
     });
   }

@@ -86,7 +86,7 @@ The first terminal event wins, and `ended` resolves exactly once with one of the
 
 When a session ends, its pending requests and `waitFor` calls reject immediately with `SessionEndedError`, a `DisconnectedError` subtype carrying `reason` and `targetId`. Its event subscriptions are removed; later sends and waits reject and new subscriptions throw. Sibling attachments stay usable unless they share the destroyed/crashed target or the connection ends. Closing a target can yield `detached` before `target-destroyed`, depending on Chrome's event order.
 
-A crash ends the **library** lifetime even though Chrome would let the original CDP attachment reload and evaluate after a renderer crash: the raw session is closed and its attachment cleaned up. To recover, wait for the root `Target.targetCrashed` notification (the session-level one can arrive first), then attach again and send `Page.reload`. A target can crash again, so a new attachment does not guarantee recovery. High-level Tab crash/reload behavior is separate.
+A crash ends the **library** lifetime even though Chrome would let the original CDP attachment reload and evaluate after a renderer crash: the raw session is closed and its attachment cleaned up. To recover, wait for the root `Target.targetCrashed` notification (the session-level one can arrive first), then attach again and send `Page.reload`. If the target crashes again, repeat recovery after the next root crash notification. High-level Tab crash/reload behavior is separate.
 
 `detach()` ends the local lifetime synchronously, then awaits `Target.detachFromTarget`; repeated calls share one promise. A signal aborted before the call leaves the session open; aborting after the send does not reopen it and starts independent cleanup. If the session has already ended or Chrome no longer has the attachment, `detach()` succeeds without another command.
 
@@ -118,7 +118,7 @@ const browser = await Browser.connect({
 });
 ```
 
-`onSend` runs synchronously just before the transport's send method is called. `seq` is the connection's monotonically increasing CDP request ID (gaps are allowed), shared by all three callbacks. `at` is `performance.now()` in milliseconds. It records a send attempt, not that Chrome received or executed the command. Sends made from inside an observer are queued to preserve transport invocation order. Observer exceptions are isolated. Keep callbacks short; aborting from a callback cannot unsend the observed attempt.
+`onSend` runs synchronously just before the transport's send method is called. `seq` is the connection's monotonically increasing CDP request ID (gaps are allowed), shared by all three callbacks. `at` is `performance.now()` in milliseconds. It records the send attempt; use `onResponse` to observe Chrome's reply. Sends made from inside an observer are queued to preserve transport invocation order. Observer exceptions are isolated. Keep callbacks short; aborting from a callback cannot unsend the observed attempt.
 
 `onSettle` runs once per sent request when the caller's promise settles, in completion order. It reports the time since the send attempt and, on failure, the protocol error code or error name. A late response does not settle the caller again.
 
@@ -132,7 +132,7 @@ For an ordinary response, `onResponse` runs before the asynchronous `onSettle`. 
 
 Cancellation, timeout and session end do **not** remove unanswered commands. Send errors keep the count as well, because an arbitrary transport may fail after partial delivery. Pre-aborted requests, serialization failures and queued requests cancelled before their send attempt add no debt. Entries hold only ID/method/session/timestamp metadata and remain until a response or connection closure, regardless of what history the application evicts. A peer that never replies can grow this metadata; stop issuing work, enforce your own cleanup deadline and disconnect if responses cannot be confirmed.
 
-Connection closure clears the count without synthesizing responses, so always check `closed` or the disconnection event: zero after disconnect is not successful draining. Zero while open is an instantaneous count, not a barrier against concurrent sends, and a CDP reply does not prove that every browser-side effect has completed. Serialize operation and cleanup ownership in the application before releasing it.
+Connection closure clears the count without synthesizing responses, so always check `closed` or the disconnection event: after disconnect, zero reflects cleared bookkeeping. While open, the count can change as new commands are sent. Browser-side work may continue after a CDP reply. Serialize operation and cleanup ownership in the application before releasing it.
 
 ### Native drain
 

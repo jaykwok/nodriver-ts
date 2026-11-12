@@ -27,7 +27,7 @@ flowchart LR
 
 Your code and the MCP server use the same objects. Every command goes through one connection, which routes it to the browser, page or frame session it belongs to, applies the caller's timeout and signal, and names that session in a `ProtocolError`.
 
-> No automation framework is undetectable. nodriver-ts removes the common CDP and WebDriver tells, but it does not promise that any site will let you through. See [automation traces](#automation-traces).
+Pages can observe input events, browser settings and network characteristics. See [automation traces](#automation-traces) for the default behavior and available configuration.
 
 ## Requirements
 
@@ -210,10 +210,10 @@ What the defaults do:
 
 - No automatic `Runtime`, `Console` or `Debugger` domain, no bindings and no init scripts in the main world.
 - Chromium's `AutomationControlled` feature is disabled, so `navigator.webdriver` is natively `false`. No getter is patched.
-- Headless mode keeps the native user agent. `maskHeadless: true` removes HeadlessChrome from the page's UA and UA-CH and from dedicated workers; shared and service workers and their requests can keep native values. See the [differential audit](docs/differential-audit.md).
+- Headless mode keeps the native user agent. `maskHeadless: true` removes HeadlessChrome from the page's UA and UA-CH and from dedicated workers; shared and service workers and their requests can keep native values. See the [browser comparison benchmark](docs/differential-audit.md).
 - Input brings a tab to the front only when it is not already there, and a held mouse button reports a pressure of 0.5, as a real mouse does. Human mode also sends keyDown/keyUp pairs that match the US layout and starts the pointer at a random point instead of (0, 0).
 
-None of this is cloaking: fonts, WebGL, canvas, audio and hardware are not spoofed, and CAPTCHAs are not solved. Environment overrides (timezone, locale, UA-CH, viewport, geolocation) are explicit opt-ins; see [environment](docs/environment.md). On Linux, `nativeEnvironment` sets the timezone and language of the launched process instead; see [native launch environment](docs/native-environment.md). The [automation audit](docs/automation-audit.md) lists which signals remain observable.
+Fonts, WebGL, canvas, audio and hardware values come from the browser and host. CAPTCHA handling is left to the application. Environment overrides (timezone, locale, UA-CH, viewport, geolocation) are explicit opt-ins; see [environment](docs/environment.md). On Linux, `nativeEnvironment` sets the timezone and language of the launched process instead; see [native launch environment](docs/native-environment.md). The [browser behavior](docs/automation-audit.md) lists which signals remain observable.
 
 ## Development
 
@@ -234,27 +234,27 @@ npm run format:check
 
 Simplified Chinese translations are in [docs/zh-CN](docs/zh-CN/).
 
-| Document                                                  | Contents                                                                     |
-| --------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| [API](docs/api.md)                                        | Objects, deadlines, queries, locators, page fetch, tab scopes, storage       |
-| [Input](docs/input.md)                                    | The human input policy, typing, pointer checks, cancellation                 |
-| [Environment](docs/environment.md)                        | Environment sampling, diagnostics, explicit alignment, WebRTC                |
-| [Native launch environment](docs/native-environment.md)   | Linux process timezone and language, startup check, timezone through a proxy |
-| [Browser handoff](docs/browser-handoff.md)                | Detached launch, release and reconnect, CDP event subscriptions              |
-| [Supervised launch](docs/lifecycle-ownership-design.md)   | Process supervision, bounded stderr, explicit release                        |
-| [Raw sessions](docs/raw-sessions.md)                      | Unmanaged targets, session lifetime, drain, send observation                 |
-| [Startup diagnostics](docs/startup-diagnostics.md)        | Launch and connect failure stages and process information                    |
-| [Automation audit](docs/automation-audit.md)              | Default protocol behaviour, regression checks, remaining signals             |
-| [Differential audit](docs/differential-audit.md)          | Native, masked and configured launches, pages and workers                    |
-| [MCP](docs/mcp.md)                                        | CLI, tools, refs, page JavaScript, embedding                                 |
-| [MCP over HTTP](docs/mcp-http.md)                         | Leases, authentication, limits, resources, hand-off                          |
-| [MCP over socket](docs/mcp-socket.md)                     | Unix socket / named pipe service and client                                  |
-| [Agent compatibility](docs/agent-compatibility.md)        | MCP 2025-11-25 / 2025-06-18 clients                                          |
-| [Support](docs/support.md)                                | Platforms, capabilities, limitations                                         |
-| [Performance](docs/performance.md) · [Soak](docs/soak.md) | Benchmark method and baseline, long-running resource test                    |
-| [Scripted testing](docs/testing.md)                       | `ScriptedChrome` for testing code without launching Chrome                   |
-| [Upstream API map](docs/upstream-api-map.md)              | nodriver members and their TypeScript counterparts                           |
-| [API test map](docs/test-map.md)                          | Tests that call each public member and MCP tool (generated)                  |
+| Document                                                   | Contents                                                                     |
+| ---------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| [API](docs/api.md)                                         | Objects, deadlines, queries, locators, page fetch, tab scopes, storage       |
+| [Input](docs/input.md)                                     | The human input policy, typing, pointer checks, cancellation                 |
+| [Environment](docs/environment.md)                         | Environment sampling, diagnostics, explicit alignment, WebRTC                |
+| [Native launch environment](docs/native-environment.md)    | Linux process timezone and language, startup check, timezone through a proxy |
+| [Browser handoff](docs/browser-handoff.md)                 | Detached launch, release and reconnect, CDP event subscriptions              |
+| [Supervised launch](docs/lifecycle-ownership-design.md)    | Process supervision, bounded stderr, explicit release                        |
+| [Raw sessions](docs/raw-sessions.md)                       | Unmanaged targets, session lifetime, drain, send observation                 |
+| [Startup diagnostics](docs/startup-diagnostics.md)         | Launch and connect failure stages and process information                    |
+| [Browser behavior](docs/automation-audit.md)               | Default protocol behavior, execution worlds and observable events            |
+| [Browser comparison benchmark](docs/differential-audit.md) | Native, masked and configured launches, pages and workers                    |
+| [MCP](docs/mcp.md)                                         | CLI, tools, refs, page JavaScript, embedding                                 |
+| [MCP over HTTP](docs/mcp-http.md)                          | Leases, authentication, limits, resources, hand-off                          |
+| [MCP over socket](docs/mcp-socket.md)                      | Unix socket / named pipe service and client                                  |
+| [Agent compatibility](docs/agent-compatibility.md)         | MCP 2025-11-25 / 2025-06-18 clients                                          |
+| [Support](docs/support.md)                                 | Platforms, capabilities, limitations                                         |
+| [Performance](docs/performance.md) · [Soak](docs/soak.md)  | Benchmark method and baseline, long-running resource test                    |
+| [Scripted testing](docs/testing.md)                        | `ScriptedChrome` for testing code without launching Chrome                   |
+| [Upstream API map](docs/upstream-api-map.md)               | nodriver members and their TypeScript counterparts                           |
+| [API test map](docs/test-map.md)                           | Tests that call each public member and MCP tool (generated)                  |
 
 Changes are recorded in [CHANGELOG.md](CHANGELOG.md).
 

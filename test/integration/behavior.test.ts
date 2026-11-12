@@ -16,6 +16,71 @@ const policy = {
   keyDelay: [10, 10] as [number, number],
   scrollSteps: [4, 4] as [number, number],
 };
+
+test('typing callbacks read each segment from the page while consecutive capitals share Shift', async (t) => {
+  const fixture = await fixtureServer();
+  t.after(() => fixture.server.stop());
+  await using browser = await Browser.launch({ headless: true });
+  const tab = await browser.newTab(fixture.base + '/input-events');
+  const field = await tab.waitForSelector('#plain');
+  const typingPolicy = {
+    ...policy,
+    pressDelay: [0, 0] as [number, number],
+    keyDelay: [0, 0] as [number, number],
+  };
+  tab.setInputPolicy(typingPolicy);
+  const session = await browser.attachSession(tab.id);
+  const scope = browser.inputScope(session, { policy: typingPolicy, pointer: tab.mouse.position });
+  const segments = ['t', 'h', 'A', 'A', 'B', '!', 'c', '中文', '👨‍👩‍👧‍👦'];
+  for (const entry of ['element', 'locator', 'keyboard', 'scope'] as const) {
+    await field.fill(entry === 'element' || entry === 'locator' ? 'old' : '');
+    await tab.evaluate('window.__clear()');
+    const seen: string[] = [];
+    const options = {
+      replace: true,
+      onSegment: async (segment: string, index: number) => {
+        expect(segment).toBe(segments[index]);
+        const value = await field.evaluate((el) => (el as HTMLInputElement).value);
+        expect(value).toBe(segments.slice(0, index + 1).join(''));
+        seen.push(value);
+      },
+    };
+    const report =
+      entry === 'element'
+        ? await field.type(segments, options)
+        : entry === 'locator'
+          ? await tab.locator('#plain').type(segments, options)
+          : entry === 'keyboard'
+            ? await tab.keyboard.type(segments, options)
+            : await scope.run(async ({ keyboard, mouse }) => {
+                await mouse.move(120, 80);
+                await keyboard.type(segments, options);
+              });
+    expect(report.completedSegments).toBe(segments.length);
+    expect(seen).toHaveLength(segments.length);
+    expect(
+      (await tab.evaluate<any[]>('window.__events'))
+        .filter((e) => e.key === 'Shift')
+        .map((e) => e.type),
+    ).toEqual(['keydown', 'keyup']);
+    if (entry === 'scope') expect(scope.position).toEqual({ x: 120, y: 80 });
+  }
+  await field.fill('');
+  const stopped = await field
+    .type('AB', {
+      onSegment: async () => {
+        await (await tab.waitForSelector('#target')).focus();
+      },
+    })
+    .catch((e: unknown) => e);
+  expect(stopped).toBeInstanceOf(InputActionError);
+  const error = stopped as InputActionError;
+  expect(error.report.completedSegments).toBe(1);
+  expect((await error.cleanup).status).toBe('completed');
+  expect(await field.evaluate((el) => (el as HTMLInputElement).value)).toBe('A');
+  expect(tab.keyboard.pressedKeys).toEqual([]);
+});
+
 for (const transport of ['pipe', 'websocket'] as const) {
   test(`${transport}: seeded input events, graphemes, selection, chords, four frames and scroll`, async (t) => {
     // Cleanup is registered as each resource opens, so a failed launch still stops the server.

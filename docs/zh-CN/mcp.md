@@ -175,7 +175,7 @@ HTTP 与 socket 服务只接受本机连接，并要求 `NODRIVER_MCP_TOKEN`（�
 - **结果**：`{ "type": "json", "value": ... }`；无 return 或返回 undefined 时为 `{ "type": "undefined" }`。对象遵循 `JSON.stringify` 语义（Date 变成字符串，嵌套 undefined 被省略，NaN 变成 null）；BigInt、循环引用、顶层 function/symbol 报错。DOM 节点须映射成所需字段，不返回远端句柄。
 - **大小**：脚本与参数（JSON 序列化后）各最多 32,768 个字符，结果 JSON 最多 262,144 个字符。超限报错，不截断。
 - **范围**：`frameId` 可选，省略时为主 frame。它必须属于当前租约的标签页，支持同进程 iframe 与 OOPIF。`world` 默认 main，可访问页面全局变量；isolated 与页面 JS 全局对象隔离，但共享 DOM，不是安全沙箱。脚本只在 Chrome 中运行，无法访问宿主的 Node、文件系统或进程；请求、Cookie、存储和同源限制遵循页面自身权限。该工具能读写页面敏感状态，因此标为会修改状态。
-- **期限**：超时时间默认 10 秒，最大为操作期限（默认 30 秒）。CDP 执行期限限制初始同步计算，宿主等待期限与取消同时生效。**已安排的定时器、网络请求或异步续体不保证停止，副作用也不回滚。** 超时或取消后不重放，后续操作可能与遗留的页面任务交错；要停止页面上的全部任务，请关闭该标签页。
+- **期限**：超时时间默认 10 秒，最大为操作期限（默认 30 秒）。CDP 执行期限限制初始同步计算，宿主等待期限与取消同时生效。已安排的定时器、网络请求或异步任务可能在到期后继续运行，已产生的副作用会保留。 超时或取消后不重放，后续操作可能与遗留的页面任务交错；要停止页面上的全部任务，请关闭该标签页。
 - **输入行为**：`element.click()`、直接赋值 value 或 `dispatchEvent()` 不经过输入策略，也不产生可信输入事件。需要真实输入时使用 `browser_click`、`browser_fill`、`browser_type` 和 `browser_scroll`。跨页面导航请用 `browser_navigate`，以免执行期间文档被销毁。
 
 ## 嵌入
@@ -192,7 +192,7 @@ const handle = serveStdio(() => createBrowserMcpServer({ launch: { transport: 'p
 // 应用退出时：await handle.close();
 ```
 
-`launch` 与 `connect: { endpoint }` 互斥。每次工厂调用创建独立的实例与引用注册表，不要让无关的 agent 共用一个实例。返回值是标准 `McpServer`，可以注册应用自己的工具。关闭服务或 stdin EOF 会清理其拥有的 Chrome 与临时 profile，并保留持久 profile；CLI 收到 SIGINT/SIGTERM 时同样如此。进程被强杀或断电时无法保证清理。
+`launch` 与 `connect: { endpoint }` 互斥。每次工厂调用创建独立的实例与引用注册表，不要让无关的 agent 共用一个实例。返回值是标准 `McpServer`，可以注册应用自己的工具。关闭服务或 stdin EOF 会清理其拥有的 Chrome 与临时 profile，并保留持久 profile；CLI 收到 SIGINT/SIGTERM 时同样如此。进程被强杀或断电可能留下浏览器进程或临时文件。
 
 第二个参数 `BrowserMcpBinding` 传入已有的 `BrowserSessionManager`、已验证的主体和 leaseId。此时 `server.close()` 只关闭适配器，租约归管理器管理，见 [HTTP 接入](mcp-http.md#嵌入与所有权)。
 
@@ -204,7 +204,7 @@ const handle = serveStdio(() => createBrowserMcpServer({ launch: { transport: 'p
 - **取消**：取消信号传递到导航、等待、查询、快照和支持取消的动作。已发出的 CDP 命令和输入不能撤销；队列不会因为客户端停止等待就提前放行下一个写操作。
 - **错误**：工具错误返回 `isError: true` 及错误名称与信息，不自动重放点击、提交或其他动作。输入 schema 拒绝多余字段；对于参数本会被忽略的组合，工具以 `TypeError` 拒绝：`browser_environment` 的 inspect 模式搭配 `environment` 或 `geoip`；`browser_drag` 的 `to` 搭配 `toX` 或 `toY`（须给出 `to`，或同时给出两个坐标）；`browser_scroll` 的 `ref` 搭配非零增量或坐标；`browser_screenshot` 的 `ref` 搭配 `fullPage`，或 PNG 搭配 `quality`；`marks` 搭配 `ref`、`fullPage`、非 PNG 格式或 `quality`。导航只接受 HTTP(S) 与 about:blank；这不是网络隔离，页面重定向、链接和浏览器自身请求仍按 Chrome 的行为进行。
 - **范围**：不提供远程多租户、任意 CDP 或宿主脚本执行。文件工具只在宿主配置目录后出现，并限定在该目录内。工具描述与 annotations 供客户端展示，不是访问控制。
-- **痕迹**：AX 快照不启用 Runtime。`browser_network` 的 `start` 会在标签页剩余生命周期内启用 CDP Network 域；`stop` 只结束记录。其他可观测的信号见[自动化痕迹审计](automation-audit.md)。
+- **痕迹**：AX 快照不启用 Runtime。`browser_network` 的 `start` 会在标签页剩余生命周期内启用 CDP Network 域；`stop` 只结束记录。其他可观测的信号见[浏览器行为](automation-audit.md)。
 
 ## 测试
 
@@ -213,4 +213,4 @@ npm run test:mcp
 npm run test:all
 ```
 
-测试用官方 MCP 客户端驱动真实 stdio 子进程，覆盖两种 Chrome 传输，并检查默认入口拒绝旧协议；兼容测试覆盖两个 2025 版本的协商、取消、会话隔离与能力检查。测试还覆盖四类 frame、closed shadow root、引用失效与跨标签页拒绝、中文输入、checkbox/select、截图、非法参数、取消、JS 对话框和下载等待。嵌入测试审计实际 CDP 命令，并检查关闭后清理自有 profile、保留外部 Chrome。EOF 测试只关闭 stdin 并等待服务自行退出，然后检查持久 profile 保留、锁与 `DevToolsActivePort` 已删除、调试端口已关闭。
+测试用官方 MCP 客户端驱动真实 stdio 子进程，覆盖两种 Chrome 传输，并检查默认入口拒绝旧协议；兼容测试覆盖两个 2025 版本的协商、取消、会话隔离与能力检查。测试还覆盖四类 frame、closed shadow root、引用失效与跨标签页拒绝、中文输入、checkbox/select、截图、非法参数、取消、JS 对话框和下载等待。嵌入测试记录 CDP 命令，并检查关闭后清理自有 profile、保留外部 Chrome。EOF 测试只关闭 stdin 并等待服务自行退出，然后检查持久 profile 保留、锁与 `DevToolsActivePort` 已删除、调试端口已关闭。

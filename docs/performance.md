@@ -21,7 +21,7 @@ A phase-by-phase breakdown of AX snapshots and operation queues is in [AX and qu
 - **CPU**: the difference in cumulative CPU time for the controller and that set of Chrome processes; processes that exit in the meantime may not be counted.
 - **Tail latency**: with few samples, p99 is close to the largest sample and does not represent a stable tail latency.
 
-Endpoint sampling only describes the state under a limited workload; it cannot prove the absence of memory leaks.
+Memory samples describe the start and end of these workloads. For trends over repeated operations, use the [soak test](soak.md).
 
 ## Comparison with Python nodriver
 

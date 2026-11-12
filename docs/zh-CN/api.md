@@ -93,7 +93,7 @@
 
 `Element.evaluate(fn, arg?, { world, timeout, signal })` 与 `Element.withObject(fn, options?)` 默认在隔离世界中运行，显式指定 `{ world: 'main' }` 才能读取页面在 DOM 包装对象上设置的属性，例如 React 或 Vue 的状态。内置 DOM 探针始终使用隔离世界，不受公开求值所选世界的影响。`withObject` 把 `objectId` 和专用的 `objectGroup` 传给 `fn`，并在操作结束时释放。在输入动作内部，超时与取消信号同样生效，并与动作自身的期限共同约束。超时或取消只结束等待，不能撤销已执行的脚本或停止用户回调，也不会重放求值。
 
-框架不调用 `Runtime.enable`：主世界通过所属 frame 的 Document 与 `DOM.resolveNode` 解析并校验，详见 [自动化痕迹审计](automation-audit.md)。因此不会收到 Runtime 事件；自行通过 `cdp` 发送 `Runtime.enable` 可以收到，但会改变检测面。`addInitScript()` 应在 `goto()` 前注册；新 OOPIF 在暂停状态下完成初始化后恢复，有看门狗兜底。已经开始执行的弹出页或外部页面没有首段脚本前注入保证。
+框架不调用 `Runtime.enable`：主世界通过所属 frame 的 Document 与 `DOM.resolveNode` 解析并校验，详见 [浏览器行为](automation-audit.md)。因此不会收到 Runtime 事件；自行通过 `cdp` 发送 `Runtime.enable` 可以收到，但会改变检测面。`addInitScript()` 应在 `goto()` 前注册；新 OOPIF 在暂停状态下完成初始化后恢复，有看门狗兜底。已经开始执行的弹出页或外部页面没有首段脚本前注入保证。
 
 ## 启动与连接
 
@@ -119,7 +119,7 @@
 
 `prepareProfile` 在每次启动前运行，临时 profile 和持久 profile 都是如此，因此通过 `updateProfileSettings()` 写入的设置会在每次 Chrome 启动时检查并恢复。它的第二个参数包含启动的 `timeout` 与 `signal`、`temporary`（库为本次启动创建的 profile）和 `empty`：临时 profile 恒为 true；`userDataDir` 在目录原本不存在、或只含库的锁文件 `.nodriver.lock` 与 `.nodriver.lock.reclaim` 时为 true。`empty` 在锁内、库和 Chrome 写入其他内容之前读取，因此“有数据的目录必须已带应用标识”之类的检查无需依赖锁文件的名称。`updateProfileSettings(dir, { localState, preferences })` 把值合并进 `Local State` 和某个 profile 的 `Preferences`（未指定时为 `Default`），并逐个读回文件检查；它无法判断 Chrome 是否采用某个值。
 
-在 Windows 上，Chrome 的密码管理器可能会以空密码尝试登录，以检查账户是否没有设置密码，失败的尝试会计入账户锁定策略。Chrome 把检查结果缓存在 `Local State` 中。固定的 `userDataDir` 会在多次启动之间保留这份缓存，从而减少检查次数，但不能杜绝检查：新的 profile、修改过的 Windows 密码或失效的缓存都会再次触发检查。按照 Chromium 源码（`password_manager_util_win.cc`），只有在缓存有效时，才会复用缓存的 `password_manager.os_password_blank` 值：`password_manager.os_password_last_changed` 大于零，且不早于 Windows 报告的该账户最近一次修改密码的时间。否则会再次检查，因此仅设置 `os_password_blank` 并不能阻止检查。本库不附带这类设置，也不声明哪些设置能在某个 Chrome 或 Edge 版本中避免这项检查。依赖某套配置之前，请在目标机器上验证，例如使用专门的测试账户并查看安全日志。
+在 Windows 上，Chrome 的密码管理器可能会以空密码尝试登录，以检查账户是否没有设置密码，失败的尝试会计入账户锁定策略。Chrome 把检查结果缓存在 `Local State` 中。固定的 `userDataDir` 会在多次启动之间保留这份缓存，从而减少检查次数，但不能杜绝检查：新的 profile、修改过的 Windows 密码或失效的缓存都会再次触发检查。按照 Chromium 源码（`password_manager_util_win.cc`），只有在缓存有效时，才会复用缓存的 `password_manager.os_password_blank` 值：`password_manager.os_password_last_changed` 大于零，且不早于 Windows 报告的该账户最近一次修改密码的时间。否则会再次检查，因此仅设置 `os_password_blank` 并不能阻止检查。本库保持这些 Chrome 设置不变。需要了解特定浏览器版本的行为时，可使用专门的测试账户并查看 Windows 安全日志。
 
 持久 profile 的锁文件记录 PID 与主机名，只有确认本机持有进程已退出时才回收陈旧锁；回收过程由独立的 `.nodriver.lock.reclaim` 文件互斥。若回收期间进程被强杀而留下该文件，会明确报错，确认记录的进程已退出后再手动删除。profile 中残留的 `DevToolsActivePort`（Chrome 未正常退出时留下，例如 MCP 宿主强制结束了服务进程）会被探测：记录的浏览器仍在该端口上应答时拒绝启动，否则删除该文件后继续。启动失败且 Chrome 已退出时，错误包含退出码与 stderr。
 
@@ -129,7 +129,7 @@
 
 确认同机 `.nodriver.lock` 持有进程仍存活、其他进程抢先回收了陈旧锁，或 `DevToolsActivePort` 仍由原浏览器提供服务时，抛出带 `profile` 路径的 `ProfileInUseError`。Windows 另探测 Chrome 原生 `lockfile` 的共享冲突（`EBUSY`），因此未开放调试端口的已运行 Chrome 也会得到该错误；未锁定的残留文件和权限错误都不算占用。Unix 不检查原生 `SingletonLock`/`SingletonSocket`，未开放调试端口时可能得到普通的启动退出错误。
 
-`await using` 在正常退出和异常展开时关闭资源，也可使用 `try/finally` 与 `close()`。`close()` 幂等，失败后可再次调用。未设置 `detached` 启动的 Chrome 也会在宿主退出时结束，包括 `process.exit()` 和未捕获异常。宿主被强制终止或断电时，JavaScript 无法保证清理；这种情况下的遗留见[浏览器交接与事件](browser-handoff.md)。
+`await using` 在正常退出和异常展开时关闭资源，也可使用 `try/finally` 与 `close()`。`close()` 幂等，失败后可再次调用。未设置 `detached` 启动的 Chrome 也会在宿主退出时结束，包括 `process.exit()` 和未捕获异常。宿主被强制终止或断电可能中断 JavaScript 清理；这种情况下的遗留见[浏览器交接与事件](browser-handoff.md)。
 
 `await browser.release()` 返回 WebSocket 端点并放弃进程所有权，之后 `owned` 为 `false`，`close()` 与异步析构只断开连接。自有浏览器必须以 `detached: true` 启动，且不能使用 `virtualDisplay`；pipe 会明确拒绝交接且不改变连接。交接保留 profile（临时 profile 也保留）与 `DevToolsActivePort`，移除记录宿主 PID 的 `.nodriver.lock`。`disconnect()` 不放弃所有权，pipe Chrome 在管道断开时会退出。未设置 `supervised` 时，交接前宿主崩溃可能遗留 Chrome。完整示例、清理责任和事件接口见[浏览器交接与事件](browser-handoff.md)。
 
@@ -175,7 +175,7 @@ scope.keep(reviewTab); // 留给人工处理
 
 ## 状态与存储
 
-BrowserContext 之间的 Cookie 与存储相互隔离；这不等于独立的操作系统、GPU 或字体环境。
+各 BrowserContext 使用独立的 Cookie 与存储，共享宿主的操作系统、GPU 和字体。
 
 `storageState({ include, maxBytes, path })` 保存 Cookie，以及该上下文中任一 frame 访问过的 HTTP(S) 源的第一方 localStorage，包括 iframe 和已关闭标签页用过的源；空存储不导出。跨站 iframe 在其他顶层站点下的分区 localStorage 不在快照内。仍打开的主页面原地读取，其余源在一个临时标签页中读取。
 

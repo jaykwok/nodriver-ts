@@ -27,7 +27,7 @@ flowchart LR
 
 你的代码和 MCP 服务使用同一套对象。所有命令都经过同一个连接：连接把命令发往它所属的 browser、page 或 frame session，应用调用方的超时和取消信号，并在 `ProtocolError` 中注明该 session。
 
-> 没有检测不到的自动化框架。nodriver-ts 去除常见的 CDP 和 WebDriver 痕迹，但不保证任何网站都会放行。见[自动化痕迹](#自动化痕迹)。
+页面可以观察输入事件、浏览器设置和网络特征。默认行为与可用配置见[自动化痕迹](#自动化痕迹)。
 
 ## 运行要求
 
@@ -210,10 +210,10 @@ nodriver-mcp --mcp-transport http --port 3100
 
 - 不自动启用 `Runtime`、`Console` 或 `Debugger` 域，不使用 binding，也不在主世界中注入初始化脚本。
 - 关闭 Chromium 的 `AutomationControlled` 特性，因此 `navigator.webdriver` 原生为 `false`，不修补任何 getter。
-- 无界面模式保留原生 UA。`maskHeadless: true` 会去掉页面 UA、UA-CH 和 Dedicated Worker 中的 HeadlessChrome；Shared Worker、Service Worker 及其请求可能保留原生值。见[差分审计](docs/zh-CN/differential-audit.md)。
+- 无界面模式保留原生 UA。`maskHeadless: true` 会去掉页面 UA、UA-CH 和 Dedicated Worker 中的 HeadlessChrome；Shared Worker、Service Worker 及其请求可能保留原生值。见[浏览器对照基准](docs/zh-CN/differential-audit.md)。
 - 输入只在标签页不在最前面时才将其置前；按住鼠标键时报告 0.5 的压力，与真实鼠标一致。human 模式还会发送符合 US 布局的成对 keyDown/keyUp，指针从随机位置而不是 (0, 0) 开始。
 
-这些都不是伪装：不伪造字体、WebGL、canvas、音频或硬件，也不解验证码。环境覆盖（时区、locale、UA-CH、视口、地理位置）需要显式启用；见[环境](docs/zh-CN/environment.md)。在 Linux 上，`nativeEnvironment` 改为设置所启动进程的时区和语言；见[原生启动环境](docs/zh-CN/native-environment.md)。[自动化痕迹审计](docs/zh-CN/automation-audit.md)列出了仍可观测的信号。
+字体、WebGL、canvas、音频和硬件值来自浏览器与宿主环境，验证码交互由应用自行处理。环境覆盖（时区、locale、UA-CH、视口、地理位置）需要显式启用；见[环境](docs/zh-CN/environment.md)。在 Linux 上，`nativeEnvironment` 改为设置所启动进程的时区和语言；见[原生启动环境](docs/zh-CN/native-environment.md)。[浏览器行为](docs/zh-CN/automation-audit.md)列出了仍可观测的信号。
 
 ## 开发
 
@@ -244,8 +244,8 @@ npm run format:check
 | [监管启动](docs/zh-CN/lifecycle-ownership-design.md)               | 进程监管、有界 stderr、显式 release                       |
 | [原始 session](docs/zh-CN/raw-sessions.md)                         | 非托管 target、session 生命周期、drain、发送观察          |
 | [启动诊断](docs/zh-CN/startup-diagnostics.md)                      | 启动和连接失败的阶段与进程信息                            |
-| [自动化痕迹审计](docs/zh-CN/automation-audit.md)                   | 默认协议行为、回归检查、仍可观测的信号                    |
-| [差分审计](docs/zh-CN/differential-audit.md)                       | 原生、伪装和显式配置的启动，页面与 Worker                 |
+| [浏览器行为](docs/zh-CN/automation-audit.md)                       | 默认协议行为、执行世界和可观察的事件                      |
+| [浏览器对照基准](docs/zh-CN/differential-audit.md)                 | 原生、UA 掩码和显式配置的启动，页面与 Worker              |
 | [MCP](docs/zh-CN/mcp.md)                                           | CLI、工具、引用、页面 JavaScript、嵌入                    |
 | [HTTP 接入](docs/zh-CN/mcp-http.md)                                | 租约、认证、限额、资源、人工交互                          |
 | [socket 接入](docs/zh-CN/mcp-socket.md)                            | Unix socket / 命名管道服务与客户端                        |

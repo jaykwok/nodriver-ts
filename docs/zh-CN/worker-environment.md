@@ -35,9 +35,9 @@ npm run bench:worker-environment
 | `prepared-navigation`   | 同组合配置，但先创建空白页，完成配置后再调用 `Page.navigate`                                 |
 | `prepared-locale-check` | 导航前配置；先读取空白页和 Worker 当前的 Locale，再决定是否申请覆盖                          |
 
-UA 和 Client Hints 使用刻意构造的测试标记值，不是推荐的设备身份。`native` 也不是无 CDP 或物理输入基线；这些对照请参阅[差分审计](differential-audit.md)。
+UA 和 Client Hints 使用刻意构造的测试标记值，不是推荐的设备身份。`native` 也不是无 CDP 或物理输入基线；这些对照请参阅[浏览器对照基准](differential-audit.md)。
 
-JSON 分开保存命令结果、首段脚本观测、请求值核验、跨上下文比较和请求头。命令成功不会覆盖字段不匹配。上下文/请求缺失、暂停配置下始终未观测到 OOPIF Target、意外的侵入式命令、重复预处理、恢复失败或连接清理不完整，都会使采集失败。Locale 所有权冲突等命令拒绝会明确记录。成功退出只表示采集完成，不代表所有覆盖都成功。
+JSON 分开保存命令结果、首段脚本观测、请求值核验、跨上下文比较和请求头。命令状态与字段不匹配分别报告。上下文/请求缺失、暂停配置下始终未观测到 OOPIF Target、意外的侵入式命令、重复预处理、恢复失败或连接清理不完整，都会使采集失败。Locale 所有权冲突等命令拒绝会明确记录。退出状态描述采集过程，请求值比较显示各项覆盖是否生效。
 
 `zh-CN`、`en-US` 等都是正常的用户语言偏好，不是自动化指标，也不要求统一成某种语言。`matchesFirstScriptLanguages` 不区分大小写地比较有序语言列表，进度计数 `languageHeaderDifferences` 统计其中不一致的请求；两者都只是观测，不判定失败。[Chromium 会扩展语言列表](https://chromium.googlesource.com/chromium/src/+/refs/heads/main/net/http/http_util.h)，补充不含地区的回退项；请求头权重及偏好列表不必与 `navigator.languages` 完全相等。应对照同一浏览器和配置的原生基线及明确请求的值来比较，不能只看字符串是否相同。库默认保留原生语言。
 
@@ -50,7 +50,7 @@ JSON 分开保存命令结果、首段脚本观测、请求值核验、跨上下
 - `prepared-navigation`：请求的字段、跨上下文值（含高熵 UA-CH）与 UA 请求头均一致。Service Worker 和嵌套 Worker 的初始请求使用启动时的 `Accept-Language` 列表（如 `fr-FR,fr,en-US,en`），后续请求使用 CDP 列表（`fr-FR,fr`）。由于 Locale 覆盖按渲染进程共享，每次运行还会产生 4 个 Locale 命令冲突。
 - `prepared-locale-check`：先读取空白页和 Worker 上已生效的 Locale，只在需要时申请覆盖；不产生命令错误，请求的首段脚本字段一致。暂停的 OOPIF 尚无默认执行上下文，因此在上下文创建前覆盖，再通过 fixture 样本核对。
 
-`already-observed` 只表示读到了所需 Locale，不表示取得覆盖所有权。该检查会在 fixture 第一条语句之前额外执行 `Runtime.evaluate`，但不启用 Runtime 事件。Worker 请求中缺少的 Client Hints 按实际缺失记录，不会补成与页面请求一致。持久化 Profile、Service Worker 更新/重启、已在运行的 Worker、弹窗与外部浏览器不在本基准范围内。
+`already-observed` 表示所需 Locale 已存在，因此没有取得新的覆盖所有权。该检查会在 fixture 第一条语句之前额外执行 `Runtime.evaluate`，但不启用 Runtime 事件。Worker 请求中缺少的 Client Hints 按实际缺失记录。持久化 Profile、Service Worker 更新/重启、已在运行的 Worker、弹窗与外部浏览器不在本基准范围内。
 
 ## 浏览器级策略的约束
 

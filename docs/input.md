@@ -2,7 +2,7 @@
 
 [简体中文](zh-CN/input.md)
 
-The default `instant` policy performs fast, deterministic actions. `tab.setInputPolicy({ mode: 'human', seed: 42 })` turns on continuous pointer trajectories with acceleration and deceleration, pauses, press/release intervals, segmented scrolling and per-character typing rhythm. This is a configurable, programmatic behaviour model: it is not equivalent to physical input and does not promise to pass detection.
+The default `instant` policy performs fast, deterministic actions. `tab.setInputPolicy({ mode: 'human', seed: 42 })` turns on continuous pointer trajectories with acceleration and deceleration, pauses, press/release intervals, segmented scrolling and per-character typing rhythm. The policy controls CDP input timing and paths; it does not generate operating-system keyboard or mouse events.
 
 ```ts
 tab.setInputPolicy({
@@ -70,6 +70,22 @@ Human input is planned in Node; nothing runs in the page to produce it.
 - **macOS editing shortcuts**: when the browser runs on macOS, key events carry AppKit editing commands (CDP `commands`), so `Meta+A` selects all, `Meta+Z` undoes, `Alt+ArrowLeft` moves by word, `Control+A` moves to the start of the paragraph, and so on, as on a Mac keyboard. A launched browser uses the host platform, so a `userAgent` launch option does not change it; a connected browser uses the user agent that `Browser.getVersion` reports.
 - **`select()`**: changes the option through the DOM and dispatches synthetic input/change events; isTrusted is not rewritten. When pointer or key interaction is needed, the caller performs it explicitly.
 
+`keyboard.type()`, `element.type()` and `locator.type()` accept `onSegment(segment, index)`, a synchronous or async completion callback. It runs once per grapheme (string input) or array entry (explicit segments), after Chrome acknowledges the segment and its character key is released. The zero-based index belongs to this `type()` call; `completedSegments` is incremented before the callback. Typing waits for the callback before sending the next segment, and disables overlapping presses so a readback sees that boundary. Use the callback to read the resulting value, since a page event handler can suppress or transform the text. Callback time counts against the action's deadline and signal. A throw, rejection, timeout or cancellation stops further typing and releases managed keys; completed text is never replayed. No completion callback runs for an interrupted segment, including one acknowledged only during cleanup. Cancellation stops waiting for a callback but cannot stop arbitrary user code already running inside it. `KeyboardTypeOptions` is exported; the element/locator `TypeOptions` extends it with `replace`.
+
+With physical-key typing, consecutive capitals or shifted symbols in one `type()` call share a single Shift press, also across `onSegment` waits. For example, `['A', 'B', '!']` holds Shift through the first two callbacks and releases it before the last. Before an unshifted or inserted-text segment, at the end of the call, or on failure, the Shift acquired by typing is released. A caller-held Shift is preserved. Multi-character array entries still use a single `insertText`; separate `type()` calls do not share an automatically held Shift.
+
+```ts
+tab.setInputPolicy({ typing: 'keys' });
+const field = await tab.waitForSelector('#code');
+await field.type(['A', 'B', 'C'], {
+  replace: true,
+  onSegment: async (segment, index) => {
+    const value = await field.evaluate((el) => (el as HTMLInputElement).value);
+    console.log({ segment, index, value }); // A, AB, ABC
+  },
+});
+```
+
 Ordinary `type()` does not generate a composition lifecycle; explicit CDP composition is available through `keyboard.compose()` and input scopes. Neither simulates OS input-method candidate windows or non-US keyboard layouts.
 
 ## Pointer and clicks
@@ -128,7 +144,7 @@ Commands whose callers stopped waiting remain visible through the cleanup result
 
 While a JavaScript dialog is open on a page the action used, the cleanup budget pauses, because Chrome holds the replies to input that page was handling until the dialog closes. The budget restarts when the dialog closes, and the trace records `dialogWait`. A page that closes takes its input state with it: requests it leaves unanswered and steps that fail because its session ended are not cleanup failures, and the trace records `pageClosed`. Other failures on a closed page are still reported but block no input.
 
-When only composition cancellation is unconfirmed, all other cleanup and outstanding replies have completed, and no managed key or mouse button remains held anywhere on the connection, the block covers only that composition's top-level page target: every attachment and cross-origin child frame of that page. Other known pages keep using the same connection and input queue. A held key or button counts as released after a managed release through any attachment of its page, or once that page closes. Closing the page clears its block after `Target.targetDestroyed`; detaching or reattaching a session, navigation, a renderer crash or destroying a child frame does not. The original action still reports failed cleanup; the narrower block neither confirms that the composition ended nor undoes text Chrome may have committed on blur.
+When only composition cancellation is unconfirmed, all other cleanup and outstanding replies have completed, and no managed key or mouse button remains held anywhere on the connection, the block covers only that composition's top-level page target: every attachment and cross-origin child frame of that page. Other known pages keep using the same connection and input queue. A held key or button counts as released after a managed release through any attachment of its page, or once that page closes. Closing the page clears its block after `Target.targetDestroyed`; detaching or reattaching a session, navigation, a renderer crash or destroying a child frame does not. The original action still reports failed cleanup; the composition may still be active, and text Chrome committed on blur stays in the document.
 
 If page ownership cannot be established from target metadata and attachment ancestry, a composition cleanup failure still blocks the whole connection. While a page is blocked, managed input on a session of unknown ownership is refused too, so a new raw frame attachment cannot bypass the block. Unreleased keys/buttons, other release failures, drain timeouts and disconnection also block the whole connection: restore the target state and establish a new connection before continuing. Direct raw CDP input bypasses both managed hold tracking and these blocks.
 
@@ -181,7 +197,9 @@ The first `update()` fails before any composition command unless the focus can t
 
 ## Raw input scopes
 
-Pointer moves acknowledged during cancellation cleanup also update the scope's next starting point. A failed or unacknowledged move does not. The `sent` counters include raw input commands issued from the scope callback, including on another connection; they count transport dispatch, not merely a queued call.
+`scope.position` returns a frozen, read-only `{ x, y }` snapshot of the last acknowledged move, in viewport CSS pixels. It includes moves acknowledged during cancellation cleanup: after an interrupted run, await `error.cleanup`, then read `scope.position`. Failed or unacknowledged moves do not update it. Before the first acknowledged move it returns the supplied `pointer`, or `(0, 0)` if omitted; a random starting point chosen for human motion is not an acknowledged position. It tracks only this scope's managed mouse moves, without querying Chrome, and old snapshots do not change. The same state supplies the next run's starting point.
+
+The `sent` counters include raw input commands issued from the scope callback, including on another connection; they count transport dispatch, not merely a queued call.
 
 `browser.inputScope(session)` or the exported `createInputScope(session, { policy?, mac?, pageEvents?, pointer? })` creates a reusable scope factory for a target session. Each `run()` supplies fresh mouse, keyboard and composition controllers, one deadline, the original guard and one final report. The pointer carries over: each run's mouse starts where Chrome last acknowledged the previous run's pointer, so a run sends no move just to put the pointer back. `pointer` gives the position for the first run, such as `tab.mouse.position` when the scope drives a tab's page; without it the first run starts as a new `Mouse` does, at (0, 0) or at a random viewport point in human mode. Sibling controller calls serialize, and held keys, buttons and compositions are cleaned up in reverse order before the connection queue changes owner. Explicit `up()` or `cancel()` releases a resource early. A click or drag cannot replace a button that is already held.
 
@@ -199,6 +217,7 @@ await scope.run(
   },
   { timeout: 1000, signal, cleanupTimeout: 5000 },
 );
+console.log(scope.position); // { x: 220, y: 100 }
 ```
 
 By default raw scopes and `keyboard.compose()` send `Page.enable` so that navigation interrupts input; they never change target focus. Managed input is the only place where the library enables a domain on a raw session. The domain stays enabled on the caller's session after the run, and scope-owned listeners are removed. With `pageEvents: false` (an option of `inputScope()`, `createInputScope()` and `compose()`) no `*.enable` command is sent. Navigation then interrupts a run only if the Page domain is enabled on the session by other means; otherwise the run ends at its deadline, through your `signal` or when the session ends, and compositions still check focus and document before every step. Dialog events likewise arrive only through sessions with the Page domain enabled; without one, cleanup cannot wait for a dialog to close. `browser.inputScope()` selects macOS editing commands as Tab input does; `createInputScope()` defaults `mac` to false. Inside a scope, use `input.composition` rather than nesting `keyboard.compose()`.

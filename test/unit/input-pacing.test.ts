@@ -7,6 +7,7 @@ import {
   InputActionError,
   Keyboard,
   Mouse,
+  ProtocolError,
   type InputCheckpoint,
   type InputPolicy,
 } from '../../src/index.ts';
@@ -58,15 +59,22 @@ const human = (policy: InputPolicy = {}): InputPolicy => ({
 test('a scope keeps the acknowledged pointer position from one run to the next', async () => {
   await using t = await target();
   const scope = createInputScope(t.session, { pageEvents: false, policy: human() });
+  assert.deepEqual(scope.position, { x: 0, y: 0 });
   await scope.run(async (input) => {
     await input.mouse.move(120, 80);
+    assert.deepEqual(scope.position, { x: 120, y: 80 });
   });
+  const previous = scope.position;
+  assert.ok(Object.isFrozen(previous));
+  assert.equal(Reflect.set(previous, 'x', 999), false);
   let start: unknown;
   await scope.run(async (input) => {
     start = input.mouse.position;
     await input.mouse.move(200, 100);
   });
   assert.deepEqual(start, { x: 120, y: 80, buttons: 0 });
+  assert.deepEqual(scope.position, { x: 200, y: 100 });
+  assert.deepEqual(previous, { x: 120, y: 80 });
   // Only the first run chose a starting point.
   assert.equal(t.layoutReads(), 1);
   assert.deepEqual(t.moves().at(-1), { type: 'mouseMoved', x: 200, y: 100 });
@@ -80,6 +88,7 @@ test('an explicit pointer position starts the first run there', async () => {
     pointer: { x: 50, y: 60 },
     policy: human(),
   });
+  assert.deepEqual(scope.position, { x: 50, y: 60 });
   let start: unknown;
   await scope.run(async (input) => {
     start = input.mouse.position;
@@ -263,6 +272,7 @@ test('on a pointer grid, a planned sample that would not move the pointer is not
     policy: human({ moveSteps: [40, 40], moveDuration: [40, 40], pointerGrid: { scale: 1 } }),
   });
   const report = await scope.run((input) => input.mouse.move(5, 3).then(() => {}));
+  assert.deepEqual(scope.position, { x: 5, y: 3 });
   const moves = t.moves();
   assert.ok(moves.length < 40 && moves.length === report.sent.moves);
   assert.ok(moves.every((m) => Number.isInteger(m.x) && Number.isInteger(m.y)));
@@ -345,7 +355,9 @@ test('a scope continues from a move acknowledged during cancellation cleanup', a
     )
     .catch((e: unknown) => e);
   assert.ok(error instanceof InputActionError);
+  assert.deepEqual(scope.position, { x: 10, y: 20 });
   assert.equal((await error.cleanup).status, 'completed');
+  assert.deepEqual(scope.position, { x: 80, y: 90 });
   await scope.run(async ({ mouse }) => {
     assert.deepEqual(mouse.position, { x: 80, y: 90, buttons: 0 });
   });
@@ -409,9 +421,46 @@ test('a refused first move does not retain a random point Chrome never acknowled
     .catch((e: unknown) => e);
   assert.ok(error instanceof InputActionError);
   await error.cleanup;
+  assert.deepEqual(scope.position, { x: 0, y: 0 });
   await scope.run(async ({ mouse }) => {
     assert.deepEqual(mouse.position, { x: 0, y: 0, buttons: 0 });
   });
+});
+
+test('scope position ignores a rejected move even when the error arrives during cleanup', async () => {
+  await using t = await target();
+  const scope = createInputScope(t.session, { pageEvents: false, pointer: { x: 12, y: 34 } });
+  const controller = new AbortController();
+  let sent!: () => void, reply!: () => void;
+  const sending = new Promise<void>((resolve) => {
+    sent = resolve;
+  });
+  const replying = new Promise<void>((resolve) => {
+    reply = resolve;
+  });
+  t.chrome.replyOnce('Input.dispatchMouseEvent', async () => {
+    sent();
+    await replying;
+    throw new ProtocolError('Input.dispatchMouseEvent', -32000, 'refused');
+  });
+  const failed = scope
+    .run(
+      async ({ mouse }) => {
+        await mouse.move(100, 200);
+      },
+      { signal: controller.signal },
+    )
+    .catch((e: unknown) => e);
+  await sending;
+  assert.deepEqual(scope.position, { x: 12, y: 34 });
+  controller.abort();
+  const error = await failed;
+  assert.ok(error instanceof InputActionError);
+  reply();
+  const cleanup = await error.cleanup;
+  assert.equal(cleanup.status, 'completed');
+  assert.equal(cleanup.report.lateReplies, 1);
+  assert.deepEqual(scope.position, { x: 12, y: 34 });
 });
 
 test('large wheel distances remain cancellable without allocating every notch up front', async () => {

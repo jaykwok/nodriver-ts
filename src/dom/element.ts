@@ -8,13 +8,14 @@ import { ActionabilityError, ProtocolError, StaleElementError } from '../errors.
 import { bounded, budget, delay, poll, type WaitOptions } from '../utils.ts';
 import { query, type QueryOptions, type Selector } from './query.ts';
 import type { InputCheckpoint, InputOptions, InputReport } from '../input/behavior.ts';
+import type { KeyboardTypeOptions } from '../input/input.ts';
 import { targetCoordinate } from '../input/human.ts';
 type Point = { x: number; y: number };
 export interface ElementEvaluateOptions extends WaitOptions {
   /** Isolated by default; main exposes page-owned properties on the DOM wrapper. */
   world?: World;
 }
-export interface TypeOptions extends InputOptions {
+export interface TypeOptions extends KeyboardTypeOptions {
   /** Select the whole value first, so the typed text replaces it. */
   replace?: boolean;
 }

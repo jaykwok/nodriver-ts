@@ -1,12 +1,12 @@
-# 自动化痕迹审计
+# 浏览器行为
 
 [English](../automation-audit.md)
 
-默认架构不自动发送 `Runtime.enable`，也不向页面主世界注入任何东西。这减少了一类常见的 CDP 检测面，但不等于隐藏全部浏览器自动化行为，也不承诺任何站点放行。
+库通过 `Runtime.enable` 之外的方式发现执行上下文，并在隔离世界中运行 DOM 辅助代码。本文说明默认的 CDP 使用方式、输入事件和浏览器设置，以及特定浏览器配置下的测量结果。
 
 ## 默认行为
 
-| 检查项              | 行为                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| 项目                | 行为                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Runtime.enable      | 主页面、弹出页、同进程 iframe、嵌套 OOPIF 和重连都不自动发送，也不先 enable 再 disable；Console、Debugger 域同样不启用                                                                                                                                                                                                                                                                                                     |
 | 主世界定位          | `Page.createIsolatedWorld` 获取精确 frame；隔离世界 Document → `DOM.describeNode` → `DOM.resolveNode`（省略 executionContextId）得到同一 Document 的主世界对象                                                                                                                                                                                                                                                             |
@@ -21,23 +21,23 @@
 | 输入                | 使用按键事件输入时（human 模式的默认方式），US 布局字符依次以 rawKeyDown、char 和 keyUp 发送，大写字母与上档符号自动加 Shift；修饰键和无文本的键不发送 char。左右键与数字键盘按键报告各自的位置。鼠标按钮按下期间指针压力为 0.5。human 模式下首个指针位置在视口 15–85% 范围内随机。设置 `pointerGrid` 时，指针坐标位于设备像素网格上，且不发送没有位移的移动。Tab 输入只在其他标签页可能处于前台时调用 `Page.bringToFront` |
 | 浏览器机制          | 保留 sandbox、站点隔离和 CSP。Pipe 不监听调试 TCP 端口，WebSocket 仍支持本地与远程连接。每次启动都跳过首次运行界面；agent 预设还会关闭搜索引擎选择界面、崩溃恢复气泡和后台节流，并设置 `--password-store=basic`：在 Linux 上，Chrome 改用内置密钥而不是系统密钥环来加密已保存的密码和 cookie，因此不会弹出密钥环提示；通过密钥环加密过数据的持久 profile 将无法读取这些数据                                                |
 
-Chromium 在未指定上下文时把 DOM 节点包装到所属 frame 的主世界，见 [ResolveNode 源码](https://github.com/chromium/chromium/blob/main/third_party/blink/renderer/core/inspector/resolve_node.cc)。[V8 的 objectId 格式](https://github.com/v8/v8/blob/main/src/inspector/remote-object-id.cc)是内部实现，CDP 不保证其稳定。
+Chromium 在未指定上下文时把 DOM 节点包装到所属 frame 的主世界，见 [ResolveNode 源码](https://github.com/chromium/chromium/blob/main/third_party/blink/renderer/core/inspector/resolve_node.cc)。[V8 的 objectId 格式](https://github.com/v8/v8/blob/main/src/inspector/remote-object-id.cc)属于 V8 内部实现，可能随版本变化。
 
-独立的 [Chromium 预览版工作流](../../.github/workflows/chromium-preview.yml) 在 Linux/Node.js 24 上运行 Beta、Dev、Canary：每周一次、手动触发，以及修改相关核心/审计文件的 PR。它记录实际浏览器版本，运行 `test:audit`、`test:compat`（Pipe 与 WebSocket 下的主世界发现、导航、OOPIF 和上下文失效）、[原生启动环境](native-environment.md)与站点数据清除测试、差分回归门槛和 [Worker 启动环境基准](worker-environment.md)，不重试。其结果不参与发布判定，发布只等待打标签提交上的回归与平台工作流。预览版失败时通过调整发现逻辑处理，绝不增加 `Runtime.enable` 回退。
+独立的 [Chromium 预览版工作流](../../.github/workflows/chromium-preview.yml) 在 Linux/Node.js 24 上运行 Beta、Dev、Canary：每周一次、手动触发，以及修改相关核心或基准测试文件的 PR。它记录实际浏览器版本，运行 `test:audit`、`test:compat`（Pipe 与 WebSocket 下的主世界发现、导航、OOPIF 和上下文失效）、[原生启动环境](native-environment.md)与站点数据清除测试、浏览器对照检查和 [Worker 启动环境基准](worker-environment.md)，不重试。其结果不参与发布判定，发布只等待打标签提交上的回归与平台工作流。发现格式不兼容时抛出 `UnsupportedError`，Runtime 域保持关闭。
 
-在大页面上读取完整 AX 树需要时间（见[分阶段性能结果](performance-phases.md)）；文本编辑与完整 AX 读取交替进行时，Chrome 会保留部分 Blink 内存直到导航（见[长稳测试](soak.md)）。页面自有探针看不到直接的 AX 信号，但这不代表 AX 读取无法被观察。[差分审计](differential-audit.md)分离了启动参数、端点、原始连接、库初始化、覆盖与操作。
+在大页面上读取完整 AX 树需要时间（见[分阶段性能结果](performance-phases.md)）；文本编辑与完整 AX 读取交替进行时，Chrome 会保留部分 Blink 内存直到导航（见[长稳测试](soak.md)）。页面自有探针记录 DOM 和事件变化；AX 读取也会影响耗时与内存占用。[浏览器对照基准](differential-audit.md)分离了启动参数、端点、原始连接、库初始化、覆盖与操作。
 
-## 回归检查
+## 测试
 
 ```sh
 npm run test:audit
 npm run test:all
 ```
 
-- `test/integration/runtime.test.ts` 在浏览器启动前截取 `Transport.send` 的真实消息，覆盖双传输、四类 frame（含嵌套 OOPIF）、中文输入、closed shadow root、JSHandle、导航、BFCache、弹出页与 WebSocket 重连，断言禁用域、绑定和自动初始化脚本命令为零。作为阳性对照，另一个独立浏览器显式启用 Runtime，证明采集器确实能看到这些命令以及 executionContextCreated/consoleAPICalled 事件。
+- `test/integration/runtime.test.ts` 在浏览器启动前截取 `Transport.send` 的真实消息，覆盖双传输、四类 frame（含嵌套 OOPIF）、中文输入、closed shadow root、JSHandle、导航、BFCache、弹出页与 WebSocket 重连，断言禁用域、绑定和自动初始化脚本命令为零。另一个独立浏览器显式启用 Runtime，用于测试这些命令以及 executionContextCreated/consoleAPICalled 事件的采集。
 - 输入、环境、诊断、信号、压力和呈现集成测试，HTTP/socket/嵌入式 MCP 测试以及长稳测试，同样断言没有自动发送任何禁用命令。
 - 页面自有探针比较操作前后的主世界全局属性、元素属性、DOM 结构与属性变更、console 函数和 webdriver getter；查询与输入没有留下这些痕迹，四类 frame 的 webdriver 均为 false 且 getter 为原生。页面仍能观察鼠标事件、表单值和滚动。
-- Chrome 156 中 Error.stack getter 在启用 Runtime 的阳性对照里也不被读取，Error.name 会在 console 调用本身被读取。因此测试以协议命令与事件为断言对象，老式堆栈探针无法说明 CDP 能否被检测。
+- Chrome 156 中 Error.stack getter 在启用 Runtime 的配置中也不被读取，Error.name 会在 console 调用本身被读取。因此测试以协议命令与事件为断言对象，Error.stack 探针无法区分这两种配置。
 - `test/integration/stealth.test.ts` 固化 UA/UA-CH、指针压力与按键序列；单元测试覆盖不兼容 objectId、错误的世界或文档、临时句柄清理、发现期间导航和上下文消失后的恢复。
 
 ## 第三方检测
@@ -64,15 +64,15 @@ CreepJS、BrowserScan 与 Pixelscan，使用 Pipe。运行器的出口是位于�
 | Pixelscan：指纹一致性                                  | inconsistent     | inconsistent      | inconsistent             | inconsistent             |
 
 - BrowserScan 在 headless 模式下判为 Robot，依据是它的 User-Agent 检查。启用 `maskHeadless` 后，其 Webdriver、User-Agent、CDP 和 Navigator 检查全部通过，而 CreepJS 的 headless 分数仍为 33%：该掩码只修改 UA 和 UA-CH。
-- Pixelscan 显示 Timezone spoofed 和 Proxy detected，原因是运行器使用 UTC，而站点把其数据中心地址定位到 America/Los_Angeles。这些标签不代表库伪造了环境。在 Linux 上，以 [`nativeEnvironment`](native-environment.md) 设为该时区和 `en-US` 的有界面启动消除了 Timezone spoofed，其余判定与“有界面，instant”列相同。
+- Pixelscan 显示 Timezone spoofed 和 Proxy detected，原因是运行器使用 UTC，而站点把其数据中心地址定位到 America/Los_Angeles。在 Linux 上，以 [`nativeEnvironment`](native-environment.md) 设为该时区和 `en-US` 的有界面启动消除了 Timezone spoofed，其余判定与“有界面，instant”列相同。
 - 在 Linux 上，Pixelscan 每格都显示 Masking detected，包括没有任何覆盖的格；在 Windows 上显示 No masking detected。库不修改 canvas、WebGL、音频或字体输出。
-- human 策略没有改变判定。这些页面不评估点击与打字，因此无法据此判断 human 策略的效果。
-- 每格的 webdriver 均为 false，且未发送任何禁止的协议命令。CreepJS 分数不是检测概率。
+- instant 和 human 输入在这些页面中得到相同标签；这些检查针对浏览器和环境字段，而非点击或打字行为。
+- 每格的 webdriver 均为 false，且未发送任何禁止的协议命令。CreepJS 百分比是该页面各项检查的评分。
 
 ## 仍可观察的特征
 
-1. **Headless**：`maskHeadless` 只改 UA 与 UA-CH，屏幕尺寸（如 800×600）等其他 headless 信号不变，有界面模式也不保证隐藏全部特征。推荐有界面模式；无图形桌面时须显式选择 headless，不自动降级。
+1. **Headless**：`maskHeadless` 只改 UA 与 UA-CH，屏幕尺寸（如 800×600）等其他浏览器设置保持不变。默认使用有界面模式；无图形桌面时可设置 `headless: true`，或在 Linux 上使用 `virtualDisplay`。
 2. **执行世界**：`tab.evaluate()` 和 `frame.evaluate()` 默认在主世界运行，以便访问页面业务对象，页面可以挂钩自己的方法。查询和 `Element.evaluate()` 默认使用隔离世界；其他通用 DOM 读取可传入 `{ world: 'isolated' }`。隔离世界也共享 DOM。
-3. **环境一致性**：UA、Client Hints、语言、时区、屏幕、字体、GPU、Worker 信息和代理出口需要分别测量。有界面和 headless 模式默认都保留原生值；可选的伪装只修改页面/Dedicated Worker 的 UA，可能与 Shared/Service Worker 矛盾。只改一个字段会造成不一致，`setEnvironment()` 不负责完整的 Worker/设备一致性。
-4. **输入**：点击和文字经 CDP Input 派发，页面仍能观察时序与轨迹；select 等 DOM 改值派发合成事件。不承诺所有操作都像物理设备输入。
+3. **环境一致性**：UA、Client Hints、语言、时区、屏幕、字体、GPU、Worker 信息和代理出口需要分别测量。有界面和 headless 模式默认都保留原生值；可选的 UA 掩码只修改页面/Dedicated Worker 的 UA，可能与 Shared/Service Worker 不一致。`setEnvironment()` 的作用范围取决于字段和执行上下文；OS 字体与 GPU 硬件保持不变。
+4. **输入**：点击和文字经 CDP Input 派发，页面仍能观察时序与轨迹；select 等 DOM 改值派发合成事件。这些事件由 CDP 或页面脚本生成，而非操作系统输入设备。
 5. **外部因素**：连接前已存在的 DevTools 或其他 CDP 客户端、调用者手动启用的域、TLS/IP 信誉、代理与 WebRTC 出口都不在默认行为的覆盖范围内。Pipe 只减少本机调试端口暴露。

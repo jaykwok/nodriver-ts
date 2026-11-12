@@ -16,7 +16,7 @@ try {
 }
 ```
 
-The snapshot contains `stage`, `elapsedMs`, `stageElapsedMs` and an optional `process`. Times use a monotonic clock and are taken before failure cleanup of an owned process, so they exclude termination waits. `process` is absent before a child exists and for `Browser.connect()`; otherwise it contains `pid`, `exited`, `exitCode`, `signal`, `stderr` and `stderrStatus`. A null exit code or signal means no such exit status was observed, not successful execution. The snapshot is frozen and does not change when cleanup later terminates Chrome.
+The snapshot contains `stage`, `elapsedMs`, `stageElapsedMs` and an optional `process`. Times use a monotonic clock and are taken before failure cleanup of an owned process, so they exclude termination waits. `process` is absent before a child exists and for `Browser.connect()`; otherwise it contains `pid`, `exited`, `exitCode`, `signal`, `stderr` and `stderrStatus`. A null exit code or signal means that exit status was not observed; `exited` records whether the process had exited at sampling time. The snapshot is frozen and does not change when cleanup later terminates Chrome.
 
 | Stage                       | Work                                                                                                                                                                            |
 | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

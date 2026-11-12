@@ -14,11 +14,11 @@
 | 比较 Frame、读取实际渲染字体或执行显式配置的网络探针 | `diagnoseEnvironment()` |
 | 应用指定测试配置并检查结果                           | `alignEnvironment()`    |
 
-不应用覆盖不等于零开销或不可观察：Worker/WebGL 探针会创建临时资源，字体探针会附加临时 DOM/CSS session，显式请求的 HTTP/STUN 探针会产生流量。只开启排查所需的测量项。衡量某项操作的影响时，对照组和实验组应运行相同的探针，让探针本身成为被测负载的一部分。
+采样会使用浏览器资源：Worker/WebGL 探针会创建临时资源，字体探针会附加临时 DOM/CSS session，显式请求的 HTTP/STUN 探针会产生流量。只开启排查所需的测量项。衡量某项操作的影响时，对照组和实验组应运行相同的探针，让探针本身成为被测负载的一部分。
 
-`worker` 选项采样的是**新建的 Dedicated Worker**，不检查已有 Worker、Shared Worker、Service Worker、它们的初始脚本请求或首段脚本执行；[差分审计 fixture](differential-audit.md)说明了它对 Worker 和请求头的覆盖范围。报告匹配、CDP 命令成功或检测网站的标签，都不能单独证明未测量上下文的一致性。
+`worker` 选项采样的是**新建的 Dedicated Worker**，不检查已有 Worker、Shared Worker、Service Worker、它们的初始脚本请求或首段脚本执行；[浏览器对照 fixture](differential-audit.md)说明了它对 Worker 和请求头的覆盖范围。结果描述本次采样的上下文和字段。
 
-`alignEnvironment()` 会改变浏览器状态，且可能只部分成功。它适合显式的测试配置，而不是自动修复设备指纹：它不改变 OS 字体、GPU 硬件或原生窗口装饰。应将几何尺寸、媒体设置和渲染器信息与匹配的原生基线比较，而不是强制固定浏览器工具栏高度，或认定软件渲染就是异常。
+`alignEnvironment()` 会改变浏览器状态，且可能只部分成功。它应用指定的测试配置，OS 字体、GPU 硬件和原生窗口装饰保持不变。比较几何尺寸、媒体设置和渲染器信息时，使用相同浏览器与宿主配置的原生运行结果作为参照。
 
 ## 采样：inspectEnvironment
 
@@ -37,7 +37,7 @@ console.log(report.worker, report.differences);
 - **UA-CH**：在没有 UA-CH 的非安全上下文中省略该字段。高熵值的错误保留在 `highEntropyError`。
 - **期限**：默认 5000 ms，可用 `timeout` 与 `signal` 调整。跨越导航、session 切换或文档失效时抛出 `StaleElementError`；执行上下文在采样中途消失时，以 Chrome 的错误作为 `cause`。不同文档的结果绝不合并，也不重试。取消只停止等待；已创建的 Worker 仍会在原期限内清理。
 
-`differences` 为空只说明比较的字段一致，不代表整个环境一致。
+`differences` 为空表示采样的文档与 Worker 字段一致。
 
 ## 诊断：diagnoseEnvironment
 
@@ -56,7 +56,7 @@ const diagnosis = await tab.diagnoseEnvironment({
 
 所有探针共用一个期限：默认 10000 ms，可用 `timeout` 与 `signal` 调整，到期时抛出 `TimeoutError`。不可用的探针选项（超过 16 个 `fontSelectors`、`httpProbe` 不是普通 HTTP(S) 或带 URL 凭证、`stunServers` 超过四个或格式错误）会在采样前被拒绝。
 
-- **字体**：在独立的临时 session 上显式启用 DOM/CSS，结束时在 1 秒内分离，不会关闭调用方的订阅；读取 `CSS.getPlatformFontsForNode` 返回的实际渲染字体。结果是浏览器选用的字体，不保证每个字符都有字形，也不会安装字体。
+- **字体**：在独立的临时 session 上显式启用 DOM/CSS，结束时在 1 秒内分离，不会关闭调用方的订阅；读取 `CSS.getPlatformFontsForNode` 返回的实际渲染字体。结果列出渲染时选用的字体，个别字符仍可能缺少字形。采样不改变已安装的字体。
 - **HTTP 探针**：由页面发起，不带凭证、禁止重定向，受 CSP/CORS 与网络影响。返回的请求头只是调用方服务回显的内容。
 - **STUN**：只使用显式列出的 STUN 端点，最多四个。不请求音视频权限或 TURN 凭证，超时后关闭数据通道和对端。
 - **地址差异**：HTTP 与 STUN 的出口地址可能不同，仅凭这一点不能认定存在伪装、泄漏或某种代理机制。网络调用失败时会保留未测得的原因。
@@ -84,10 +84,10 @@ await tab.alignEnvironment(
 - **应用方式**：时区、locale、视口、UA 与 UA-CH、Accept-Language 和地理位置都通过 CDP 设置，不修补全局 getter 或原型。配置作用于当前及之后附加的页面 session，不会追溯改变页面已有的脚本和网络连接。
 - **GeoIP**：只应用 `fields` 选中的 时区/地理位置字段，显式的 `environment` 优先。品牌、UA-CH、硬件、精确位置和语言绝不从 IP 推导。解析器会收到取消信号和剩余期限，由宿主负责取消其外部工作。
 - **单独设置 Accept-Language**：Chrome 保留自身的 UA 和 UA-CH，在非安全上下文的页面上也是如此；不生成其他品牌身份。
-- **核验**：每个 frame 的文档和新建的 dedicated Worker 分别核验；`expected` 与 `actual` 保留原始值。Worker 不支持的字段（如视口）记为 unavailable，真正不一致的记为 mismatch。视口只在主 frame 上核验，因为 iframe 的视口是它自己的布局框。locale 与时区按规范形式比较，因此 `fr-fr` 与 `fr-FR` 匹配，`Asia/Kolkata` 与 Chrome 报告的 `Asia/Calcutta` 匹配。Accept-Language 按有序的语言标签列表比较，忽略 `;q=` 权重；除非 `httpProbe` 在其 `headers` 中以 `accept-language` 回显该请求头，否则记为 not-tested。locale 只在页面根 session 上设置，因此不保证每个渲染进程/Worker 中的 Intl 都一致。UA-CH 按配置的字段比较，高熵值不可用时不会伪造成功。地理位置绝不自动授权；只有权限已是 granted 时才读取位置用于核验，否则记为 unavailable。
+- **核验**：每个 frame 的文档和新建的 dedicated Worker 分别核验；`expected` 与 `actual` 保留原始值。Worker 不支持的字段（如视口）记为 unavailable，真正不一致的记为 mismatch。视口只在主 frame 上核验，因为 iframe 的视口是它自己的布局框。locale 与时区按规范形式比较，因此 `fr-fr` 与 `fr-FR` 匹配，`Asia/Kolkata` 与 Chrome 报告的 `Asia/Calcutta` 匹配。Accept-Language 按有序的语言标签列表比较，忽略 `;q=` 权重；除非 `httpProbe` 在其 `headers` 中以 `accept-language` 回显该请求头，否则记为 not-tested。locale 在页面根 session 上设置，其他渲染进程和 Worker 可能保留原生的 Intl 设置。UA-CH 按配置的字段比较，不可用的高熵值记为 unavailable。地理位置绝不自动授权；只有权限已是 granted 时才读取位置用于核验，否则记为 unavailable。
 - **期限与部分失败**：整个调用共用一个期限，默认 10000 ms，可用 `timeout` 与 `signal` 调整，到期时抛出 `TimeoutError`。`inspect` 选项在应用任何配置前校验。覆盖不会原子回滚：应用失败或到期时仍未完成，会记入 `applicationError`，到期后不再发送覆盖，session 记录和实际报告都会保留。如果应用后的采样失败或超时，`after` 为 undefined，`verificationError` 保存原因，所有请求的字段记为 not-tested；从此时起，只有调用方的 `signal` 会让调用拒绝。
 
-`setEnvironment()` 是不带核验的显式覆盖接口。多次调用依次执行。调用的 `timeout` 与 `signal` 覆盖等待之前的调用、首次读取原生值和每一次覆盖：到期或中止后不再发送覆盖，已发送的覆盖保持生效。在这样的调用期间或之后附加的跨域 iframe session 使用调用前的配置。`environmentState().requested` 是此后附加的 session 将使用的配置，不代表每个页面当前的实际状态。UA、Client Hints、时区等覆盖不保证到达每个 Worker、SharedWorker 或 Service Worker。有界面和 headless 模式默认都保留原生值。显式启用的 `maskHeadless: true` 会改变页面 UA/UA-CH 与 Dedicated Worker，但可能与 Shared/Service Worker 及其请求不一致；见[差分审计](differential-audit.md)和[自动化痕迹审计](automation-audit.md)。
+`setEnvironment()` 是不带核验的显式覆盖接口。多次调用依次执行。调用的 `timeout` 与 `signal` 覆盖等待之前的调用、首次读取原生值和每一次覆盖：到期或中止后不再发送覆盖，已发送的覆盖保持生效。在这样的调用期间或之后附加的跨域 iframe session 使用调用前的配置。`environmentState().requested` 是此后附加的 session 将使用的配置，页面当前的实际值通过 `inspectEnvironment()` 读取。UA、Client Hints、时区等覆盖的作用范围随 Worker 类型而异。有界面和 headless 模式默认都保留原生值。显式启用的 `maskHeadless: true` 会改变页面 UA/UA-CH 与 Dedicated Worker，但可能与 Shared/Service Worker 及其请求不一致；见[浏览器对照基准](differential-audit.md)和[浏览器行为](automation-audit.md)。
 
 MCP 宿主可在 `BrowserSessionManagerOptions.environmentDiagnostics` 中配置 `httpProbe`/`stunServers`，并注入 `geoIPResolver`。工具只能选择是否使用这些配置，不能传入任意探测 URL。
 
@@ -99,7 +99,7 @@ MCP 宿主可在 `BrowserSessionManagerOptions.environmentDiagnostics` 中配置
 
 `Browser.launch({ webRtcIPHandlingPolicy })` 显式设置 WebRTC 路由策略，取值为 `default`、`default_public_interface_only`、`default_public_and_private_interfaces` 或 `disable_non_proxied_udp`。库在 `prepareProfile` 运行之前写入 `webrtc.ip_handling_policy` 偏好，在其返回之后再写入一次，并在 Chrome 启动前读回校验。偏好只写入库自有的临时 profile；对持久 profile，库会拒绝该选项，由其所有者自行配置。集成测试检查以 `disable_non_proxied_udp` 启动时不会收集到 UDP 候选。
 
-该策略可能降低直连和媒体的可用性，因此默认不启用。它不会关闭整个 WebRTC，也不保证 HTTP 与 WebRTC 使用相同的公网出口。定义见 [Chromium WebRTC 偏好](https://chromium.googlesource.com/chromium/src/+/fdaf45e57c902c85d3ff281fe5a56677e6f9b7fa%5E%21/)。库不改写 profile 的 exit_type/exited_cleanly，以免掩盖真实的崩溃。
+该策略可能降低直连和媒体的可用性，因此默认不启用。WebRTC 仍可使用，HTTP 与 WebRTC 可能经过不同的公网出口。定义见 [Chromium WebRTC 偏好](https://chromium.googlesource.com/chromium/src/+/fdaf45e57c902c85d3ff281fe5a56677e6f9b7fa%5E%21/)。profile 的 exit_type/exited_cleanly 保留 Chrome 写入的值。
 
 ## 测试
 

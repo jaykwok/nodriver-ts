@@ -16,7 +16,7 @@ try {
 }
 ```
 
-快照包含 `stage`、`elapsedMs`、`stageElapsedMs` 和可选的 `process`。时间使用单调时钟，在清理失败的自有进程之前采样，因此不含进程终止的等待。子进程尚未创建时以及 `Browser.connect()` 失败时没有 `process`；否则它包含 `pid`、`exited`、`exitCode`、`signal`、`stderr` 和 `stderrStatus`。退出码或信号为 null 表示没有观测到相应的退出状态，并不代表执行成功。快照是冻结的，之后清理终止 Chrome 时也不会改变。
+快照包含 `stage`、`elapsedMs`、`stageElapsedMs` 和可选的 `process`。时间使用单调时钟，在清理失败的自有进程之前采样，因此不含进程终止的等待。子进程尚未创建时以及 `Browser.connect()` 失败时没有 `process`；否则它包含 `pid`、`exited`、`exitCode`、`signal`、`stderr` 和 `stderrStatus`。退出码或信号为 null 表示没有观测到相应的退出状态；`exited` 记录采样时进程是否已退出。快照是冻结的，之后清理终止 Chrome 时也不会改变。
 
 | 阶段                        | 工作                                                                                                                  |
 | --------------------------- | --------------------------------------------------------------------------------------------------------------------- |
