@@ -18,8 +18,11 @@ const pageUrl =
     <h1>Presentation fixture</h1><div></div>`);
 
 async function page(browser: Browser) {
-  const { targetId } = await browser.cdp.send('Target.createTarget', { url: pageUrl });
+  const { targetId } = await browser.cdp.send('Target.createTarget', { url: 'about:blank' });
   const session = await browser.attachSession(targetId);
+  // Navigate after attaching so readiness follows an acknowledged navigation.
+  const { errorText } = await session.send('Page.navigate', { url: pageUrl });
+  assert.equal(errorText, undefined);
   // A target and its frame tree can exist before the first document is ready for screencast.
   await poll(
     async () => {

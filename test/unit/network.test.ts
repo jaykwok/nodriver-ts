@@ -9,10 +9,13 @@ import { BrowserMcpSession } from '../../src/mcp/session.ts';
 import { NO_REPLY, ScriptedChrome } from '../../src/testing/index.ts';
 import { NodriverError, ProtocolError, TimeoutError } from '../../src/errors.ts';
 
-async function scripted(options: { timeout?: number } = {}) {
+async function scripted() {
   const chrome = await ScriptedChrome.start();
   const errors: unknown[] = [];
-  const browser = await chrome.connect({ ...options, onError: (e) => errors.push(e) });
+  const browser = await chrome.connect({ onError: (e) => errors.push(e) }).catch(async (error) => {
+    await chrome.close();
+    throw error;
+  });
   const tab = browser.tabs[0]!;
   const sent = (method: string, session?: Session) =>
     chrome.commands.filter((c) => c.method === method && (!session || c.sessionId === session.id));
@@ -24,8 +27,7 @@ async function scripted(options: { timeout?: number } = {}) {
     return session;
   };
   const dispose = async () => {
-    await browser.close();
-    await chrome.close();
+    await browser.close().finally(() => chrome.close());
   };
   return { chrome, browser, tab, errors, sent, until, attach, dispose };
 }
@@ -368,9 +370,17 @@ test('a Fetch command Chrome refuses reopens the route for the handler and fallb
   }
 });
 
-test('a Fetch command without a verdict from Chrome keeps the route claimed', async () => {
-  const { chrome, tab, errors, sent, until, dispose } = await scripted({ timeout: 50 });
+test('a Fetch command without a verdict from Chrome keeps the route claimed', async (t) => {
+  const { chrome, tab, errors, sent, until, dispose } = await scripted();
   try {
+    // Only the unanswered Fetch command needs a short deadline, not the startup handshake.
+    const send: Session['send'] = (method, ...params) =>
+      tab.session.sendWith(
+        method,
+        method === 'Fetch.continueRequest' ? { timeout: 50 } : {},
+        ...params,
+      );
+    t.mock.method(tab.session, 'send', send);
     chrome.handle('Fetch.enable', () => undefined);
     chrome.handle('Fetch.continueRequest', () => NO_REPLY);
     chrome.handle('Fetch.failRequest', () => undefined);
