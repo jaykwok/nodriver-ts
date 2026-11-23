@@ -364,8 +364,10 @@ test('presentation lease supports explicit unbounded leases via untilClosed, Inf
       await lease.start();
       // Exceed default maxFrames (16) without hitting a limit.
       for (let i = 1; i <= 20; i++) {
+        const received = session.waitFor('Page.screencastFrame');
         chrome.emit('Page.screencastFrame', frame(i, 'aGVsbG8='), session.id);
-        await new Promise((resolve) => setImmediate(resolve));
+        await received;
+        await browser.drain();
       }
       assert.equal(lease.state, 'active');
       const report = await lease.close();
@@ -381,9 +383,10 @@ test('presentation lease supports explicit unbounded leases via untilClosed, Inf
     assert.equal(capped.options.maxFrames, 1);
     assert.equal(capped.options.maxBytes, Infinity);
     await capped.start();
+    const secondFrame = session.waitFor('Page.screencastFrame', (event) => event.sessionId === 2);
     chrome.emit('Page.screencastFrame', frame(1, 'YQ=='), session.id);
     chrome.emit('Page.screencastFrame', frame(2, 'Yg=='), session.id);
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await secondFrame;
     const cappedReport = await capped.close();
     assert.equal(cappedReport.reason, 'frame-limit');
     assert.equal(cappedReport.droppedFrames, 1);
