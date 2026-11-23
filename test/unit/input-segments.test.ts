@@ -575,3 +575,108 @@ test('callback keyDelay disables digraph rollover so every pair uses the callbac
     ['rawKeyDown:t', 'char:t', 'keyUp:t', 'rawKeyDown:h', 'char:h', 'keyUp:h'],
   );
 });
+
+test('onSegment context.pace runs inter-key pause before pre-next-key guard, deducts readback time, and releases Shift on early stop or throw', async () => {
+  await using t = await target();
+  const order: string[] = [];
+  const delayCalls: Array<[string, string, number]> = [];
+  const scope = createInputScope(t.session, {
+    pageEvents: false,
+    policy: {
+      mode: 'human',
+      typing: 'keys',
+      pressDelay: [0, 0],
+      keyDelay: (prev, next, i) => {
+        delayCalls.push([prev, next, i]);
+        return 45;
+      },
+    },
+  });
+
+  // 1. Full completion: readback -> ctx.pace() (second no-arg call is no-op; last segment is 0ms) -> guard -> next key
+  const full = await scope.run(async ({ keyboard }) => {
+    await keyboard.type('ab', {
+      async onSegment(segment, index, ctx) {
+        order.push(`read:${segment}:${String(ctx.next)}`);
+        await new Promise((r) => setTimeout(r, 15)); // Readback time deducted by action.pace()
+        await ctx.pace();
+        await ctx.pace(); // Idempotent second no-arg call
+        order.push(`guard-after-pause:${index}`);
+      },
+    });
+  });
+  assert.equal(full.status, 'completed');
+  // Only index 0 had ctx.next !== undefined, so keyDelay ran once (45ms), NOT after last segment!
+  assert.deepEqual(delayCalls, [['a', 'b', 0]]);
+  assert.equal(full.plannedMs, 45);
+  assert.deepEqual(order, [
+    'read:a:b',
+    'guard-after-pause:0',
+    'read:b:undefined',
+    'guard-after-pause:1',
+  ]);
+
+  // 2. Clean early stop (return false) AFTER ctx.pace() on consecutive shifted pair "AB" releases Shift cleanly
+  let keyboardRef!: Keyboard;
+  const earlyStop = await scope.run(async ({ keyboard }) => {
+    keyboardRef = keyboard;
+    await keyboard.type('AB', {
+      keyDelay: () => 20,
+      async onSegment(_seg, index, ctx) {
+        assert.deepEqual(keyboard.pressedKeys, ['Shift']);
+        if (ctx.next !== undefined) {
+          await ctx.pace();
+          // Simulate editor change detected during pause -> clean stop before 'B'!
+          if (index === 0) return false;
+        }
+      },
+    });
+  });
+  assert.equal(earlyStop.status, 'completed');
+  assert.equal(earlyStop.completedSegments, 1);
+  assert.equal(earlyStop.plannedMs, 20);
+  assert.deepEqual(keyboardRef.pressedKeys, []);
+
+  // 3. Guard throwing AFTER ctx.pace() interrupts before next segment's Shift/keyDown and releases held Shift
+  const beforeSub3 = keyEvents(t.chrome).length;
+  const guardBoom = new Error('focus lost during pause');
+  const interrupted = await scope
+    .run(async ({ keyboard }) => {
+      await keyboard.type('aB', {
+        keyDelay: () => 20,
+        async onSegment(_seg, _index, ctx) {
+          if (ctx.next !== undefined) {
+            await ctx.pace();
+            throw guardBoom;
+          }
+        },
+      });
+    })
+    .catch((e: unknown) => e);
+  assert.ok(interrupted instanceof InputActionError);
+  assert.equal(interrupted.cause, guardBoom);
+  assert.equal((await interrupted.cleanup).status, 'completed');
+  assert.deepEqual(keyboardRef.pressedKeys, []);
+  // Only 'a' was dispatched in sub-case 3; neither Shift nor 'B' was ever pressed!
+  const sub3Events = keyEvents(t.chrome).slice(beforeSub3);
+  assert.equal(
+    sub3Events.some((e) => e.code === 'KeyB' || e.key === 'Shift'),
+    false,
+  );
+
+  // 4. Invalid explicit pace(ms) rejects with RangeError
+  for (const badMs of [-1, Number.NaN, Number.POSITIVE_INFINITY]) {
+    const err = await scope
+      .run(async ({ keyboard }) => {
+        await keyboard.type('a', {
+          async onSegment(_s, _i, ctx) {
+            await ctx.pace(badMs);
+          },
+        });
+      })
+      .catch((e: unknown) => e);
+    assert.ok(err instanceof InputActionError);
+    assert.ok(err.cause instanceof RangeError);
+    await err.cleanup;
+  }
+});

@@ -14,25 +14,54 @@ import { timeoutValue } from '../utils.ts';
 import type { InputRelease } from './action.ts';
 import { Composition, type CompositionOptions } from './composition.ts';
 import { motionPlan, keyInterval, notchPlan, scrollPlan } from './human.ts';
+export interface KeyboardSegmentContext {
+  /** Next segment to be typed, or `undefined` when `segment` is the last segment. */
+  readonly next: string | undefined;
+  /**
+   * Runs this segment boundary's planned inter-key pause inside `onSegment` (for example after
+   * initial readback and right before re-verifying focus/page state for the next key), through
+   * `InputAction.pace()` and counted in `InputReport.plannedMs`:
+   *
+   * - Timing baseline: `action.pace()` counts from when the previous input command was sent (or
+   *   the planned end of the previous delay), so time already spent on readback inside `onSegment`
+   *   is subtracted rather than stacked on top of the pause.
+   * - With no `ms` argument: consumes this boundary's `keyDelay` at most once (a second no-arg
+   *   call within the same `onSegment` is a no-op; on the last segment where `next === undefined`,
+   *   it resolves immediately with `0 ms`).
+   * - With an explicit `ms` argument: validates `ms` (`RangeError` on negative, `NaN`, `Infinity`
+   *   or `> MAX_TIMEOUT`), marks this boundary's automatic post-`onSegment` pause as consumed, and
+   *   paces `ms` milliseconds.
+   * - Once `pace()` is called in `onSegment`, `type()` skips the automatic post-callback pause for
+   *   that segment.
+   */
+  pace(ms?: number): Promise<void>;
+}
+
 export interface KeyboardTypeOptions extends InputOptions {
   /**
    * Awaited after each grapheme or explicit segment is acknowledged and its character key is
-   * released, before the next segment is sent. `index` is zero-based within this type() call.
-   * Disables overlapping presses.
+   * released, before the next segment is sent. `index` is zero-based within this type() call, and
+   * `context` exposes `next` plus `pace(ms?)` so callers can run the inter-key pause before a
+   * pre-next-key focus/state check. Disables overlapping presses.
    *
    * Shift timing: when physical-key typing acquires Shift, it is released **before** `onSegment`
    * on the last segment and on any shifted-to-unshifted or shifted-to-`insertText` boundary, and
    * stays held across `onSegment` only between consecutive shifted physical-key segments. A
    * caller-held Shift is never released by `type()`.
    *
-   * Return `false` (or resolve to `false`) to stop typing normally after the completed segment:
-   * any Shift acquired by `type()` is released immediately, remaining segments and the trailing
-   * delay are skipped, and `type()` resolves with `status: 'completed'`.
+   * Return `false` (or resolve to `false`)—either before or after `await context.pace()`—to stop
+   * typing normally after the completed segment: any Shift acquired by `type()` is released
+   * immediately, remaining segments and any unconsumed delay are skipped, and `type()` resolves
+   * with `status: 'completed'`.
    *
    * Counts against the action's deadline and signal. Throwing stops typing with `InputActionError`
    * without replaying the segment.
    */
-  onSegment?: (segment: string, index: number) => void | boolean | Promise<void | boolean>;
+  onSegment?: (
+    segment: string,
+    index: number,
+    context: KeyboardSegmentContext,
+  ) => void | boolean | Promise<void | boolean>;
   /**
    * Override `InputPolicy.keyDelay` for this `type()` call in human mode: a `[min, max]` range
    * (0–3000 ms) or a callback `(previous, next, index) => ms` fed into `action.pace()`.
@@ -966,15 +995,41 @@ export class Keyboard {
           }
           action.report.completedSegments++;
           if (onSegment) {
-            const proceed = await action.waitFor(
-              Promise.resolve().then(() => {
+            let autoConsumed = false;
+            let active = true;
+            const context: KeyboardSegmentContext = {
+              next,
+              pace: async (ms?: number) => {
+                if (!active) throw new Error('Segment callback has already completed');
                 action.step();
-                return onSegment(segment, i);
-              }),
-            );
+                if (ms !== undefined) {
+                  const duration = timeoutValue(ms, 'pace');
+                  autoConsumed = true;
+                  await action.pace(duration);
+                  return;
+                }
+                if (autoConsumed) return;
+                autoConsumed = true;
+                if (next === undefined) return;
+                await pause(segment, next, i);
+              },
+            };
+            let proceed: void | boolean;
+            try {
+              proceed = await action.waitFor(
+                Promise.resolve().then(() => {
+                  action.step();
+                  return onSegment(segment, i, context);
+                }),
+              );
+            } finally {
+              active = false;
+            }
             if (proceed === false) break;
+            if (!autoConsumed) await pause(segment, next ?? '', i);
+          } else {
+            await pause(segment, next ?? '', i);
           }
-          await pause(segment, next ?? '', i);
         }
       } catch (error) {
         failed = true;

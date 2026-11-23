@@ -72,7 +72,17 @@ try {
 
 ## 无 `Runtime.enable` 的隔离世界辅助
 
-`createIsolatedWorld(session, { frameId?, worldName?, grantUniversalAccess? })` 和 `evaluateIsolated(session, fn, arg?, options?)` 通过缓存 `Page.createIsolatedWorld` 在隔离世界中求值，从不发送 `Runtime.enable`、`Page.enable` 或 `DOM.enable`，也绝不回退到页面主世界。`TargetSession` 上 `frameId` 默认为 `session.targetId`，显式指定 `worldName` 时必须为非空字符串（默认使用随机 UUID）。首次绑定时会通过 `DOM.describeNode` + `DOM.resolveNode`（不启用 `DOM` 域）以及对 `(frameId, worldName)` 的幂等复查校验 `globalThis` 的 V8 `RemoteObjectId` 句柄确属所请求的命名隔离世界（既不是主世界，也不是复用同一数字 ID 的其他命名隔离世界）；`evaluate()` 默认直接在该句柄上执行 `Runtime.callFunctionOn`，在传入 `executionTimeout` 时则通过挂载在该隔离世界上的不可枚举守卫令牌校验后再执行用户表达式，确保跨进程导航复用数字 `executionContextId` 也不会在错误世界执行用户代码。`context()` 与 `run()` 在返回或传入数字 `executionContextId` 前同样会校验句柄；该数字 ID 仅代表当时的瞬时快照，只在当前文档与渲染进程存活期间有效，需要句柄绑定执行时应优先使用 `evaluate()`。当 Chrome 报告上下文/句柄失效或绑定不匹配（根入口亦导出 `isContextGone(error)`）时，会自动失效旧缓存并在世界创建与执行全流程共享最多一次重建重试（可通过 `retryOnContextGone: false` 关闭重试）。`world.run((contextId, step) => ...)` 在同样的单次重建与总超时预算下执行自定义 CDP 命令，并同时约束世界创建与等待回调本身的 `timeout` 与 `signal`（预先中止的信号不会发送任何 CDP 命令，准备阶段中止则不会启动回调；回调开始后若超时或取消会立即停止等待，但回调内已启动的宿主异步任务可能继续运行）。
+`createIsolatedWorld(session, options?)` 和 `evaluateIsolated(session, fn, arg?, options?)` 通过缓存 `Page.createIsolatedWorld` 在隔离世界中求值，从不发送 `Runtime.enable`、`Page.enable` 或 `DOM.enable`，也绝不回退到页面主世界。`frameId` 默认为 `targetId`（`TargetSession` 上取 `session.targetId`，或取 `options.targetId`），显式指定 `worldName` 时必须为非空字符串（默认使用随机 UUID）。
+
+可按会话复用模型选择 `scope` 与 `verification`：
+
+- `scope: 'session'`（默认）按单个 `Session` 缓存，默认 `verification: 'strict'`：绑定 `globalThis` 的 V8 `RemoteObjectId` 句柄，首次绑定时通过 `DOM.describeNode` + `DOM.resolveNode`（不启用 `DOM` 域）及对 `(frameId, worldName)` 的幂等复查确认严格身份；热缓存以 1 次往返调用 `Runtime.callFunctionOn`（设置 `executionTimeout`、`disableBreaks` 或 `throwOnSideEffect` 时走带守卫令牌的 `Runtime.evaluate`）。
+- `scope: 'target'` 在 `session.connection` 上按 `(targetId, frameId, worldName, grantUniversalAccess, verification)` 共享缓存，适合每次操作新建并 `detach` 临时 `TargetSession` 的宿主跨会话直接复用文档上的隔离世界：
+  - `verification: 'guard'`（`scope: 'target'` 默认）：零 `DOM.*` 调用、零主世界触碰；首次冷绑定（无论入口是 `evaluate()`、`context()` 还是 `run()`）先绑定临时 `globalThis` 句柄、再通过 `Page.createIsolatedWorld` 复查 `(frameId, worldName)` 匹配，随后通过 `Runtime.callFunctionOn` 向已确认句柄写入单个不可枚举随机令牌并释放临时句柄（每个文档冷绑定 4 次往返），后续新 `TargetSession` 热缓存仅需 1 次往返只读核对令牌，即使在冷绑定窗口或跨进程导航复用数字 `executionContextId` 时也能安全拒绝（`isContextGone(error) === true`），不会向错误世界写入属性或执行用户代码。
+  - `verification: 'none'`：零 `DOM.*` 调用、零全局属性写入，字符串表达式原样传给 `Runtime.evaluate`（不套任何包壳）：冷启动 `evaluate()` 2 次往返，热缓存 `evaluate()` 1 次往返，热缓存 `world.context()` / `world.run()` **0 次往返**（可直接把数字 `executionContextId` 传给 `DOM.resolveNode`）。
+  - 在 `scope: 'target'` 包装实例上调用 `world.dispose()` 仅终止该实例自身的挂起等待，**不会**清空连接级共享缓存；显式淘汰请调用 `world.invalidate(staleContextId?)` 或 `invalidateIsolatedWorlds(connection, { targetId?, frameId?, worldName? })`。连接级缓存被动监听 `connection.root` 上的 `Target.targetDestroyed` 与 `Target.targetCrashed`（依赖连接已开启 `Target.setDiscoverTargets`，`Browser.launch()` / `Browser.connect()` 默认已开启；若直接使用未开启 discovery 的裸 `Connection`，则由 `isContextGone` 自动恢复或 `invalidateIsolatedWorlds()` 回收）。
+
+`evaluate()` 与 `evaluateIsolated()` 按需透传 `silent`、`disableBreaks`、`throwOnSideEffect`、`userGesture` 与 `executionTimeout`（为 `undefined` 时不发送；注意 V8 在 `throwOnSideEffect: true` 下对触发 layout 的 DOM getter 同样会报错，`userGesture: true` 会触发合成用户激活）。可通过 `IsolatedWorldOptions` 或单次调用的 `onEvent(event, info)`（`'created' | 'create-failed' | 'recovered'`）观测首次创建、创建失败与上下文丢失后的恢复重建（根入口亦导出 `isContextGone(error)`；可通过 `retryOnContextGone: false` 关闭自动重试）。`context()` 与 `run()` 返回或传入的数字 `executionContextId` 仅在当前文档与渲染进程存活期间有效；`run()` 同时以 `timeout` 和 `signal` 约束准备阶段与回调等待（预先中止的信号不发任何 CDP 命令，准备阶段中止不启动回调）。
 
 ## 生命周期
 

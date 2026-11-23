@@ -2,7 +2,11 @@ import { randomUUID } from 'node:crypto';
 import type { Session } from '../protocol/connection.ts';
 import { ProtocolError, UnsupportedError } from '../errors.ts';
 
+/** @internal Brand for synthetic context-loss errors such as cross-process contextId mismatch. */
+export const CONTEXT_GONE = Symbol('nodriver.contextGone');
+
 export function isContextGone(error: unknown): boolean {
+  if (error && typeof error === 'object' && CONTEXT_GONE in error) return true;
   return (
     error instanceof ProtocolError &&
     error.code === -32000 &&

@@ -154,6 +154,8 @@ interface Unanswered {
   detached?: boolean;
   /** Told when the reply arrives, and whether its caller had stopped waiting by then. */
   replied?: (late: boolean, succeeded: boolean) => void;
+  /** Invoked synchronously if a successful CDP reply arrives after the caller stopped waiting. */
+  onLateReply?: (result: unknown) => void;
 }
 const ATTACH_CLEANUP_TIMEOUT = 5000;
 /**
@@ -170,8 +172,13 @@ export type RequestRecorder = (
 ) => void | { sent?: () => void; replied?: (late: boolean, succeeded: boolean) => void };
 /** @internal Options key: records the ID of the request sent with these options. */
 export const REQUEST_LEDGER = Symbol('nodriver.requestLedger');
+/** @internal Options key: receives a successful CDP reply that arrives after the caller stopped waiting. */
+export const ON_LATE_REPLY = Symbol('nodriver.onLateReply');
 /** @internal */
-export type LedgerOptions = WaitOptions & { [REQUEST_LEDGER]?: RequestRecorder };
+export type LedgerOptions = WaitOptions & {
+  [REQUEST_LEDGER]?: RequestRecorder;
+  [ON_LATE_REPLY]?: (result: unknown) => void;
+};
 /** @internal Records requests sent within an async context, such as an input action. */
 export const requestLedger = new AsyncLocalStorage<RequestRecorder>();
 export class Connection {
@@ -498,6 +505,7 @@ export class Connection {
     }
     const id = ++this.nextId;
     const recorder = (options as LedgerOptions)[REQUEST_LEDGER] ?? requestLedger.getStore();
+    const onLateReply = (options as LedgerOptions)[ON_LATE_REPLY];
     const recorded = recorder?.(this, id, method, session, params[0]) ?? undefined;
     const trace = this.trace;
     const observer = this.options.observe;
@@ -569,7 +577,13 @@ export class Connection {
         try {
           started = performance.now();
           sentOnWire = true;
-          const wire: Unanswered = { method, sessionId, at: started, replied: recorded?.replied };
+          const wire: Unanswered = {
+            method,
+            sessionId,
+            at: started,
+            replied: recorded?.replied,
+            ...(onLateReply ? { onLateReply } : {}),
+          };
           this.unanswered.set(id, wire);
           try {
             recorded?.sent?.();
@@ -718,6 +732,11 @@ export class Connection {
           wire.replied?.(!p, !m.error);
         } catch {}
         if (!p) {
+          if (!m.error && wire.onLateReply) {
+            try {
+              wire.onLateReply(m.result ?? {});
+            } catch {}
+          }
           const abandoned = this.abandoned.get(m.id);
           if (abandoned) {
             clearTimeout(abandoned.timer);

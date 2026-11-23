@@ -50,12 +50,23 @@ export type {
 export { Frame, JSHandle } from './page/frames.ts';
 export type { EvaluateOptions, World, EvaluationInput } from './page/frames.ts';
 export { isContextGone } from './page/execution-context.ts';
-export { IsolatedWorld, createIsolatedWorld, evaluateIsolated } from './page/isolated-world.ts';
+export {
+  IsolatedWorld,
+  createIsolatedWorld,
+  evaluateIsolated,
+  invalidateIsolatedWorlds,
+} from './page/isolated-world.ts';
 export type {
+  IsolatedWorldScope,
+  IsolatedWorldVerification,
+  IsolatedWorldEvent,
+  IsolatedWorldEventInfo,
+  IsolatedWorldObserver,
   IsolatedWorldOptions,
   IsolatedRunOptions,
   IsolatedEvaluateOptions,
   EvaluateIsolatedOptions,
+  InvalidateIsolatedWorldsFilter,
 } from './page/isolated-world.ts';
 export type { NavigationOptions } from './page/navigation.ts';
 export { Network, Route } from './page/network.ts';
@@ -81,6 +92,7 @@ export type {
   ComposeOptions,
   KeyDefinition,
   CharacterKey,
+  KeyboardSegmentContext,
   KeyboardTypeOptions,
 } from './input/input.ts';
 export { InputActionError, InputBlockedError } from './input/behavior.ts';

@@ -2,6 +2,15 @@
 
 All notable changes are recorded here. The project follows [Semantic Versioning](https://semver.org/); before 1.0, minor versions may contain breaking changes.
 
+## 1.1.1 — 2026-11-23
+
+- `IsolatedWorld` and `evaluateIsolated()` add `scope?: 'session' | 'target'` (`'session'` default), `targetId`, `verification?: 'strict' | 'guard' | 'none'`, and lifecycle observer `onEvent(event, info)` (`'created' | 'create-failed' | 'recovered'`), plus root-exported `invalidateIsolatedWorlds(connection, filter?)`:
+  - `scope: 'target'` shares cached worlds across ephemeral `TargetSession`s on the same `Connection`, defaults to `verification: 'guard'` (rejects `'strict'` with `TypeError`), passively evicts entries on `Target.targetDestroyed` / `Target.targetCrashed` and connection disconnect while pruning root listeners when empty, and keeps the shared target cache intact when an individual wrapper calls `dispose()`.
+  - `verification: 'guard'` runs zero `DOM.*` commands and touches zero main-world objects: cold bind verifies a temporary `globalThis` handle and `(frameId, worldName)` before stamping a single non-enumerable guard token via `Runtime.callFunctionOn` and releasing the temporary group (for `evaluate()`, `context()` and `run()` alike); warm calls across new `TargetSession`s verify the token read-only in 1 roundtrip and fail closed with `isContextGone(error) === true` if a numeric `executionContextId` is reused across a renderer swap.
+  - `verification: 'none'` writes zero global properties, sends string expressions verbatim to `Runtime.evaluate`, and serves warm `world.context()` / `world.run()` calls in 0 roundtrips.
+  - `IsolatedEvaluateOptions` forwards `silent`, `disableBreaks`, `throwOnSideEffect` and `userGesture` when defined (omitted by default). Guarded `Runtime.evaluate` paths avoid `(0, eval)` for functions and `throwOnSideEffect: true` string expressions (preserving `#!` hashbangs, Annex B HTML comments, explicit `"use strict"` directives, default non-strict semantics and unshadowed globals), serialize arguments identically to CDP `CallArgument.value` (including sparse arrays and `toJSON(key)`), settle active `run()` callbacks and in-flight `evaluate()` commands immediately on `dispose()`, re-fetch the active registry slot when retrying after concurrent invalidation, and release both `result.objectId` and `exceptionDetails.exception.objectId` on normal and late/cancelled exceptions.
+- `Keyboard.type()`, `Element.type()` and `Locator.type()` pass a third `KeyboardSegmentContext` argument (`{ next, pace(ms?) }`) to `onSegment(segment, index, context)`: `await context.pace()` runs that boundary's planned inter-key delay inside `onSegment` (through `action.pace()`, deducting readback time, counted in `InputReport.plannedMs`, consuming `keyDelay` at most once per segment, resolving in `0 ms` on the final segment, and skipping the post-callback delay) so focus and editor guards can run immediately before the next key is sent while cleanly releasing owned `Shift` on `return false` or throw.
+
 ## 1.1.0 — 2026-11-23
 
 ### Breaking changes & migration
