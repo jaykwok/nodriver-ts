@@ -1,6 +1,7 @@
 import type { Protocol } from 'devtools-protocol';
 import {
   Connection,
+  SessionEndedError,
   type ConnectionOptions,
   type Session,
   type TargetSession,
@@ -29,6 +30,7 @@ import {
 import { DisconnectedError, NodriverError, ProtocolError, TimeoutError } from '../errors.ts';
 import {
   checkedInputPolicy,
+  cloneInputPolicy,
   inputCoordinator,
   type InputCoordinator,
   type InputPolicy,
@@ -135,6 +137,7 @@ export class Browser {
         onError: options.onError,
         trace: options.trace,
         observe: options.observe,
+        beforeSend: options.beforeSend,
       });
       try {
         startup.enter('protocol-handshake');
@@ -271,7 +274,7 @@ export class Browser {
   }
   /** Input policy of tabs opened later in contexts without their own default. */
   get defaultInputPolicy(): InputPolicy | undefined {
-    return structuredClone(this.inputDefault);
+    return cloneInputPolicy(this.inputDefault);
   }
   /**
    * Sets the input policy of tabs that open later, popups included, in contexts without their own
@@ -683,6 +686,7 @@ export class Browser {
 function targetGone(error: unknown): boolean {
   return (
     error instanceof DisconnectedError ||
+    error instanceof SessionEndedError ||
     (error instanceof ProtocolError && /no target with given id/i.test(error.message))
   );
 }

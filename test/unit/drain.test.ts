@@ -164,25 +164,29 @@ test('drain releases abort listeners on success, timeout and disconnect', async 
   assert.equal(getEventListeners(controller.signal, 'abort').length, 0);
 });
 
-test('uncertain send failure retains drain debt until an ACK; serialization failure does not', async () => {
+test('serialization failure leaves no drain debt; transport send failure disconnects drain with DisconnectedError', async () => {
   const t = new ManualTransport();
-  t.send = function (message) {
-    this.commands.push(JSON.parse(message));
-    throw new Error('partial write');
-  };
   const c = new Connection(t);
   try {
-    await assert.rejects(c.root.send('Browser.getVersion'), /partial write/);
-    await assert.rejects(c.drain({ timeout: 5 }), TimeoutError);
-    t.reply(0);
-    await c.drain();
     const text = {
       toJSON() {
         throw new Error('bad serialization');
       },
     } as unknown as string;
-    await assert.rejects(c.root.send('Input.insertText', { text }), /bad serialization/);
+    const serErr = await c.root.send('Input.insertText', { text }).catch((e) => e);
+    assert.match(String(serErr), /bad serialization/);
+    assert.equal(serErr instanceof DisconnectedError, false);
+    assert.equal(c.closed, false);
     await c.drain();
+    assert.equal(t.commands.length, 0);
+
+    t.send = function (message) {
+      this.commands.push(JSON.parse(message));
+      throw new Error('partial write');
+    };
+    await assert.rejects(c.root.send('Browser.getVersion'), DisconnectedError);
+    assert.equal(c.closed, true);
+    await assert.rejects(c.drain({ timeout: 500 }), DisconnectedError);
     assert.equal(t.commands.length, 1);
   } finally {
     await c.close();

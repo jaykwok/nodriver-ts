@@ -63,7 +63,7 @@ test('typing callbacks read each segment from the page while consecutive capital
         .filter((e) => e.key === 'Shift')
         .map((e) => e.type),
     ).toEqual(['keydown', 'keyup']);
-    if (entry === 'scope') expect(scope.position).toEqual({ x: 120, y: 80 });
+    if (entry === 'scope') expect(scope.position).toEqual({ x: 120, y: 80, placed: true });
   }
   await field.fill('');
   const stopped = await field

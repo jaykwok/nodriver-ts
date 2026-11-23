@@ -1,12 +1,13 @@
 import { bounded, delay, MAX_TIMEOUT, timeoutValue, type WaitOptions } from '../utils.ts';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { DisconnectedError, ProtocolError, StaleElementError, TimeoutError } from '../errors.ts';
+import { ProtocolError, StaleElementError, TimeoutError } from '../errors.ts';
 import { isContextGone } from '../page/execution-context.ts';
 import {
+  Connection,
   REQUEST_LEDGER,
+  SessionEndedError,
   type RequestRecorder,
   type Command,
-  type Connection,
   type LedgerOptions,
   type Params,
   type Result,
@@ -26,7 +27,7 @@ import {
 } from './behavior.ts';
 import { PresentationRecovery } from './recovery.ts';
 export interface InputRelease {
-  run(): Promise<void>;
+  run(cleanup?: boolean): Promise<void>;
   forget(): void;
 }
 /** A failed cleanup step, decided once the action's replies have settled. */
@@ -180,9 +181,12 @@ export class InputAction {
     if (late && this.report.phase !== 'done') this.report.lateReplies++;
   };
   private failures: CleanupFailure[] = [];
+  /** Caller-side timeout/abort errors for a normal-phase release still in flight on the wire. */
+  private pendingReleases = new WeakSet<object>();
   private finishing?: Promise<InputCleanupReport>;
   private finished = false;
   private readonly cleanupBudget: number;
+  private readonly commandBudget?: number;
   /** The budget that every cleanup step shares once the action is cleaning up. */
   private cleanupDeadline?: CleanupDeadline;
   /** Trace notes recorded once per action. */
@@ -191,6 +195,8 @@ export class InputAction {
   private activeStep = new AsyncLocalStorage<{ live: boolean }>();
   private stepOptions?: InputOptions;
   private stepEnd = Infinity;
+  private stepCommandBudget?: number;
+  private pointer?: Readonly<{ x: number; y: number; placed: boolean }>;
   private disposers: Array<() => void> = [];
   private watchedFrames = new Map<Session, Set<string | undefined>>();
   private tasks = new Set<Promise<unknown>>();
@@ -248,11 +254,16 @@ export class InputAction {
     this.behavior = behavior;
     this.options = options;
     this.end = performance.now() + timeoutValue(options.timeout ?? 10000);
+    this.commandBudget =
+      options.commandTimeout === undefined
+        ? undefined
+        : timeoutValue(options.commandTimeout, 'commandTimeout');
     this.cleanupBudget = timeoutValue(options.cleanupTimeout ?? 5000);
     this.cleanup = new Promise((resolve) => {
       this.resolveCleanup = resolve;
     });
     this.documentGuard = behavior.snapshotGuard();
+    this.pointer = behavior.pointer;
     this.report = {
       action,
       status: 'completed',
@@ -281,11 +292,20 @@ export class InputAction {
       phase: 'queued',
       cleanup: 'pending',
     };
+    this.syncPosition();
+  }
+  trackPointer(pointer: Readonly<{ x: number; y: number; placed: boolean }>): void {
+    this.pointer = pointer;
+  }
+  private syncPosition(): void {
+    if (this.pointer?.placed) this.report.finalPosition = { x: this.pointer.x, y: this.pointer.y };
+    else delete this.report.finalPosition;
   }
   interrupt(error: unknown): void {
     if (this.controller.signal.aborted) return;
     this.reason = error;
     this.report.status = 'interrupted';
+    this.syncPosition();
     if (this.report.phase !== 'done') {
       this.inputEnded();
       this.cleanupDeadline ??= this.deadline();
@@ -342,28 +362,125 @@ export class InputAction {
   ): Promise<Result<M>> {
     return this.sendAcknowledged(session, method, undefined, ...params);
   }
-  /** Observes a successful reply even when cancellation made the caller stop waiting for it. */
+  private get cleaning(): boolean {
+    return this.report.phase !== 'running' || !!this.finishing || this.controller.signal.aborted;
+  }
+  private commandOptions(): WaitOptions {
+    const step = this.step();
+    const limit =
+      this.commandBudget === undefined
+        ? this.stepCommandBudget
+        : this.stepCommandBudget === undefined
+          ? this.commandBudget
+          : Math.min(this.commandBudget, this.stepCommandBudget);
+    return limit === undefined ? step : { ...step, timeout: Math.min(step.timeout!, limit) };
+  }
+  /**
+   * Observes a successful reply even when cancellation made the caller stop waiting for it.
+   * When `onSent` is given, it runs synchronously right before the command is written to the
+   * transport (so pre-send rejections like `beforeSend` never trigger it).
+   */
   async sendAcknowledged<M extends Command>(
     session: Session,
     method: M,
     confirmed: (() => void) | undefined,
     ...params: Params<M>
   ): Promise<Result<M>> {
-    const options = this.step();
+    return this.sendObserved(session, method, { confirmed }, ...params);
+  }
+  /** @internal Sends a command with optional transport-dispatch (`onSent`) and reply callbacks. */
+  async sendObserved<M extends Command>(
+    session: Session,
+    method: M,
+    hooks: { confirmed?: () => void; onSent?: () => void },
+    ...params: Params<M>
+  ): Promise<Result<M>> {
+    const options = this.commandOptions();
     this.observe(session);
     let observed = false;
     const confirm =
-      confirmed &&
+      hooks.confirmed &&
       (() => {
         if (observed) return;
         observed = true;
-        confirmed();
+        hooks.confirmed!();
       });
-    const acknowledged = this.behavior.coordinator?.trackCommand(session, method, params[0]);
-    const result = await session.sendWith(method, this.ledger(options, confirm), ...params);
+    const realConnection = session.connection instanceof Connection;
+    let acknowledged: (() => void) | undefined;
+    const track = () => {
+      acknowledged ??= this.behavior.coordinator?.trackCommand(session, method, params[0]);
+      hooks.onSent?.();
+    };
+    if (!realConnection) track();
+    const result = await session.sendWith(
+      method,
+      this.ledger(options, confirm, realConnection ? track : undefined, (_late, succeeded) => {
+        if (succeeded) acknowledged?.();
+      }),
+      ...params,
+    );
     confirm?.();
     acknowledged?.();
     return result;
+  }
+  /**
+   * Sends a key or button release. During normal execution (`!cleanup && !this.cleaning`) it
+   * obeys `commandTimeout`, the remaining action timeout and the action signal; if the caller
+   * stops waiting after the command reached the wire, cleanup drains the reply under
+   * `cleanupTimeout`. During cleanup or error unwinding it uses the independent cleanup budget.
+   */
+  async sendRelease<M extends Command>(
+    session: Session,
+    method: M,
+    cleanup: boolean | { cleanup: boolean; composition?: boolean },
+    ...params: Params<M>
+  ): Promise<Result<M>> {
+    const isCleanup = typeof cleanup === 'boolean' ? cleanup : cleanup.cleanup;
+    const composition = typeof cleanup === 'boolean' ? false : !!cleanup.composition;
+    if (isCleanup || this.cleaning) return this.sendCleanup(session, method, ...params);
+    const options = this.commandOptions();
+    this.use(session);
+    const realConnection = session.connection instanceof Connection;
+    let sent = !realConnection;
+    let replied = false;
+    let settled = false;
+    let acknowledged: (() => void) | undefined;
+    const track = () => {
+      sent = true;
+      acknowledged ??= this.behavior.coordinator?.trackCommand(session, method, params[0]);
+    };
+    if (!realConnection) track();
+    try {
+      const result = await session.sendWith(
+        method,
+        this.ledger(options, undefined, realConnection ? track : undefined, (late, succeeded) => {
+          replied = true;
+          if (succeeded) acknowledged?.();
+          else if (late)
+            this.cleanupFailed(
+              new Error(`${method} failed after interruption`),
+              session,
+              composition,
+            );
+        }),
+        ...params,
+      );
+      settled = true;
+      acknowledged?.();
+      return result;
+    } catch (error) {
+      const waitEndedAfterSend =
+        sent &&
+        !replied &&
+        !session.closed &&
+        (error instanceof TimeoutError ||
+          this.options.signal?.aborted ||
+          this.stepOptions?.signal?.aborted ||
+          this.controller.signal.aborted);
+      if (!settled && waitEndedAfterSend && error && typeof error === 'object')
+        this.pendingReleases.add(error);
+      throw error;
+    }
   }
   async sendCleanup<M extends Command>(
     session: Session,
@@ -371,9 +488,20 @@ export class InputAction {
     ...params: Params<M>
   ): Promise<Result<M>> {
     this.use(session);
-    const acknowledged = this.behavior.coordinator?.trackCommand(session, method, params[0]);
+    const realConnection = session.connection instanceof Connection;
+    let acknowledged: (() => void) | undefined;
+    const track = () => {
+      acknowledged ??= this.behavior.coordinator?.trackCommand(session, method, params[0]);
+    };
+    if (!realConnection) track();
     const result = await this.withinCleanup((options) =>
-      session.sendWith(method, this.ledger(options), ...params),
+      session.sendWith(
+        method,
+        this.ledger(options, undefined, realConnection ? track : undefined, (_late, succeeded) => {
+          if (succeeded) acknowledged?.();
+        }),
+        ...params,
+      ),
     );
     acknowledged?.();
     return result;
@@ -402,17 +530,27 @@ export class InputAction {
     }
   }
   /** Records the request ID so that cleanup can wait for this action's own late replies. */
-  private ledger(options: WaitOptions, confirmed?: () => void): LedgerOptions {
-    if (!confirmed) return { ...options, [REQUEST_LEDGER]: this.recordRequest };
+  private ledger(
+    options: WaitOptions,
+    confirmed?: () => void,
+    onSent?: () => void,
+    onReplied?: (late: boolean, succeeded: boolean) => void,
+  ): LedgerOptions {
+    if (!confirmed && !onSent && !onReplied)
+      return { ...options, [REQUEST_LEDGER]: this.recordRequest };
     return {
       ...options,
       [REQUEST_LEDGER]: (...args) => {
         const recorded = this.recordRequest(...args);
         return {
-          ...recorded,
+          sent: () => {
+            recorded?.sent?.();
+            onSent?.();
+          },
           replied: (late, succeeded) => {
             recorded?.replied?.(late, succeeded);
-            if (succeeded) confirmed();
+            onReplied?.(late, succeeded);
+            if (succeeded) confirmed?.();
           },
         };
       },
@@ -459,7 +597,7 @@ export class InputAction {
    * failure. A composition release concerns only the page's composition.
    */
   release(
-    task: () => Promise<void>,
+    task: (cleanup: boolean) => Promise<void>,
     options: { session?: Session; composition?: boolean } = {},
   ): InputRelease {
     this.step();
@@ -470,15 +608,28 @@ export class InputAction {
       forget() {
         forgotten = true;
       },
-      run: () => {
+      run: (cleanup = false) => {
         if (forgotten) return Promise.resolve();
-        return (pending ??= (async () => {
-          try {
-            await task();
-          } catch (error) {
-            this.cleanupFailed(error, options.session, options.composition);
-          }
-        })());
+        if (!pending) {
+          const inCleanup = cleanup || this.cleaning;
+          if (!inCleanup) this.step();
+          pending = (async () => {
+            try {
+              await task(inCleanup);
+            } catch (error) {
+              const inFlight =
+                !inCleanup &&
+                !!error &&
+                typeof error === 'object' &&
+                this.pendingReleases.has(error);
+              if (!inFlight) this.cleanupFailed(error, options.session, options.composition);
+              if (inCleanup) return;
+              throw error;
+            }
+          })();
+          void pending.catch(() => {});
+        }
+        return cleanup ? pending.catch(() => {}) : pending;
       },
     };
     this.releases.push(release);
@@ -548,7 +699,11 @@ export class InputAction {
             (session) => session.connection === connection && session.id === id,
           );
           this.cleanupFailed(
-            session?.closeReason ?? new DisconnectedError(`Session ${id} detached before replying`),
+            session?.closeReason ??
+              new SessionEndedError('detached', '', {
+                sessionId: id,
+                detail: 'detached before replying',
+              }),
             session,
           );
         }
@@ -564,9 +719,14 @@ export class InputAction {
     if (this.finishing) return Promise.reject(new InputBlockedError('Input action has ended'));
     const end =
       options.timeout === undefined ? Infinity : performance.now() + timeoutValue(options.timeout);
+    const commandBudget =
+      options.commandTimeout === undefined
+        ? undefined
+        : timeoutValue(options.commandTimeout, 'commandTimeout');
     const execute = async () => {
       const previous = this.stepOptions,
-        previousEnd = this.stepEnd;
+        previousEnd = this.stepEnd,
+        previousCommandBudget = this.stepCommandBudget;
       this.stepOptions = {
         ...options,
         signal:
@@ -579,10 +739,17 @@ export class InputAction {
         },
       };
       this.stepEnd = Math.min(previousEnd, end);
+      this.stepCommandBudget =
+        previousCommandBudget === undefined
+          ? commandBudget
+          : commandBudget === undefined
+            ? previousCommandBudget
+            : Math.min(previousCommandBudget, commandBudget);
       try {
         await this.check();
         await task(this);
         await this.check();
+        this.syncPosition();
         return this.report;
       } catch (error) {
         this.interrupt(error);
@@ -590,6 +757,7 @@ export class InputAction {
       } finally {
         this.stepOptions = previous;
         this.stepEnd = previousEnd;
+        this.stepCommandBudget = previousCommandBudget;
       }
     };
     const reentrant = this.activeStep.getStore()?.live;
@@ -675,11 +843,11 @@ export class InputAction {
           }
         }
         for (const release of [...this.releases].reverse())
-          if (!this.retained.has(release) || !keep()) await release.run();
+          if (!this.retained.has(release) || !keep()) await release.run(true);
         for (const connection of this.connections) await this.drain(connection, deadline);
         for (const release of [...this.retained].reverse()) {
           if (keep()) release.forget();
-          else await release.run();
+          else await release.run(true);
         }
         // Holds are settled now, which composition blocks depend on.
         for (const failure of this.failures)
@@ -699,6 +867,7 @@ export class InputAction {
           : 'failed'
         : 'completed';
       if (this.report.cleanup !== 'completed') this.report.status = 'interrupted';
+      this.syncPosition();
       this.report.phase = 'done';
       const result: InputCleanupReport = {
         status: this.report.cleanup,

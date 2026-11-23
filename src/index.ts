@@ -49,6 +49,14 @@ export type {
 } from './page/environment.ts';
 export { Frame, JSHandle } from './page/frames.ts';
 export type { EvaluateOptions, World, EvaluationInput } from './page/frames.ts';
+export { isContextGone } from './page/execution-context.ts';
+export { IsolatedWorld, createIsolatedWorld, evaluateIsolated } from './page/isolated-world.ts';
+export type {
+  IsolatedWorldOptions,
+  IsolatedRunOptions,
+  IsolatedEvaluateOptions,
+  EvaluateIsolatedOptions,
+} from './page/isolated-world.ts';
 export type { NavigationOptions } from './page/navigation.ts';
 export { Network, Route } from './page/network.ts';
 export type { Response } from './page/network.ts';
@@ -61,11 +69,24 @@ export {
 export type { FetchOptions, FetchResponse } from './page/fetch.ts';
 export { Locator } from './dom/locator.ts';
 export type { Selector, QueryOptions } from './dom/query.ts';
-export { Mouse, Keyboard, keyDefinition, parseChord } from './input/input.ts';
-export type { ComposeOptions, KeyDefinition, KeyboardTypeOptions } from './input/input.ts';
+export {
+  Mouse,
+  Keyboard,
+  keyDefinition,
+  characterKey,
+  requiresShift,
+  parseChord,
+} from './input/input.ts';
+export type {
+  ComposeOptions,
+  KeyDefinition,
+  CharacterKey,
+  KeyboardTypeOptions,
+} from './input/input.ts';
 export { InputActionError, InputBlockedError } from './input/behavior.ts';
 export type {
   InputPolicy,
+  KeyDelayFn,
   InputReport,
   InputSent,
   InputOptions,
@@ -81,6 +102,7 @@ export type {
   PresentationLeaseLifecycle,
   PresentationLeaseReason,
   PresentationLeaseOptions,
+  ResolvedPresentationLeaseOptions,
   PresentationScreencastOptions,
   PresentationReport,
 } from './page/presentation.ts';
@@ -95,6 +117,7 @@ export type {
   ConnectionOptions,
   TraceEntry,
   EndReason,
+  SessionEndReason,
   ConnectionObserver,
   ResponseObservation,
   PerformanceObservation,

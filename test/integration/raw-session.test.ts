@@ -5,11 +5,14 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import {
   Browser,
+  createIsolatedWorld,
+  evaluateIsolated,
   SessionEndedError,
   TimeoutError,
   type ConnectionObserver,
 } from '../../src/index.ts';
 import { poll, removeTree } from '../../src/utils.ts';
+import { fixtureServer } from '../fixtures/server.ts';
 
 test('native drain waits for a late evaluation ACK and explicit detach without replay', async () => {
   await using browser = await Browser.launch({ headless: true, attach: 'none' });
@@ -208,4 +211,117 @@ test('aborting launch during CDP initialization cleans its owned process and loc
   } finally {
     await removeTree(profile);
   }
+});
+
+test('IsolatedWorld survives cross-process navigation and strict CSP without Runtime.enable', async (t) => {
+  const fixture = await fixtureServer();
+  t.after(() => fixture.server.stop());
+  const sends: string[] = [];
+  await using browser = await Browser.launch({
+    headless: true,
+    attach: 'none',
+    args: ['--site-per-process'],
+    beforeSend(method) {
+      if (method === 'Runtime.enable' || method === 'Page.enable' || method === 'DOM.enable')
+        throw new Error(`Forbidden enable: ${method}`);
+      sends.push(method);
+    },
+  });
+  const urlA = fixture.base + '/input-events';
+  const urlB = urlA.replace('127.0.0.1', 'localhost');
+  const { targetId } = await browser.cdp.send('Target.createTarget', { url: urlA });
+  const session = await browser.attachSession(targetId);
+  const waitOrigin = async (expectedHost: string) =>
+    poll(
+      async () => {
+        const res = await session.send('Runtime.evaluate', {
+          expression: 'document.readyState === "complete" && location.hostname',
+          returnByValue: true,
+        });
+        return res.result.value === expectedHost || undefined;
+      },
+      { timeout: 5000 },
+      `document on ${expectedHost}`,
+    );
+  await waitOrigin('127.0.0.1');
+  // Stamp a main-world marker that isolated worlds must never observe.
+  await session.send('Runtime.evaluate', { expression: 'window.__mainOnly = "main-a"' });
+  const world = createIsolatedWorld(session, { worldName: 'iso-cross-proc' });
+  const otherWorld = createIsolatedWorld(session, { worldName: 'iso-other-world' });
+  await otherWorld.evaluate('window.__otherOnly = "other-a"');
+  const first = await world.evaluate(() => ({
+    host: location.hostname,
+    mainLeak: (window as { __mainOnly?: string }).__mainOnly ?? null,
+    otherLeak: (window as { __otherOnly?: string }).__otherOnly ?? null,
+  }));
+  assert.deepEqual(first, { host: '127.0.0.1', mainLeak: null, otherLeak: null });
+  // Cross-origin navigation under --site-per-process swaps renderer processes (often reusing contextId).
+  await session.send('Page.navigate', { url: urlB });
+  await waitOrigin('localhost');
+  await session.send('Runtime.evaluate', { expression: 'window.__mainOnly = "main-b"' });
+  await otherWorld.evaluate('window.__otherOnly = "other-b"');
+  const second = await world.evaluate(() => ({
+    host: location.hostname,
+    mainLeak: (window as { __mainOnly?: string }).__mainOnly ?? null,
+    otherLeak: (window as { __otherOnly?: string }).__otherOnly ?? null,
+  }));
+  assert.deepEqual(second, { host: 'localhost', mainLeak: null, otherLeak: null });
+  // Guarded executionTimeout path also works without leaking into main world.
+  assert.equal(
+    await world.evaluate<string>(
+      'location.hostname + ":" + String(window.__mainOnly ?? "none")',
+      undefined,
+      { executionTimeout: 2000 },
+    ),
+    'localhost:none',
+  );
+  // String expression evaluation (with and without executionTimeout) works across strict CSP.
+  const cspUrl =
+    'data:text/html,' +
+    encodeURIComponent(
+      '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; script-src \'none\'"><title>csp-ok</title>',
+    );
+  await session.send('Page.navigate', { url: cspUrl });
+  await poll(
+    async () =>
+      (await evaluateIsolated<string>(session, 'document.title', undefined, {
+        worldName: 'iso-cross-proc',
+      })) === 'csp-ok' || undefined,
+    { timeout: 5000 },
+    'strict CSP document',
+  );
+  assert.equal(
+    await world.evaluate<string>('document.title', undefined, { executionTimeout: 2000 }),
+    'csp-ok',
+  );
+  // 8 concurrent executionTimeout evaluations + 3 repeated helper create/evaluate/dispose cycles
+  // on the same named world must leave at most 1 guard property on globalThis.
+  const guardWorldName = 'iso-guard-bounded';
+  const guardWorld = createIsolatedWorld(session, { worldName: guardWorldName });
+  const batch = await Promise.all(
+    Array.from({ length: 8 }, () =>
+      guardWorld.evaluate<string>('document.title', undefined, { executionTimeout: 2000 }),
+    ),
+  );
+  assert.deepEqual(batch, Array(8).fill('csp-ok'));
+  guardWorld.dispose();
+  for (let i = 0; i < 3; i++) {
+    const again = createIsolatedWorld(session, { worldName: guardWorldName });
+    assert.equal(
+      await again.evaluate<string>('document.title', undefined, { executionTimeout: 2000 }),
+      'csp-ok',
+    );
+    again.dispose();
+  }
+  const guardCount = await evaluateIsolated<number>(
+    session,
+    () => Object.getOwnPropertyNames(globalThis).filter((k) => k.includes('nodriver')).length,
+    undefined,
+    { worldName: guardWorldName },
+  );
+  assert.equal(guardCount, 1);
+  assert.equal(
+    sends.some((m) => m === 'Runtime.enable' || m === 'Page.enable' || m === 'DOM.enable'),
+    false,
+  );
 });

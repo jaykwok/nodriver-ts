@@ -62,13 +62,17 @@ try {
 }
 ```
 
-默认值：总时长 5 秒、最多送出 16 帧待 ACK、4 MiB 解码后帧字节、4 个并发 ACK、启动期限 2 秒、每个 ACK 期限 1 秒，以及 2 秒的停止与 ACK 清理预算。达到时长、帧数、字节或 ACK 上限，或某个 ACK 超时，都会停止租约并记录原因。`close()` 幂等，会等待停止命令和该租约自己的 ACK 工作；连接上的其他命令按各自的生命周期运行。session 断开时，报告为 `disconnected`，清理随连接一起结束。
+默认值：总时长 5 秒、最多送出 16 帧待 ACK、4 MiB 解码后帧字节、4 个并发 ACK、启动期限 2 秒、每个 ACK 期限 1 秒，以及 2 秒的停止与 ACK 清理预算。传入 `untilClosed: true` 可取消默认的时长、帧数和字节上限，使租约一直持续到 `close()`（也可对 `maxDuration`、`maxFrames`、`maxBytes` 单独传入 `Infinity` 或 `null`；显式有限上限仍会生效）。达到时长、帧数、字节或 ACK 上限，或某个 ACK 超时，都会停止租约并记录原因。`close()` 幂等，会等待停止命令和该租约自己的 ACK 工作；连接上的其他命令按各自的生命周期运行。session 断开时，报告为 `disconnected`，清理随连接一起结束。
 
-`screencast` 会把 `format`、`quality`、`maxWidth`、`maxHeight` 和 `everyNthFrame` 传给 `Page.startScreencast`，未指定的字段使用 Chrome 默认值。时长和超时最大为 2147483647 毫秒，即 Node.js 定时器的上限。在已结束的 session 上启动租约会以 `DisconnectedError` 拒绝，其 `cause` 为该 session 的 `closeReason`。
+`screencast` 会把 `format`、`quality`、`maxWidth`、`maxHeight` 和 `everyNthFrame` 传给 `Page.startScreencast`，未指定的字段使用 Chrome 默认值。有限时长和超时最大为 2147483647 毫秒，即 Node.js 定时器的上限。在已结束的 session 上启动租约会直接以该 session 的 `closeReason` 拒绝：单标签/单会话结束时抛出 `SessionEndedError`，浏览器连接断开时抛出 `DisconnectedError`。
 
 一个 session 同一时间最多只有一个活动的呈现租约；仍处于 idle 的租约可以在当前租约关闭后启动。租约处于 `starting` 时收到的帧，与 `active` 阶段一样计入帧数、字节和 ACK 上限。租约活动期间，不要在同一个 session 上直接调用 `Page.startScreencast` 或 `Page.stopScreencast`。
 
 报告把租约结果（`state`）与清理状态（`cleanup`）分开。`state` 为 `active`、`stopped`、`timed-out`（因某项上限或 ACK 超时而结束）、`failed` 或 `disconnected`。`cleanup` 为 `pending`、`completed`、`timed-out`（清理预算耗尽时仍有 ACK 未完成）、`failed` 或 `disconnected`。`reason` 记录租约结束的原因；`Page.stopScreencast` 失败时 `reason` 保持不变，`state` 变为 `failed`，错误记入 `cleanupErrors`。报告还统计送出、已确认和丢弃的帧数、编码字节、ACK 错误和清理错误，`inFlightAcks` 为关闭时仍未完成的 ACK 数。`close()` 返回后，报告是稳定的快照。screencast ACK 与输入动作分开统计。后台节流仍取决于 Chrome 和操作系统。
+
+## 无 `Runtime.enable` 的隔离世界辅助
+
+`createIsolatedWorld(session, { frameId?, worldName?, grantUniversalAccess? })` 和 `evaluateIsolated(session, fn, arg?, options?)` 通过缓存 `Page.createIsolatedWorld` 在隔离世界中求值，从不发送 `Runtime.enable`、`Page.enable` 或 `DOM.enable`，也绝不回退到页面主世界。`TargetSession` 上 `frameId` 默认为 `session.targetId`，显式指定 `worldName` 时必须为非空字符串（默认使用随机 UUID）。首次绑定时会通过 `DOM.describeNode` + `DOM.resolveNode`（不启用 `DOM` 域）以及对 `(frameId, worldName)` 的幂等复查校验 `globalThis` 的 V8 `RemoteObjectId` 句柄确属所请求的命名隔离世界（既不是主世界，也不是复用同一数字 ID 的其他命名隔离世界）；`evaluate()` 默认直接在该句柄上执行 `Runtime.callFunctionOn`，在传入 `executionTimeout` 时则通过挂载在该隔离世界上的不可枚举守卫令牌校验后再执行用户表达式，确保跨进程导航复用数字 `executionContextId` 也不会在错误世界执行用户代码。`context()` 与 `run()` 在返回或传入数字 `executionContextId` 前同样会校验句柄；该数字 ID 仅代表当时的瞬时快照，只在当前文档与渲染进程存活期间有效，需要句柄绑定执行时应优先使用 `evaluate()`。当 Chrome 报告上下文/句柄失效或绑定不匹配（根入口亦导出 `isContextGone(error)`）时，会自动失效旧缓存并在世界创建与执行全流程共享最多一次重建重试（可通过 `retryOnContextGone: false` 关闭重试）。`world.run((contextId, step) => ...)` 在同样的单次重建与总超时预算下执行自定义 CDP 命令，并同时约束世界创建与等待回调本身的 `timeout` 与 `signal`（预先中止的信号不会发送任何 CDP 命令，准备阶段中止则不会启动回调；回调开始后若超时或取消会立即停止等待，但回调内已启动的宿主异步任务可能继续运行）。
 
 ## 生命周期
 
@@ -84,7 +88,13 @@ try {
 | `target-crashed`   | Chrome 发出 `Inspector.targetCrashed` 或 `Target.targetCrashed` |
 | `disconnected`     | CDP 连接结束，包括 release/disconnect                           |
 
-session 结束时，其待响应请求和 `waitFor` 立即以 `SessionEndedError` 拒绝；该错误是 `DisconnectedError` 的子类，带有 `reason` 和 `targetId`。事件订阅随之移除，之后的发送和等待会被拒绝，新订阅会抛错。其他附加实例仍可使用，除非它们属于同一个已销毁/崩溃的 target，或整个连接已结束。关闭 target 时，Chrome 可能先发出 `detached` 再发出 `target-destroyed`，取决于事件顺序。
+`SessionEndedError` 与 `DisconnectedError` 是 `NodriverError` 下互斥的两个同级子类：
+
+- 单个 target 或 session 结束时（`detach-requested`、`detached`、`target-destroyed`、`target-crashed`），待响应请求、`waitFor`、后续命令与订阅以及 `PresentationLease.start()` 都直接以 `SessionEndedError` 拒绝（带有 `reason`、`targetId` 和可选 `sessionId`）。其他附加实例仍可使用，除非它们属于同一个已销毁/崩溃的 target。
+- 整个浏览器 CDP 连接断开时（`disconnected`，包括 WebSocket、Pipe 的 `EPIPE` 及自定义传输层关闭错误），所有 session 上的待响应和后续操作都统一以 `DisconnectedError` 拒绝（保留原始传输错误为 `cause`，不会抛 `SessionEndedError`），同时 `TargetSession.ended` 仍以 `'disconnected'` resolve。
+- 托管输入动作（`InputScope.run()`、`Mouse`、`Keyboard`）外层始终抛出 `InputActionError` 以保留 `error.report` 和 `error.cleanup`，其 `error.cause` 直接为未再包装的 `SessionEndedError` 或 `DisconnectedError`。
+
+session 结束时事件订阅随之移除。关闭 target 时，Chrome 可能先发出 `detached` 再发出 `target-destroyed`，取决于事件顺序。
 
 崩溃会结束**库**层面的生命周期，尽管 Chrome 允许原 CDP 附加实例在渲染进程崩溃后继续 reload 和 evaluate：原始 session 会被关闭，其附加实例也会被清理。要恢复，先等待根 session 的 `Target.targetCrashed` 通知（session 级的崩溃通知可能更早到达），再重新附加并发送 `Page.reload`。如果 target 再次崩溃，在收到下一次根 session 崩溃通知后重新执行恢复。高层 Tab 的 崩溃/reload 行为与此无关。
 
@@ -97,6 +107,10 @@ session 结束时，其待响应请求和 `waitFor` 立即以 `SessionEndedError
 附加中止或超时会立即拒绝，不影响其他附加实例。如果之后仍收到成功响应，连接会以独立的 5 秒期限为该 session ID 发送 `Target.detachFromTarget`。
 
 如果取消后 5 秒内没有收到附加响应，或者清理用的分离命令（包括 `detach()` 失败后的那次）在其独立的 5 秒内无法确认，库会断开 CDP 连接。协议响应表明 session 已不存在时视为成功。这种异常关闭会结束该连接上的**所有** session，确保没有无法追踪的附加实例残留，并通过 `onError` 报告清理失败。请按 `connection_lost` 处理；普通取消只影响被取消的调用方。断开连接不会终止 WebSocket 浏览器；Pipe Chrome 会在传输关闭时退出。
+
+## 发送前合规拦截（`beforeSend`）
+
+`ConnectionOptions.beforeSend(method, params, sessionId)`（`new Connection()`、`Browser.launch()` 和 `Browser.connect()` 均支持）在命令入队、序列化和写入传输层之前同步执行。若抛出异常，该命令在发上 wire 之前即被拒绝，不产生 pending/unanswered 计数，也不会触发 `observe.onSend` / `onSettle` / `onPerformance`。适合在应用路径与库内部路径上统一强制执行 CDP 合规边界（例如禁止 `*.enable`、`Target.setAutoAttach` 或 `Page.addScriptToEvaluateOnNewDocument`）；未配置时零运行时开销。
 
 ## 发送、调用结算与响应观察（不记录载荷）
 
@@ -130,7 +144,7 @@ const browser = await Browser.connect({
 
 `connection.pendingCount` 统计尚未结算的调用方请求，包括排队中的发送。`connection.unansweredCount` 统计已尝试发送、尚未收到匹配响应的请求。例如已发送的命令超时后，两者可以分别为 `0` 和 `1`；迟到的响应使 `unansweredCount` 归零，但不会让调用方再次结算。取消附加的迟到回复所触发的清理分离命令也会计入。
 
-取消、超时和 session 结束**不会**移除未响应的命令。发送报错同样保留计数，因为任意传输层都可能在部分发送后才报错。预先中止的请求、序列化失败的请求，以及在发送尝试前就从队列中取消的请求不计入。每条记录只保存 ID、方法、session 和时间戳元数据，直到收到响应或连接关闭，与应用淘汰了多少历史记录无关。对端一直不回复时，这些元数据会持续增长；应停止发起新工作，设置自己的清理期限，无法确认响应时断开连接。
+取消、超时和 session 结束**不会**移除未响应的命令。传输层写失败会统一通过 `DisconnectedError` 关闭连接，清空本地未响应记录并立即结算所有 session 与 `drain()` 等待者（因此仍应始终检查 `closed` 或断开事件）。预先中止的请求、序列化失败、`beforeSend` 拦截/中止，以及在发送尝试前就从队列中取消的请求不计入。每条记录只保存 ID、方法、session 和时间戳元数据，直到收到响应或连接关闭，与应用淘汰了多少历史记录无关。对端一直不回复时，这些元数据会持续增长；应停止发起新工作，设置自己的清理期限，无法确认响应时断开连接。
 
 连接关闭会清空计数，但不会合成响应，因此务必检查 `closed` 或断开事件：断开后的零来自本地记录清空。连接开放时，新命令会继续改变计数；浏览器侧的工作也可能在 CDP 回复后继续运行。应用应先串行管理操作与清理的归属，再交出这份归属。
 

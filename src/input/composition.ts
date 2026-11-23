@@ -289,18 +289,17 @@ export class Composition {
       throw new ActionabilityError('Composition target lost focus or its document changed');
   }
   /** Whether the composition is known to be over, so that an empty IME update would hit none. */
-  private async ended(): Promise<boolean> {
+  private async ended(cleanup = true): Promise<boolean> {
     if (!this.endWatch) return false;
+    const send = cleanup
+      ? this.action.sendCleanup.bind(this.action)
+      : this.action.send.bind(this.action);
     try {
-      const { result, exceptionDetails } = await this.action.sendCleanup(
-        this.session,
-        'Runtime.callFunctionOn',
-        {
-          objectId: this.endWatch,
-          functionDeclaration: 'function(){return this.ended}',
-          returnByValue: true,
-        },
-      );
+      const { result, exceptionDetails } = await send(this.session, 'Runtime.callFunctionOn', {
+        objectId: this.endWatch,
+        functionDeclaration: 'function(){return this.ended}',
+        returnByValue: true,
+      });
       return !!exceptionDetails || result.value === true;
     } catch (error) {
       if (!isStale(error)) throw error;
@@ -315,14 +314,14 @@ export class Composition {
    * current focus, so the cancel needs an inspectable editor with a collapsed selection. Without
    * forceCancel, focus must not have moved.
    */
-  private async checkCancel(): Promise<void> {
+  private async checkCancel(cleanup = true): Promise<void> {
     try {
-      await this.checkFocus(true);
-      if (!(await this.ended())) return;
+      await this.checkFocus(cleanup);
+      if (!(await this.ended(cleanup))) return;
     } catch (error) {
       if (!(error instanceof ActionabilityError) || !this.options.forceCancel) throw error;
     }
-    const send = this.action.sendCleanup.bind(this.action) as Send;
+    const send = (cleanup ? this.action.sendCleanup : this.action.send).bind(this.action) as Send;
     let collapsed = false;
     try {
       const { element, kind } = await this.resolveFocus(this.group!, send);
@@ -365,15 +364,21 @@ export class Composition {
       if (this.state === 'idle') await this.captureFocus();
       await this.checkFocus();
       await action.check({ type: 'composition' });
-      if (this.state === 'idle') {
+      const wasIdle = this.state === 'idle';
+      if (wasIdle) {
         this.release = action.release(
-          async () => {
-            await this.checkCancel();
-            await action.sendCleanup(this.session, 'Input.imeSetComposition', {
-              text: '',
-              selectionStart: 0,
-              selectionEnd: 0,
-            });
+          async (cleanup) => {
+            if (cleanup) await this.checkCancel(true);
+            await action.sendRelease(
+              this.session,
+              'Input.imeSetComposition',
+              { cleanup, composition: true },
+              {
+                text: '',
+                selectionStart: 0,
+                selectionEnd: 0,
+              },
+            );
             this.state = 'cancelled';
             action.record('compositionCancel');
           },
@@ -382,11 +387,30 @@ export class Composition {
       }
       this.state = 'composing';
       this.text = text;
-      await action.send(this.session, 'Input.imeSetComposition', {
-        text,
-        selectionStart,
-        selectionEnd,
-      });
+      let sent = false;
+      try {
+        await action.sendObserved(
+          this.session,
+          'Input.imeSetComposition',
+          {
+            onSent: () => {
+              sent = true;
+            },
+          },
+          {
+            text,
+            selectionStart,
+            selectionEnd,
+          },
+        );
+      } catch (error) {
+        if (wasIdle && !sent) {
+          this.release?.forget();
+          this.release = undefined;
+          this.state = 'idle';
+        }
+        throw error;
+      }
       action.record('compositionUpdate');
     });
   }
@@ -412,7 +436,10 @@ export class Composition {
       if (this.state === 'committed' || this.state === 'committing')
         throw new Error('Composition commit was already attempted');
       if (this.state === 'idle') this.state = 'cancelled';
-      else if (this.state !== 'cancelled') await this.release!.run();
+      else if (this.state !== 'cancelled') {
+        await this.checkCancel(false);
+        await this.release!.run();
+      }
     });
   }
 }

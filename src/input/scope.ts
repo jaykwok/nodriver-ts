@@ -1,5 +1,5 @@
 import type { Session } from '../protocol/connection.ts';
-import { StaleElementError } from '../errors.ts';
+import { DisconnectedError } from '../errors.ts';
 import {
   InputBehavior,
   inputCoordinator,
@@ -58,19 +58,22 @@ export class InputScope {
       (task) => coordinator.run(task),
       () => {
         if (session.closed)
-          throw new StaleElementError('Input target closed', { cause: session.closeReason });
+          throw session.closeReason ?? new DisconnectedError('Input target closed');
       },
     );
     this.behavior.coordinator = coordinator;
+    this.behavior.pointer = this.pointer;
     if (options.policy) this.behavior.configure(options.policy);
   }
   /**
    * A snapshot of the last acknowledged move in viewport CSS pixels, or the initial `pointer`
-   * (default (0, 0)) before any move is acknowledged. Includes replies received during cleanup;
-   * after an interrupted run, await `error.cleanup` before reading the settled position.
+   * (default (0, 0) with `placed: false`) before any move is acknowledged. `placed` is true once
+   * an initial `pointer` was supplied or at least one move has been acknowledged. Includes replies
+   * received during cleanup; after an interrupted run, await `error.cleanup` before reading the
+   * settled position.
    */
-  get position(): Readonly<{ x: number; y: number }> {
-    return Object.freeze({ x: this.pointer.x, y: this.pointer.y });
+  get position(): Readonly<{ x: number; y: number; placed: boolean }> {
+    return Object.freeze({ x: this.pointer.x, y: this.pointer.y, placed: this.pointer.placed });
   }
   /**
    * Acknowledge that you inspected/restored this page after failed composition cleanup.
@@ -88,6 +91,7 @@ export class InputScope {
   ): Promise<InputReport> {
     return this.behavior.action('scope', options, async (action) => {
       action.watch(this.session);
+      action.trackPointer(this.pointer);
       if (this.pageEvents) await action.send(this.session, 'Page.enable');
       const input: ScopedInput = {
         mouse: new Mouse(this.session, this.behavior, action, this.pointer),

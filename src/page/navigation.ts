@@ -2,6 +2,7 @@ import type { Protocol } from 'devtools-protocol';
 import type { Tab } from './tab.ts';
 import { abortReason, timeoutValue, type WaitOptions } from '../utils.ts';
 import { DisconnectedError, TimeoutError } from '../errors.ts';
+import { SessionEndedError } from '../protocol/connection.ts';
 export interface NavigationOptions extends WaitOptions {
   /** "networkidle" waits for Chrome's networkIdle lifecycle event (no requests for 500ms). */
   waitUntil?: 'commit' | 'domcontentloaded' | 'load' | 'networkidle';
@@ -80,7 +81,12 @@ export class NavigationWatcher {
     );
     this.cleanups.push(
       tab.session.on('Inspector.targetCrashed', () =>
-        this.cancel(new DisconnectedError('Page crashed during navigation')),
+        this.cancel(
+          new SessionEndedError('target-crashed', tab.id, {
+            sessionId: tab.session.id,
+            detail: 'Page crashed during navigation',
+          }),
+        ),
       ),
     );
     this.cleanups.push(tab.session.disconnected.on((e) => this.cancel(e)));

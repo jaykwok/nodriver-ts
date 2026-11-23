@@ -1,11 +1,14 @@
 import { describe, test } from 'node:test';
+import { PassThrough } from 'node:stream';
 import { expect } from '../fixtures/expect.ts';
 import {
   Connection,
   ProtocolError,
+  SessionEndedError,
   TimeoutError,
   DisconnectedError,
   PipeDecoder,
+  PipeTransport,
 } from '../../src/index.ts';
 import type { Transport } from '../../src/index.ts';
 import { project } from '../../src/dom/element.ts';
@@ -68,11 +71,13 @@ describe('CDP connection', () => {
     const a = s.send('Page.getFrameTree');
     const b = c.root.send('Browser.getVersion');
     t.event('Target.detachedFromTarget', { sessionId: 'child' });
-    await expect(a).rejects.toBeInstanceOf(DisconnectedError);
+    const aError = await a.catch((e) => e);
+    expect(aError).toBeInstanceOf(SessionEndedError);
+    expect(aError instanceof DisconnectedError).toBe(false);
     t.respond(1, { product: 'okay' });
     expect((await b).product).toBe('okay');
     expect(s.closed).toBe(true);
-    await expect(s.send('Page.getFrameTree')).rejects.toBeInstanceOf(DisconnectedError);
+    await expect(s.send('Page.getFrameTree')).rejects.toBeInstanceOf(SessionEndedError);
     await c.close();
   });
   test('detaching a parent retires nested sessions even without child detach events', async () => {
@@ -94,7 +99,7 @@ describe('CDP connection', () => {
     expect(sibling.closed).toBe(false);
     expect(c.events.size).toBe(baseline);
     expect(c.pendingCount).toBe(0);
-    expect(await rejected).toBeInstanceOf(DisconnectedError);
+    expect(await rejected).toBeInstanceOf(SessionEndedError);
     await c.close();
   });
   test('protocol errors preserve method, code and data', async () => {
@@ -161,7 +166,7 @@ describe('CDP connection', () => {
       expect(c.pendingCount).toBe(0);
     }
   });
-  test('a browser-level error for a detached session fails only that command', async () => {
+  test('a browser-level error for a detached session fails only that command with SessionEndedError', async () => {
     const t = new FakeTransport();
     const c = new Connection(t);
     const p = c.session('gone').send('Page.getFrameTree');
@@ -171,19 +176,165 @@ describe('CDP connection', () => {
         error: { code: -32001, message: 'Session with given id not found.' },
       }),
     );
-    await expect(p).rejects.toBeInstanceOf(DisconnectedError);
+    const error = await p.catch((e) => e);
+    expect(error).toBeInstanceOf(SessionEndedError);
+    expect(error instanceof DisconnectedError).toBe(false);
     expect(c.closed).toBe(false);
     expect(c.pendingCount).toBe(0);
     await c.close();
   });
-  test('transport failure cannot leave pending requests', async () => {
+  test('beforeSend blocks forbidden commands before the wire with zero debt and no send observation', async () => {
     const t = new FakeTransport();
-    t.send = () => {
-      throw Error('send failed');
-    };
-    const c = new Connection(t);
-    await expect(c.root.send('Browser.getVersion')).rejects.toThrow('send failed');
+    const seen: Array<{ method: string; params: unknown; sessionId?: string }> = [];
+    const observed: string[] = [];
+    const blocked = new Error('Forbidden CDP method');
+    const c = new Connection(t, {
+      observe: {
+        onSend: (e) => observed.push(e.method),
+        onSettle: () => observed.push('settle'),
+      },
+      beforeSend(method, params, sessionId) {
+        seen.push({ method, params, sessionId });
+        if (method.endsWith('.enable') || method === 'Target.setAutoAttach') throw blocked;
+      },
+    });
+    const err = await c
+      .session('page-1')
+      .send('Runtime.enable')
+      .catch((e) => e);
+    expect(err).toBe(blocked);
+    expect(t.messages).toHaveLength(0);
     expect(c.pendingCount).toBe(0);
+    expect(c.unansweredCount).toBe(0);
+    expect(observed).toEqual([]);
+    const ok = c.session('page-1').send('Runtime.evaluate', { expression: '1 + 1' });
+    t.respond(0, { result: { type: 'number', value: 2 } });
+    expect((await ok).result.value).toBe(2);
+    expect(seen).toEqual([
+      { method: 'Runtime.enable', params: undefined, sessionId: 'page-1' },
+      { method: 'Runtime.evaluate', params: { expression: '1 + 1' }, sessionId: 'page-1' },
+    ]);
+    expect(observed).toEqual(['Runtime.evaluate', 'settle']);
+    await c.close();
+  });
+  test('beforeSend synchronously aborting signal, detaching session or closing connection sends nothing', async () => {
+    const t = new FakeTransport();
+    const observed: string[] = [];
+    let hook: (() => void) | undefined;
+    const c = new Connection(t, {
+      observe: {
+        onSend: (e) => observed.push(e.method),
+        onSettle: () => observed.push('settle'),
+      },
+      beforeSend() {
+        hook?.();
+      },
+    });
+    const controller = new AbortController();
+    const abortReason = new Error('aborted inside beforeSend');
+    hook = () => controller.abort(abortReason);
+    const abortErr = await c.root
+      .sendWith('Browser.getVersion', { signal: controller.signal })
+      .catch((e) => e);
+    expect(abortErr).toBe(abortReason);
+    expect(t.messages).toHaveLength(0);
+    expect(c.pendingCount).toBe(0);
+    expect(c.unansweredCount).toBe(0);
+    expect(observed).toEqual([]);
+
+    const sess = c.session('s-detach');
+    hook = () => c.detach('s-detach');
+    const detachErr = await sess.send('Page.getFrameTree').catch((e) => e);
+    expect(detachErr).toBeInstanceOf(SessionEndedError);
+    expect(t.messages).toHaveLength(0);
+    expect(c.pendingCount).toBe(0);
+    expect(c.unansweredCount).toBe(0);
+
+    hook = () => {
+      void c.close();
+    };
+    const closeErr = await c.root.send('Browser.getVersion').catch((e) => e);
+    expect(closeErr).toBeInstanceOf(DisconnectedError);
+    expect(t.messages).toHaveLength(0);
+    expect(c.closed).toBe(true);
+    expect(observed).toEqual([]);
+  });
+  test('sync and async transport send failures close the connection, reject sibling sessions and drain with DisconnectedError', async () => {
+    for (const asyncFail of [false, true]) {
+      const t = new FakeTransport();
+      const raw = new Error(asyncFail ? 'async write failed' : 'sync write failed');
+      let closeCalls = 0;
+      t.close = () => {
+        closeCalls++;
+      };
+      const c = new Connection(t);
+      const sibling = c.session('sibling');
+      const siblingPending = sibling.send('Page.getFrameTree');
+      const draining = c.drain({ timeout: 500 });
+      t.send = () => {
+        if (asyncFail) return Promise.reject(raw);
+        throw raw;
+      };
+      const err = await c.root.send('Browser.getVersion').catch((e) => e);
+      expect(err).toBeInstanceOf(DisconnectedError);
+      expect(err instanceof SessionEndedError).toBe(false);
+      expect(err.message).toContain(raw.message);
+      expect(err.cause).toBe(raw);
+      expect(c.closed).toBe(true);
+      expect(c.pendingCount).toBe(0);
+      expect(c.unansweredCount).toBe(0);
+      expect(closeCalls).toBe(1);
+      const siblingErr = await siblingPending.catch((e) => e);
+      expect(siblingErr).toBe(err);
+      const drainErr = await draining.catch((e) => e);
+      expect(drainErr).toBeInstanceOf(DisconnectedError);
+      expect(drainErr.cause).toBe(err);
+    }
+  });
+  test('pipe EPIPE and raw transport close errors normalize to DisconnectedError with original cause', async () => {
+    const readable = new PassThrough();
+    const writable = new PassThrough();
+    const pipe = new PipeTransport(readable, writable);
+    const conn = new Connection(pipe);
+    const pending = conn.root.send('Browser.getVersion');
+    const epipe = Object.assign(new Error('write EPIPE'), { code: 'EPIPE' });
+    writable.emit('error', epipe);
+    const err = await pending.catch((e) => e);
+    expect(err).toBeInstanceOf(DisconnectedError);
+    expect(err instanceof SessionEndedError).toBe(false);
+    expect(err.cause).toBe(epipe);
+    expect(conn.closed).toBe(true);
+    const after = await conn.root.send('Browser.getVersion').catch((e) => e);
+    expect(after).toBeInstanceOf(DisconnectedError);
+
+    // Custom transport invoking onclose with a plain Error also normalizes to DisconnectedError.
+    const custom = new FakeTransport();
+    const customConn = new Connection(custom);
+    const req = customConn.root.send('Browser.getVersion');
+    const rawClose = new Error('raw socket reset');
+    custom.onclose?.(rawClose);
+    const closeErr = await req.catch((e) => e);
+    expect(closeErr).toBeInstanceOf(DisconnectedError);
+    expect(closeErr instanceof SessionEndedError).toBe(false);
+    expect(closeErr.cause).toBe(rawClose);
+    await customConn.close();
+  });
+  test('local JSON serialization errors propagate directly without wrapping as DisconnectedError or closing the connection', async () => {
+    const t = new FakeTransport();
+    const c = new Connection(t);
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    const err = await c.root.send('Runtime.evaluate', circular as never).catch((e) => e);
+    expect(err).toBeInstanceOf(TypeError);
+    expect(err instanceof DisconnectedError).toBe(false);
+    expect(c.closed).toBe(false);
+    expect(c.pendingCount).toBe(0);
+    expect(c.unansweredCount).toBe(0);
+    expect(t.messages).toHaveLength(0);
+    // The healthy connection remains usable after a local serialization error.
+    const ok = c.root.send('Browser.getVersion');
+    t.respond(0, { product: 'Chrome/ok' });
+    expect((await ok).product).toBe('Chrome/ok');
     await c.close();
   });
 });

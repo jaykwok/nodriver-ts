@@ -2,6 +2,9 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import {
+  createInputScope,
+  DisconnectedError,
+  InputActionError,
   ProtocolError,
   Session,
   SessionEndedError,
@@ -168,7 +171,12 @@ for (const reason of ['detached', 'target-destroyed', 'target-crashed', 'disconn
     });
     chrome.handle('Runtime.evaluate', () => NO_REPLY);
     const isReason = (e: unknown) =>
-      e instanceof SessionEndedError && e.reason === reason && e.targetId === session.targetId;
+      reason === 'disconnected'
+        ? e instanceof DisconnectedError && !(e instanceof SessionEndedError)
+        : e instanceof SessionEndedError &&
+          !(e instanceof DisconnectedError) &&
+          e.reason === reason &&
+          e.targetId === session.targetId;
     const pending = assert.rejects(
       session.send('Runtime.evaluate', { expression: 'pending' }),
       isReason,
@@ -186,6 +194,12 @@ for (const reason of ['detached', 'target-destroyed', 'target-crashed', 'disconn
     await assert.rejects(session.send('Page.reload'), isReason);
     await assert.rejects(session.waitFor('Page.loadEventFired'), isReason);
     assert.throws(() => session.on('Page.loadEventFired', () => {}), isReason);
+    // Managed InputScope on an already-ended session exposes the same error contract.
+    const scopeError = await createInputScope(session, { pageEvents: false })
+      .run(async () => {})
+      .catch((e: unknown) => e);
+    assert.ok(scopeError instanceof InputActionError);
+    assert.ok(isReason(scopeError.cause));
     assert.equal(events, 0);
     if (reason !== 'disconnected') {
       await poll(async () => browser.connection.pendingCount === 0 || undefined, { timeout: 1000 });
@@ -449,4 +463,46 @@ test('send observer preserves wire order including reentrancy; settlement order 
   );
   assert.deepEqual(traces.slice(-2), ['Page.reload', 'Runtime.evaluate']);
   chrome.assertDone();
+});
+
+test('beforeSend is forwarded by Browser.launch and blocks forbidden commands including InputScope Page.enable', async (t) => {
+  await using chrome = await ScriptedChrome.start({ pages: [{}] });
+  t.mock.method(BrowserProcess, 'start', async () => ({
+    endpoint: chrome.endpoint,
+    transport: await WebSocketTransport.connect(chrome.endpoint),
+    process: {
+      released: false,
+      diagnostics: { exited: false },
+      captureDiagnostics: async () => {},
+      waitForExit: async () => true,
+      close: async () => {},
+    },
+  }));
+  chrome.handle('Browser.close', () => {});
+  const denied = new Error('CDP compliance violation');
+  const seen: string[] = [];
+  await using browser = await Browser.launch({
+    attach: 'none',
+    headless: true,
+    beforeSend(method) {
+      seen.push(method);
+      if (method.endsWith('.enable') || method === 'Target.setAutoAttach') throw denied;
+    },
+  });
+  const session = await browser.attachSession(browser.pageTargets[0]!.targetId);
+  await assert.rejects(session.send('Runtime.enable'), (e: unknown) => e === denied);
+  const scopeError = await browser
+    .inputScope(session) // default pageEvents: true would send Page.enable
+    .run(async () => {})
+    .catch((e: unknown) => e);
+  assert.ok(scopeError instanceof InputActionError);
+  assert.equal(scopeError.cause, denied);
+  assert.equal(
+    chrome.commands.some((c) => c.method.endsWith('.enable')),
+    false,
+  );
+  assert.equal(browser.connection.pendingCount, 0);
+  assert.equal(browser.connection.unansweredCount, 0);
+  assert.ok(seen.includes('Runtime.enable'));
+  assert.ok(seen.includes('Page.enable'));
 });

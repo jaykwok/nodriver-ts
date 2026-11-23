@@ -3,11 +3,14 @@ import type { Protocol } from 'devtools-protocol';
 import {
   InputBehavior,
   inputCoordinator,
+  validateKeyDelay,
   type InputAction,
   type InputOptions,
   type InputReport,
+  type KeyDelayFn,
 } from './behavior.ts';
-import { StaleElementError } from '../errors.ts';
+import { DisconnectedError } from '../errors.ts';
+import { timeoutValue } from '../utils.ts';
 import type { InputRelease } from './action.ts';
 import { Composition, type CompositionOptions } from './composition.ts';
 import { motionPlan, keyInterval, notchPlan, scrollPlan } from './human.ts';
@@ -15,10 +18,26 @@ export interface KeyboardTypeOptions extends InputOptions {
   /**
    * Awaited after each grapheme or explicit segment is acknowledged and its character key is
    * released, before the next segment is sent. `index` is zero-based within this type() call.
-   * Disables overlapping presses; Shift may stay held for the next shifted character. Counts
-   * against the action's deadline and signal. Throwing stops typing without replaying the segment.
+   * Disables overlapping presses.
+   *
+   * Shift timing: when physical-key typing acquires Shift, it is released **before** `onSegment`
+   * on the last segment and on any shifted-to-unshifted or shifted-to-`insertText` boundary, and
+   * stays held across `onSegment` only between consecutive shifted physical-key segments. A
+   * caller-held Shift is never released by `type()`.
+   *
+   * Return `false` (or resolve to `false`) to stop typing normally after the completed segment:
+   * any Shift acquired by `type()` is released immediately, remaining segments and the trailing
+   * delay are skipped, and `type()` resolves with `status: 'completed'`.
+   *
+   * Counts against the action's deadline and signal. Throwing stops typing with `InputActionError`
+   * without replaying the segment.
    */
-  onSegment?: (segment: string, index: number) => void | Promise<void>;
+  onSegment?: (segment: string, index: number) => void | boolean | Promise<void | boolean>;
+  /**
+   * Override `InputPolicy.keyDelay` for this `type()` call in human mode: a `[min, max]` range
+   * (0–3000 ms) or a callback `(previous, next, index) => ms` fed into `action.pace()`.
+   */
+  keyDelay?: [number, number] | KeyDelayFn;
 }
 export interface ComposeOptions extends InputOptions, CompositionOptions {
   /**
@@ -34,8 +53,7 @@ function standalone(session: Session) {
   const behavior = new InputBehavior(
     (task) => coordinator.run(task),
     () => {
-      if (session.closed)
-        throw new StaleElementError('Input target closed', { cause: session.closeReason });
+      if (session.closed) throw session.closeReason ?? new DisconnectedError('Input target closed');
     },
     undefined,
     async (action) => {
@@ -85,15 +103,18 @@ export class Mouse {
     this.pointer = { ...pointer };
     this.sharedPointer = pointer;
     behavior.coordinator ??= inputCoordinator(session.connection);
+    behavior.pointer ??= this.sharedPointer;
   }
   private action(
     name: string,
     options: InputOptions,
     task: (a: InputAction) => Promise<void>,
   ): Promise<InputReport> {
-    return this.scope
-      ? this.scope.perform(options, task)
-      : this.behavior.action(name, options, task);
+    const run = (a: InputAction) => {
+      a.trackPointer(this.sharedPointer);
+      return task(a);
+    };
+    return this.scope ? this.scope.perform(options, run) : this.behavior.action(name, options, run);
   }
   private get buttons(): number {
     return this.hold ? buttonBits.get(this.hold.button)! : 0;
@@ -206,23 +227,38 @@ export class Mouse {
     const point = this.snap(this.pointer.x, this.pointer.y);
     await action.check({ type: 'mouseDown', button, ...point });
     if (this.hold) throw new Error('Mouse button is already held');
-    this.hold = { button, clickCount };
+    const hold = (this.hold = { button, clickCount });
     const release = this.release(action);
+    let sent = false;
     try {
-      await action.send(this.session, 'Input.dispatchMouseEvent', {
-        type: 'mousePressed',
-        ...point,
-        button,
-        buttons: this.buttons,
-        clickCount,
-        force: 0.5,
-        modifiers: this.behavior.modifiers,
-      });
+      await action.sendObserved(
+        this.session,
+        'Input.dispatchMouseEvent',
+        {
+          onSent: () => {
+            sent = true;
+          },
+        },
+        {
+          type: 'mousePressed',
+          ...point,
+          button,
+          buttons: this.buttons,
+          clickCount,
+          force: 0.5,
+          modifiers: this.behavior.modifiers,
+        },
+      );
       action.record('down', point);
       await action.check({ type: 'mousePressed', button, ...point });
       return release;
     } catch (error) {
-      await release.run();
+      if (sent) {
+        await release.run(true);
+      } else {
+        release.forget();
+        if (this.hold === hold) this.hold = undefined;
+      }
       throw error;
     }
   }
@@ -230,11 +266,11 @@ export class Mouse {
   private release(action: InputAction): InputRelease {
     const hold = this.hold;
     return action.release(
-      async () => {
+      async (cleanup) => {
         if (!hold || this.hold !== hold) return;
         this.hold = undefined;
         const point = this.snap(this.pointer.x, this.pointer.y);
-        await action.sendCleanup(this.session, 'Input.dispatchMouseEvent', {
+        await action.sendRelease(this.session, 'Input.dispatchMouseEvent', cleanup, {
           type: 'mouseReleased',
           ...point,
           button: hold.button,
@@ -291,6 +327,7 @@ export class Mouse {
       if (this.hold) throw new Error('Cannot click while a mouse button is held');
       await this.path(x, y, action, options.targetWidth);
       const release = await this.press(action, options.button ?? 'left', options.clickCount ?? 1);
+      let failed = false;
       try {
         if (this.behavior.policy.mode === 'human') {
           const hold = this.behavior.range('pressDelay');
@@ -314,8 +351,11 @@ export class Mouse {
           }
           await action.pace(hold / 2);
         }
+      } catch (error) {
+        failed = true;
+        throw error;
       } finally {
-        await release.run();
+        await release.run(failed);
       }
     });
   }
@@ -383,6 +423,7 @@ export class Mouse {
       if (this.hold) throw new Error('Cannot drag while a mouse button is held');
       await this.path(from.x, from.y, action);
       const release = await this.press(action, 'left');
+      let failed = false;
       try {
         for (let i = 1; i <= steps; i++) {
           await this.sample(
@@ -393,8 +434,11 @@ export class Mouse {
           if (this.behavior.policy.mode === 'human')
             await action.pace(this.behavior.range('pause') + 10);
         }
+      } catch (error) {
+        failed = true;
+        throw error;
       } finally {
-        await release.run();
+        await release.run(failed);
       }
     });
   }
@@ -482,13 +526,18 @@ for (const c of 'abcdefghijklmnopqrstuvwxyz') {
   const upper = c.toUpperCase();
   printable.push([`Key${upper}`, upper.charCodeAt(0), c, upper]);
 }
-const characters = new Map<string, { definition: KeyDefinition; shift: boolean }>();
-for (const [code, keyCode, key, shiftKey] of printable) {
-  const definition = { code, keyCode, key, shiftKey, text: key };
-  characters.set(key, { definition, shift: false });
-  characters.set(shiftKey, { definition, shift: true });
+/** A US-layout character mapped to its physical key and whether typing it requires Shift. */
+export interface CharacterKey {
+  readonly definition: KeyDefinition;
+  readonly shift: boolean;
 }
-characters.set(' ', { definition: named.Space!, shift: false });
+const characters = new Map<string, CharacterKey>();
+for (const [code, keyCode, key, shiftKey] of printable) {
+  const definition: KeyDefinition = Object.freeze({ code, keyCode, key, shiftKey, text: key });
+  characters.set(key, Object.freeze({ definition, shift: false }));
+  characters.set(shiftKey, Object.freeze({ definition, shift: true }));
+}
+characters.set(' ', Object.freeze({ definition: Object.freeze(named.Space!), shift: false }));
 /** CDP modifier bits by the key value of a modifier key, in the order shortcuts name them. */
 const modifierBits = new Map([
   ['Shift', 8],
@@ -564,6 +613,21 @@ export function keyDefinition(key: string): KeyDefinition {
   if (!definition)
     throw new TypeError(`Unsupported physical key ${key}; use insertText() for Unicode`);
   return definition;
+}
+/**
+ * Resolves a single US-layout character that `Keyboard.type()` types with physical keys, along
+ * with whether Shift is required. Returns `undefined` for strings typed via `Input.insertText`
+ * (such as newlines, tabs, non-ASCII characters, or multi-character strings).
+ */
+export function characterKey(char: string): CharacterKey | undefined {
+  return characters.get(char);
+}
+/**
+ * Whether `Keyboard.type()` requires Shift to type `char` as a physical US-layout key.
+ * Returns `false` for unshifted keys and for strings typed via `Input.insertText`.
+ */
+export function requiresShift(char: string): boolean {
+  return characters.get(char)?.shift ?? false;
 }
 /** Splits "Control+Shift+a" style chords; a trailing "+" key is written as "Shift++". */
 export function parseChord(chord: string): string[] {
@@ -696,12 +760,22 @@ export class Keyboard {
       .join('+');
     const commands =
       this.mac && Object.hasOwn(macCommands, shortcut) ? macCommands[shortcut] : undefined;
+    let sent = false;
     try {
-      await action.send(this.session, 'Input.dispatchKeyEvent', {
-        ...this.event('rawKeyDown', hold),
-        autoRepeat: !!repeat,
-        ...(commands && { commands }),
-      });
+      await action.sendObserved(
+        this.session,
+        'Input.dispatchKeyEvent',
+        {
+          onSent: () => {
+            sent = true;
+          },
+        },
+        {
+          ...this.event('rawKeyDown', hold),
+          autoRepeat: !!repeat,
+          ...(commands && { commands }),
+        },
+      );
       action.record('keyDown');
       if (text !== undefined) {
         await action.check({ type: 'char', key: name, code: definition.code });
@@ -714,7 +788,15 @@ export class Keyboard {
       }
       return release;
     } catch (error) {
-      await release.run();
+      if (sent) {
+        await release.run(true);
+      } else {
+        release.forget();
+        if (!repeat && this.held.get(definition.code) === hold) {
+          this.held.delete(definition.code);
+          this.behavior.modifiers = this.modifiers;
+        }
+      }
       throw error;
     }
   }
@@ -727,13 +809,14 @@ export class Keyboard {
     const definition = keyDefinition(name);
     const hold = this.held.get(definition.code);
     return action.release(
-      async () => {
+      async (cleanup) => {
         if (this.held.get(definition.code) !== hold) return;
         this.held.delete(definition.code);
         this.behavior.modifiers = this.modifiers;
-        await action.sendCleanup(
+        await action.sendRelease(
           this.session,
           'Input.dispatchKeyEvent',
+          cleanup,
           this.event(
             'keyUp',
             hold ?? { definition, key: characters.has(name) ? name : definition.key },
@@ -752,6 +835,7 @@ export class Keyboard {
       const items = parseChord(chord);
       for (const key of items) keyDefinition(key);
       const down: InputRelease[] = [];
+      let failed = false;
       try {
         for (const key of items) {
           if (this.held.has(keyDefinition(key).code)) throw new Error(`Key ${key} is already held`);
@@ -759,8 +843,11 @@ export class Keyboard {
           if (this.behavior.policy.mode === 'human')
             await action.pace(this.behavior.range('pressDelay'));
         }
+      } catch (error) {
+        failed = true;
+        throw error;
       } finally {
-        for (const release of down.reverse()) await release.run();
+        for (const release of down.reverse()) await release.run(failed);
       }
     });
   }
@@ -769,17 +856,22 @@ export class Keyboard {
     const { definition } = characters.get(char)!;
     if (this.held.has(definition.code)) throw new Error('Cannot type a key that is already held');
     const release = await this.keyDown(char, action);
+    let failed = false;
     try {
       if (this.behavior.policy.mode === 'human')
         await action.pace(this.behavior.range('pressDelay'));
+    } catch (error) {
+      failed = true;
+      throw error;
     } finally {
-      await release.run();
+      await release.run(failed);
     }
   }
   /** Types two letters with overlapping presses: the second goes down before the first comes up. */
   private async rollover(first: string, second: string, action: InputAction): Promise<void> {
     const firstRelease = await this.keyDown(first, action);
     let secondRelease: InputRelease | undefined;
+    let failed = false;
     try {
       await action.pace(this.behavior.range('pressDelay'));
       secondRelease = await this.keyDown(second, action);
@@ -787,9 +879,12 @@ export class Keyboard {
       await firstRelease.run();
       action.report.completedSegments++;
       await action.pace(this.behavior.range('pressDelay'));
+    } catch (error) {
+      failed = true;
+      throw error;
     } finally {
-      await secondRelease?.run();
-      await firstRelease.run();
+      await secondRelease?.run(failed);
+      await firstRelease.run(failed);
     }
     action.report.completedSegments++;
   }
@@ -812,29 +907,31 @@ export class Keyboard {
             (s) => s.segment,
           )
         : [...text];
-    const { onSegment } = options;
+    const { onSegment, keyDelay } = options;
+    if (keyDelay !== undefined) validateKeyDelay(keyDelay);
     return this.action('type', options, async (action) => {
       const human = this.behavior.policy.mode === 'human';
+      const delaySpec = keyDelay ?? this.behavior.policy.keyDelay;
+      const customKeyDelay = typeof delaySpec === 'function';
       let shiftRelease: InputRelease | undefined;
-      const pause = async (previous: string, next: string) => {
-        if (human)
-          await action.pace(
-            keyInterval(
-              () => this.behavior.random(),
-              this.behavior.policy.keyDelay,
-              previous,
-              next,
-            ),
-          );
+      const pause = async (previous: string, next: string, index: number) => {
+        if (!human) return;
+        const ms =
+          typeof delaySpec === 'function'
+            ? timeoutValue(delaySpec(previous, next, index), 'keyDelay')
+            : keyInterval(() => this.behavior.random(), delaySpec, previous, next);
+        await action.pace(ms);
       };
+      let failed = false;
       try {
         for (let i = 0; i < segments.length; i++) {
           const segment = segments[i]!;
           const next = segments[i + 1];
           const keys = this.typesKeys && !(this.modifiers & ~8);
-          // A segment callback must read this segment before any of the next one's input.
+          // A segment callback or custom keyDelay must observe every segment boundary cleanly.
           if (
             !onSegment &&
+            !customKeyDelay &&
             keys &&
             human &&
             this.held.size === 0 &&
@@ -845,7 +942,7 @@ export class Keyboard {
           ) {
             await this.rollover(segment, next, action);
             i++;
-            await pause(next, segments[i + 1] ?? '');
+            await pause(next, segments[i + 1] ?? '', i);
             continue;
           }
           const character = characters.get(segment);
@@ -868,17 +965,22 @@ export class Keyboard {
             shiftRelease = undefined;
           }
           action.report.completedSegments++;
-          if (onSegment)
-            await action.waitFor(
+          if (onSegment) {
+            const proceed = await action.waitFor(
               Promise.resolve().then(() => {
                 action.step();
                 return onSegment(segment, i);
               }),
             );
-          await pause(segment, next ?? '');
+            if (proceed === false) break;
+          }
+          await pause(segment, next ?? '', i);
         }
+      } catch (error) {
+        failed = true;
+        throw error;
       } finally {
-        await shiftRelease?.run();
+        await shiftRelease?.run(failed);
       }
     });
   }

@@ -226,18 +226,22 @@ test('serialization failure produces neither a send attempt nor a response', asy
 });
 
 for (const asynchronous of [false, true]) {
-  test(`${asynchronous ? 'async' : 'sync'} send error retains uncertain delivery until response or close`, async () => {
+  test(`${asynchronous ? 'async' : 'sync'} send error disconnects the connection and settles drain immediately`, async () => {
     const { transport: t, connection: c, responses, settles } = fixture();
     t.send = (message) => {
       t.commands.push(JSON.parse(message));
       if (asynchronous) return Promise.reject(new Error('send failed'));
       throw new Error('send failed');
     };
-    await assert.rejects(c.root.send('Browser.getVersion'), /send failed/);
+    const draining = c.drain({ timeout: 500 });
+    await assert.rejects(c.root.send('Browser.getVersion'), DisconnectedError);
+    await assert.rejects(draining, DisconnectedError);
+    assert.equal(c.closed, true);
     assert.equal(c.pendingCount, 0);
-    assert.equal(c.unansweredCount, 1);
+    assert.equal(c.unansweredCount, 0);
+    // Late replies arriving after transport disconnect are ignored.
     t.reply(0);
-    assert.equal(responses[0]!.late, true);
+    assert.equal(responses.length, 0);
     assert.equal(c.unansweredCount, 0);
     assert.equal(settles.length, 1);
     await c.close();

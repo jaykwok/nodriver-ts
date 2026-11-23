@@ -13,6 +13,9 @@ import { InputTargets, type InputPage } from './targets.ts';
 import { InputAction } from './action.ts';
 export { InputAction } from './action.ts';
 
+/** Computes the planned delay in milliseconds after typing `previous` before `next`. */
+export type KeyDelayFn = (previous: string, next: string, index: number) => number;
+
 export interface InputPolicy {
   mode?: 'instant' | 'human';
   seed?: number;
@@ -22,7 +25,12 @@ export interface InputPolicy {
   moveSteps?: [number, number];
   pause?: [number, number];
   pressDelay?: [number, number];
-  keyDelay?: [number, number];
+  /**
+   * Delay in milliseconds between typed segments in human mode: a `[min, max]` range (0–3000 ms,
+   * sampled with QWERTY digraph weights) or a callback `(previous, next, index) => ms` fed into
+   * the action's pacing clock (`plannedMs`).
+   */
+  keyDelay?: [number, number] | KeyDelayFn;
   /** Override packet count. Omit to derive it from distance and wheelProfile. */
   scrollSteps?: [number, number];
   /** Inertial touchpad packets (default), or discrete wheel notches. */
@@ -125,6 +133,8 @@ export interface InputReport {
   plannedMs: number;
   /** Milliseconds from acquiring input until the input ended, before cleanup. */
   actualMs: number;
+  /** Settled pointer position in viewport CSS pixels when placed (post-cleanup in final reports). */
+  finalPosition?: { x: number; y: number };
   trace: Array<{ type: string; x?: number; y?: number; delay?: number }>;
   cleanupErrors: string[];
   phase: 'queued' | 'running' | 'cleaning' | 'done';
@@ -335,9 +345,9 @@ type Optional = 'moveDuration' | 'moveSteps' | 'scrollSteps' | 'wheelNotch' | 'p
 type ResolvedInputPolicy = Omit<Required<InputPolicy>, Optional> & Pick<InputPolicy, Optional>;
 const defaults = {
   mode: 'instant' as 'instant' | 'human',
-  pause: [0, 15],
-  pressDelay: [25, 70],
-  keyDelay: [35, 110],
+  pause: [0, 15] as [number, number],
+  pressDelay: [25, 70] as [number, number],
+  keyDelay: [35, 110] as [number, number] | KeyDelayFn,
   wheelProfile: 'trackpad' as 'trackpad' | 'wheel',
   targetInset: 0.2,
   typing: 'auto' as 'auto' | 'keys' | 'insertText',
@@ -345,13 +355,44 @@ const defaults = {
   presentationRecovery: 250 as number | false,
   lateMoves: 'send' as 'send' | 'skip',
 } satisfies Omit<ResolvedInputPolicy, 'seed'>;
+/** @internal Copies an InputPolicy without structuredClone so function fields such as keyDelay survive. */
+export function cloneInputPolicy<T extends InputPolicy | undefined>(policy: T): T {
+  if (!policy) return policy;
+  const copy: InputPolicy = { ...policy };
+  if (Array.isArray(copy.moveDuration)) copy.moveDuration = [...copy.moveDuration];
+  if (Array.isArray(copy.moveSteps)) copy.moveSteps = [...copy.moveSteps];
+  if (Array.isArray(copy.pause)) copy.pause = [...copy.pause];
+  if (Array.isArray(copy.pressDelay)) copy.pressDelay = [...copy.pressDelay];
+  if (Array.isArray(copy.keyDelay)) copy.keyDelay = [...copy.keyDelay];
+  if (Array.isArray(copy.scrollSteps)) copy.scrollSteps = [...copy.scrollSteps];
+  if (copy.pointerGrid && typeof copy.pointerGrid === 'object') {
+    copy.pointerGrid = {
+      ...copy.pointerGrid,
+      ...(copy.pointerGrid.phase && typeof copy.pointerGrid.phase === 'object'
+        ? { phase: { ...copy.pointerGrid.phase } }
+        : {}),
+    };
+  }
+  return copy as T;
+}
+/** @internal Validates a `[min, max]` keyDelay tuple (0–3000 ms) or custom callback. */
+export function validateKeyDelay(value: [number, number] | KeyDelayFn): void {
+  if (typeof value === 'function') return;
+  if (
+    !Array.isArray(value) ||
+    value.length !== 2 ||
+    value.some((n) => !Number.isFinite(n) || n < 0 || n > 3000) ||
+    value[0] > value[1]
+  )
+    throw new RangeError('Invalid keyDelay range');
+}
 /** @internal Rejects a policy configure() would reject; returns a copy to keep. */
 export function checkedInputPolicy(policy: InputPolicy): InputPolicy {
   new InputBehavior(
     (task) => task(),
     () => {},
   ).configure(policy);
-  return structuredClone(policy);
+  return cloneInputPolicy(policy);
 }
 export class InputBehavior {
   policy: ResolvedInputPolicy;
@@ -369,6 +410,8 @@ export class InputBehavior {
   readonly snapshotGuard: () => () => void;
   readonly prepare: (action: InputAction) => Promise<void>;
   coordinator?: InputCoordinator;
+  /** @internal Confirmed pointer state shared with this behavior's Mouse or InputScope. */
+  pointer?: Readonly<{ x: number; y: number; placed: boolean }>;
   constructor(
     run: <T>(task: () => Promise<T>) => Promise<T>,
     guard: () => void,
@@ -380,7 +423,7 @@ export class InputBehavior {
     const seed = seedSource();
     if (!Number.isSafeInteger(seed) || seed < 0 || seed > 0xffff_ffff)
       throw new RangeError('Invalid generated input seed');
-    this.policy = { ...structuredClone(defaults), seed };
+    this.policy = { ...cloneInputPolicy(defaults), seed };
     this.state = seed;
     this.run = run;
     this.guard = guard;
@@ -395,8 +438,8 @@ export class InputBehavior {
       Object.entries(policy).filter(([, value]) => value !== undefined),
     ) as InputPolicy;
     const next = {
-      ...structuredClone(defaults),
-      ...structuredClone(given),
+      ...cloneInputPolicy(defaults),
+      ...cloneInputPolicy(given),
       seed: policy.seed === undefined ? this.policy.seed : policy.seed,
     };
     if (!['instant', 'human'].includes(next.mode) || !Number.isSafeInteger(next.seed))
@@ -432,7 +475,6 @@ export class InputBehavior {
       'moveSteps',
       'pause',
       'pressDelay',
-      'keyDelay',
       'scrollSteps',
     ] as const) {
       const range = next[field];
@@ -452,6 +494,7 @@ export class InputBehavior {
       )
         throw new RangeError(`Invalid ${field} range`);
     }
+    validateKeyDelay(next.keyDelay);
     if (!Number.isFinite(next.targetInset) || next.targetInset < 0 || next.targetInset > 0.45)
       throw new RangeError('Invalid targetInset');
     const recovery = next.presentationRecovery;
@@ -476,6 +519,8 @@ export class InputBehavior {
   ): number {
     const range = this.policy[field];
     if (!range) throw new TypeError(`${field} uses automatic planning; no range is configured`);
+    if (typeof range === 'function')
+      throw new TypeError(`${field} uses a custom callback; no range is configured`);
     const [low, high] = range;
     const value = low + (high - low) * this.random();
     return field.endsWith('Steps') ? Math.round(value) : value;
@@ -559,6 +604,12 @@ export class InputBehavior {
   }
 }
 export interface InputOptions extends WaitOptions {
+  /**
+   * Maximum time in milliseconds to wait for each individual CDP command sent by this action.
+   * Defaults to the remaining action/step `timeout`. Each command receives
+   * `Math.min(remainingTimeout, commandTimeout)` and the action's cancellation signal.
+   */
+  commandTimeout?: number;
   /** Independent total budget for releases and late responses. Defaults to 5000 ms. */
   cleanupTimeout?: number;
   /** Called at each checkpoint of the action; throwing stops it. See {@link InputCheckpoint}. */

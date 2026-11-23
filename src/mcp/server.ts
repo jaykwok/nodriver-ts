@@ -26,7 +26,7 @@ export {
 } from './protocol.ts';
 import { z } from 'zod';
 import { BrowserMcpSession, type WaitFor } from './session.ts';
-import { InputActionError } from '../input/behavior.ts';
+import { cloneInputPolicy, InputActionError } from '../input/behavior.ts';
 import { bounded, poll } from '../utils.ts';
 import { evaluateScript, MAX_SCRIPT_LENGTH, MAX_ARGUMENT_LENGTH } from './evaluate.ts';
 import { BrowserSessionManager, type BrowserSessionManagerOptions } from './manager.ts';
@@ -672,7 +672,7 @@ export function createBrowserMcpServer(
     async (args) => {
       const tab = session.tab(args.tabId);
       tab.setInputPolicy(args.policy);
-      return result({ policy: structuredClone(tab.inputBehavior.policy) });
+      return result({ policy: cloneInputPolicy(tab.inputBehavior.policy) });
     },
   );
   tool(

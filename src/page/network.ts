@@ -1,5 +1,5 @@
 import type { Protocol } from 'devtools-protocol';
-import type { Session } from '../protocol/connection.ts';
+import { SessionEndedError, type Session } from '../protocol/connection.ts';
 import type { Tab } from './tab.ts';
 import { EventHub, type WaitOptions } from '../utils.ts';
 import { DisconnectedError, NodriverError, ProtocolError } from '../errors.ts';
@@ -12,7 +12,7 @@ const requestGone = (error: unknown): boolean =>
   /Invalid InterceptionId|Fetch domain is not enabled/.test(error.message);
 /** A session that ended during a command needs nothing further from it. */
 const sessionGone = (session: Session, error: unknown): boolean =>
-  session.closed || error instanceof DisconnectedError;
+  session.closed || error instanceof DisconnectedError || error instanceof SessionEndedError;
 /** A stateless private copy. `y` would anchor every test at index 0, so the source does that. */
 function matcher(pattern: RegExp): RegExp {
   const source = pattern.sticky ? `^(?:${pattern.source})` : pattern.source;

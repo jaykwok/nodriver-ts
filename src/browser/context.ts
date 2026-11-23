@@ -16,7 +16,7 @@ import {
   importIndexedDB,
   type IndexedDBDatabase,
 } from './indexeddb.ts';
-import { checkedInputPolicy, type InputPolicy } from '../input/behavior.ts';
+import { checkedInputPolicy, cloneInputPolicy, type InputPolicy } from '../input/behavior.ts';
 export interface ContextOptions {
   proxyServer?: string;
   proxyBypassList?: string;
@@ -119,7 +119,7 @@ export class BrowserContext {
   }
   /** Input policy of tabs opened later in this context, if it has its own. */
   get defaultInputPolicy(): InputPolicy | undefined {
-    return structuredClone(this.inputDefault);
+    return cloneInputPolicy(this.inputDefault);
   }
   /**
    * Sets the input policy of tabs that open later in this context, popups included, over the

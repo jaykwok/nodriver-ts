@@ -8,6 +8,7 @@ import {
   Keyboard,
   Mouse,
   ProtocolError,
+  TimeoutError,
   type InputCheckpoint,
   type InputPolicy,
 } from '../../src/index.ts';
@@ -59,25 +60,39 @@ const human = (policy: InputPolicy = {}): InputPolicy => ({
 test('a scope keeps the acknowledged pointer position from one run to the next', async () => {
   await using t = await target();
   const scope = createInputScope(t.session, { pageEvents: false, policy: human() });
-  assert.deepEqual(scope.position, { x: 0, y: 0 });
-  await scope.run(async (input) => {
-    await input.mouse.move(120, 80);
-    assert.deepEqual(scope.position, { x: 120, y: 80 });
+  assert.deepEqual(scope.position, { x: 0, y: 0, placed: false });
+  // Pure keyboard run on an unplaced scope never marks the pointer as placed at (0, 0).
+  const kbOnly = await scope.run(async (input) => {
+    await input.keyboard.insertText('hi');
   });
+  assert.deepEqual(scope.position, { x: 0, y: 0, placed: false });
+  assert.equal(kbOnly.finalPosition, undefined);
+  const moved = await scope.run(async (input) => {
+    await input.mouse.move(120, 80);
+    assert.deepEqual(scope.position, { x: 120, y: 80, placed: true });
+  });
+  assert.deepEqual(moved.finalPosition, { x: 120, y: 80 });
   const previous = scope.position;
   assert.ok(Object.isFrozen(previous));
   assert.equal(Reflect.set(previous, 'x', 999), false);
   let start: unknown;
-  await scope.run(async (input) => {
+  const second = await scope.run(async (input) => {
     start = input.mouse.position;
     await input.mouse.move(200, 100);
   });
   assert.deepEqual(start, { x: 120, y: 80, buttons: 0 });
-  assert.deepEqual(scope.position, { x: 200, y: 100 });
-  assert.deepEqual(previous, { x: 120, y: 80 });
+  assert.deepEqual(scope.position, { x: 200, y: 100, placed: true });
+  assert.deepEqual(second.finalPosition, { x: 200, y: 100 });
+  assert.deepEqual(previous, { x: 120, y: 80, placed: true });
   // Only the first run chose a starting point.
   assert.equal(t.layoutReads(), 1);
   assert.deepEqual(t.moves().at(-1), { type: 'mouseMoved', x: 200, y: 100 });
+  // Moving explicitly to (0, 0) distinguishes placed at (0, 0) from unplaced.
+  const origin = await scope.run(async (input) => {
+    await input.mouse.move(0, 0);
+  });
+  assert.deepEqual(scope.position, { x: 0, y: 0, placed: true });
+  assert.deepEqual(origin.finalPosition, { x: 0, y: 0 });
 });
 
 test('an explicit pointer position starts the first run there', async () => {
@@ -88,13 +103,14 @@ test('an explicit pointer position starts the first run there', async () => {
     pointer: { x: 50, y: 60 },
     policy: human(),
   });
-  assert.deepEqual(scope.position, { x: 50, y: 60 });
+  assert.deepEqual(scope.position, { x: 50, y: 60, placed: true });
   let start: unknown;
-  await scope.run(async (input) => {
+  const report = await scope.run(async (input) => {
     start = input.mouse.position;
     await input.mouse.wheel(0, 30);
   });
   assert.deepEqual(start, { x: 50, y: 60, buttons: 0 });
+  assert.deepEqual(report.finalPosition, { x: 50, y: 60 });
   assert.equal(t.layoutReads(), 0);
   assert.ok(t.mouse.every((e) => e.type === 'mouseWheel' && e.x === 50 && e.y === 60));
 });
@@ -272,7 +288,8 @@ test('on a pointer grid, a planned sample that would not move the pointer is not
     policy: human({ moveSteps: [40, 40], moveDuration: [40, 40], pointerGrid: { scale: 1 } }),
   });
   const report = await scope.run((input) => input.mouse.move(5, 3).then(() => {}));
-  assert.deepEqual(scope.position, { x: 5, y: 3 });
+  assert.deepEqual(scope.position, { x: 5, y: 3, placed: true });
+  assert.deepEqual(report.finalPosition, { x: 5, y: 3 });
   const moves = t.moves();
   assert.ok(moves.length < 40 && moves.length === report.sent.moves);
   assert.ok(moves.every((m) => Number.isInteger(m.x) && Number.isInteger(m.y)));
@@ -355,9 +372,12 @@ test('a scope continues from a move acknowledged during cancellation cleanup', a
     )
     .catch((e: unknown) => e);
   assert.ok(error instanceof InputActionError);
-  assert.deepEqual(scope.position, { x: 10, y: 20 });
-  assert.equal((await error.cleanup).status, 'completed');
-  assert.deepEqual(scope.position, { x: 80, y: 90 });
+  assert.deepEqual(scope.position, { x: 10, y: 20, placed: true });
+  assert.deepEqual(error.report.finalPosition, { x: 10, y: 20 });
+  const cleanup = await error.cleanup;
+  assert.equal(cleanup.status, 'completed');
+  assert.deepEqual(scope.position, { x: 80, y: 90, placed: true });
+  assert.deepEqual(cleanup.report.finalPosition, { x: 80, y: 90 });
   await scope.run(async ({ mouse }) => {
     assert.deepEqual(mouse.position, { x: 80, y: 90, buttons: 0 });
   });
@@ -420,8 +440,9 @@ test('a refused first move does not retain a random point Chrome never acknowled
     })
     .catch((e: unknown) => e);
   assert.ok(error instanceof InputActionError);
-  await error.cleanup;
-  assert.deepEqual(scope.position, { x: 0, y: 0 });
+  const cleanup = await error.cleanup;
+  assert.deepEqual(scope.position, { x: 0, y: 0, placed: false });
+  assert.equal(cleanup.report.finalPosition, undefined);
   await scope.run(async ({ mouse }) => {
     assert.deepEqual(mouse.position, { x: 0, y: 0, buttons: 0 });
   });
@@ -452,7 +473,7 @@ test('scope position ignores a rejected move even when the error arrives during 
     )
     .catch((e: unknown) => e);
   await sending;
-  assert.deepEqual(scope.position, { x: 12, y: 34 });
+  assert.deepEqual(scope.position, { x: 12, y: 34, placed: true });
   controller.abort();
   const error = await failed;
   assert.ok(error instanceof InputActionError);
@@ -460,7 +481,116 @@ test('scope position ignores a rejected move even when the error arrives during 
   const cleanup = await error.cleanup;
   assert.equal(cleanup.status, 'completed');
   assert.equal(cleanup.report.lateReplies, 1);
-  assert.deepEqual(scope.position, { x: 12, y: 34 });
+  assert.deepEqual(scope.position, { x: 12, y: 34, placed: true });
+  assert.deepEqual(cleanup.report.finalPosition, { x: 12, y: 34 });
+});
+
+test('commandTimeout bounds single CDP commands independently of total action timeout across move, wheel and drag', async () => {
+  await using t = await target();
+  const scope = createInputScope(t.session, {
+    pageEvents: false,
+    pointer: { x: 0, y: 0 },
+    policy: human({
+      moveSteps: [4, 4],
+      moveDuration: [240, 240],
+      scrollSteps: [4, 4],
+      presentationRecovery: false,
+    }),
+  });
+  // Total duration (240ms+) exceeds commandTimeout (120ms), yet every command answers fast -> succeeds.
+  const ok = await scope.run(
+    async ({ mouse }) => {
+      await mouse.move(100, 100);
+      await mouse.wheel(0, 80);
+      await mouse.drag({ x: 100, y: 100 }, { x: 150, y: 150 }, 2);
+    },
+    { timeout: 5000, commandTimeout: 120 },
+  );
+  assert.equal(ok.status, 'completed');
+  assert.deepEqual(ok.finalPosition, { x: 150, y: 150 });
+  // A single stalled command fails at commandTimeout (60ms) well before total timeout (5000ms).
+  t.latency = 250;
+  const started = performance.now();
+  const stalled = await scope
+    .run(
+      async ({ mouse }) => {
+        await mouse.move(200, 200);
+      },
+      { timeout: 5000, commandTimeout: 60 },
+    )
+    .catch((e: unknown) => e);
+  const elapsed = performance.now() - started;
+  assert.ok(stalled instanceof InputActionError);
+  assert.ok(stalled.cause instanceof TimeoutError);
+  assert.ok(elapsed < 1000, `stalled command took ${elapsed}ms`);
+  assert.equal((await stalled.cleanup).status, 'completed');
+  // Nested steps can tighten commandTimeout but cannot relax the scope's commandTimeout.
+  t.latency = 150;
+  const narrowed = await scope
+    .run(
+      async ({ mouse }) => {
+        await mouse.wheel(0, 40, { commandTimeout: 500 });
+      },
+      { timeout: 5000, commandTimeout: 40 },
+    )
+    .catch((e: unknown) => e);
+  assert.ok(narrowed instanceof InputActionError);
+  assert.ok(narrowed.cause instanceof TimeoutError);
+  assert.equal((await narrowed.cleanup).status, 'completed');
+  // Invalid commandTimeout is rejected eagerly.
+  assert.throws(() => scope.run(async () => {}, { commandTimeout: -1 }), RangeError);
+});
+
+test('normal mouseReleased respects commandTimeout and drains late reply cleanly', async () => {
+  await using t = await target();
+  const mouse = new Mouse(t.session);
+  mouse.behavior.configure({ presentationRecovery: false });
+  let releaseReply!: () => void;
+  const releaseHeld = new Promise<void>((resolve) => {
+    releaseReply = resolve;
+  });
+  t.chrome.handle('Input.dispatchMouseEvent', async (params) => {
+    if (params.type === 'mouseReleased') await releaseHeld;
+  });
+  const started = performance.now();
+  const error = await mouse
+    .click(10, 10, { commandTimeout: 40, timeout: 5000, cleanupTimeout: 1000 })
+    .catch((e: unknown) => e);
+  const elapsed = performance.now() - started;
+  assert.ok(error instanceof InputActionError);
+  assert.ok(error.cause instanceof TimeoutError);
+  assert.ok(elapsed < 400, `mouseReleased bypassed commandTimeout (${elapsed}ms)`);
+  releaseReply();
+  assert.equal((await error.cleanup).status, 'completed');
+});
+
+test('finalPosition is preserved for Tab keyboard actions after mouse moves and for pre-aborted scopes', async () => {
+  await using chrome = await ScriptedChrome.start();
+  chrome.handle('Page.bringToFront', () => {});
+  chrome.handle('Input.dispatchMouseEvent', () => {});
+  chrome.handle('Input.dispatchKeyEvent', () => {});
+  chrome.handle('Input.insertText', () => {});
+  await using browser = await chrome.connect();
+  const tab = browser.tabs[0]!;
+  // Before any mouse move on the tab, keyboard typing has no placed finalPosition.
+  assert.equal((await tab.keyboard.type('a')).finalPosition, undefined);
+  // After moving tab.mouse, subsequent tab.keyboard actions report that confirmed position.
+  const moved = await tab.mouse.move(10, 20);
+  assert.deepEqual(moved.finalPosition, { x: 10, y: 20 });
+  const typed = await tab.keyboard.type('x');
+  assert.deepEqual(typed.finalPosition, { x: 10, y: 20 });
+
+  // Pre-aborted InputScope with explicit initial pointer still reports finalPosition.
+  const session = await browser.attachSession(tab.id);
+  const scope = createInputScope(session, { pageEvents: false, pointer: { x: 12, y: 14 } });
+  const controller = new AbortController();
+  controller.abort(new Error('pre-aborted'));
+  const error = await scope
+    .run(async () => {}, { signal: controller.signal })
+    .catch((e: unknown) => e);
+  assert.ok(error instanceof InputActionError);
+  assert.deepEqual(error.report.finalPosition, { x: 12, y: 14 });
+  assert.deepEqual((await error.cleanup).report.finalPosition, { x: 12, y: 14 });
 });
 
 test('large wheel distances remain cancellable without allocating every notch up front', async () => {

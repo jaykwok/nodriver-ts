@@ -60,8 +60,20 @@ export class PipeTransport implements Transport {
         this.fail(e as Error);
       }
     });
-    readable.on('error', (e) => this.fail(e));
-    writable.on('error', (e) => this.fail(e));
+    readable.on('error', (e) =>
+      this.fail(
+        e instanceof DisconnectedError
+          ? e
+          : new DisconnectedError(`CDP pipe read error: ${e.message}`, { cause: e }),
+      ),
+    );
+    writable.on('error', (e) =>
+      this.fail(
+        e instanceof DisconnectedError
+          ? e
+          : new DisconnectedError(`CDP pipe write error: ${e.message}`, { cause: e }),
+      ),
+    );
     readable.on('close', () => this.fail(new DisconnectedError('CDP pipe closed')));
   }
   private fail(error: Error): void {
@@ -74,7 +86,15 @@ export class PipeTransport implements Transport {
   send(message: string): Promise<void> {
     if (this.closed) return Promise.reject(new DisconnectedError('CDP pipe is closed'));
     return new Promise((resolve, reject) => {
-      this.writable.write(Buffer.from(`${message}\0`), (e) => (e ? reject(e) : resolve()));
+      this.writable.write(Buffer.from(`${message}\0`), (e) =>
+        e
+          ? reject(
+              e instanceof DisconnectedError
+                ? e
+                : new DisconnectedError(`CDP pipe write failed: ${e.message}`, { cause: e }),
+            )
+          : resolve(),
+      );
     });
   }
   close(): void {

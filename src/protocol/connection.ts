@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { ProtocolMapping } from 'devtools-protocol/types/protocol-mapping.js';
 import type { Transport } from '../transport/transport.ts';
-import { DisconnectedError, ProtocolError, TimeoutError } from '../errors.ts';
+import { DisconnectedError, NodriverError, ProtocolError, TimeoutError } from '../errors.ts';
 import { abortReason, EventHub, timeoutValue, type Listener, type WaitOptions } from '../utils.ts';
 export type Command = keyof ProtocolMapping.Commands;
 export type Event = keyof ProtocolMapping.Events;
@@ -22,14 +22,28 @@ export interface TraceEntry {
 }
 export type EndReason =
   'detach-requested' | 'detached' | 'target-destroyed' | 'target-crashed' | 'disconnected';
-export class SessionEndedError extends DisconnectedError {
+/** Single-session termination reasons (excluding whole-connection disconnect). */
+export type SessionEndReason = Exclude<EndReason, 'disconnected'>;
+/**
+ * A single target or session ended while the browser CDP connection remained distinct from it.
+ * Connection-level disconnects throw `DisconnectedError` instead.
+ */
+export class SessionEndedError extends NodriverError {
   override name = 'SessionEndedError';
-  readonly reason: EndReason;
+  readonly reason: SessionEndReason;
   readonly targetId: string;
-  constructor(reason: EndReason, targetId: string, options?: ErrorOptions) {
-    super(`Target session ended: ${reason} (${targetId})`, options);
+  readonly sessionId?: string;
+  constructor(
+    reason: SessionEndReason,
+    targetId: string,
+    options?: ErrorOptions & { sessionId?: string; detail?: string },
+  ) {
+    const label = targetId || options?.sessionId || 'unknown';
+    const detail = options?.detail ? `: ${options.detail}` : '';
+    super(`Target session ended: ${reason} (${label})${detail}`, options);
     this.reason = reason;
     this.targetId = targetId;
+    this.sessionId = options?.sessionId;
   }
 }
 /** Chrome's reply when an attachment no longer exists: it detached, or its target closed. */
@@ -97,6 +111,12 @@ export interface ConnectionOptions {
    */
   trace?: boolean | ((entry: TraceEntry) => void);
   observe?: ConnectionObserver;
+  /**
+   * Synchronous pre-send guard invoked before a CDP command is queued, serialized or written to
+   * the transport. Throwing rejects that command before it touches the wire, without adding
+   * pending/unanswered wire debt or invoking send observers. Zero overhead when omitted.
+   */
+  beforeSend?: (method: string, params: unknown, sessionId?: string) => void;
 }
 function tracer(option: ConnectionOptions['trace']): ((entry: TraceEntry) => void) | undefined {
   const enabled = option ?? /^(1|true)$/i.test(process.env.NODRIVER_TRACE ?? '');
@@ -162,13 +182,15 @@ export class Connection {
   private lost = new Set<number>();
   private sessions = new Map<string, Session>();
   private sessionParents = new Map<string, string>();
+  /** Target ID of each attachment, when known, for SessionEndedError. */
+  private sessionTargets = new Map<string, string>();
   /** Target type of each attachment, for errors. */
   private targetTypes = new Map<string, string>();
   private abandoned = new Map<
     number,
     { timer: ReturnType<typeof setTimeout>; recorder?: RequestRecorder }
   >();
-  private attachingIds = new Map<string, EndReason | undefined>();
+  private attachingIds = new Map<string, SessionEndReason | undefined>();
   private sendQueue: Array<() => void> = [];
   private sending = false;
   private cleanupCount = 0;
@@ -384,12 +406,16 @@ export class Connection {
           if (!id) throw new DisconnectedError('Attach response has no sessionId');
           const ended = this.attachingIds.get(id);
           this.attachingIds.delete(id);
-          if (ended) throw new SessionEndedError(ended, targetId);
+          if (ended) throw new SessionEndedError(ended, targetId, { sessionId: id });
           session = new TargetSession(this, id, targetId);
           // A root listener may have made a plain Session for this attachment; events now go here.
-          this.sessions
-            .get(id)
-            ?.invalidate(new DisconnectedError(`Session ${id} was replaced by attachSession()`));
+          this.sessions.get(id)?.invalidate(
+            new SessionEndedError('detached', targetId, {
+              sessionId: id,
+              detail: `Session ${id} was replaced by attachSession()`,
+            }),
+          );
+          this.sessionTargets.set(id, targetId);
           this.sessions.set(id, session);
         },
       },
@@ -450,16 +476,29 @@ export class Connection {
     if (this.failure) return Promise.reject(this.failure);
     if (options.signal?.aborted) return Promise.reject(abortReason(options.signal));
     const timeout = timeoutValue(options.timeout ?? this.timeout);
+    const session = sessionId === undefined ? undefined : this.sessions.get(sessionId);
+    const beforeSend = this.options.beforeSend;
+    if (beforeSend) {
+      try {
+        beforeSend(method, params[0], sessionId);
+      } catch (error) {
+        return Promise.reject(error);
+      }
+      if (this.failure) return Promise.reject(this.failure);
+      if (session?.closed)
+        return Promise.reject(
+          session.closeReason ??
+            new SessionEndedError(
+              'detached',
+              session instanceof TargetSession ? session.targetId : '',
+              { sessionId },
+            ),
+        );
+      if (options.signal?.aborted) return Promise.reject(abortReason(options.signal));
+    }
     const id = ++this.nextId;
     const recorder = (options as LedgerOptions)[REQUEST_LEDGER] ?? requestLedger.getStore();
-    const recorded =
-      recorder?.(
-        this,
-        id,
-        method,
-        sessionId === undefined ? undefined : this.sessions.get(sessionId),
-        params[0],
-      ) ?? undefined;
+    const recorded = recorder?.(this, id, method, session, params[0]) ?? undefined;
     const trace = this.trace;
     const observer = this.options.observe;
     const metrics = observer?.onPerformance;
@@ -519,9 +558,15 @@ export class Connection {
       // Queue reentrant sends made by observers so seq also describes transport invocation order.
       this.sendQueue.push(() => {
         if (!this.pending.has(id) || this.closed) return;
+        const serializingAt = metrics ? performance.now() : 0;
+        let message: string;
         try {
-          const serializingAt = metrics ? performance.now() : 0;
-          const message = JSON.stringify({ id, method, params: params[0], sessionId });
+          message = JSON.stringify({ id, method, params: params[0], sessionId });
+        } catch (e) {
+          cancel(e as Error);
+          return;
+        }
+        try {
           started = performance.now();
           sentOnWire = true;
           const wire: Unanswered = { method, sessionId, at: started, replied: recorded?.replied };
@@ -551,12 +596,30 @@ export class Connection {
               });
             } catch {}
           }
-          if (sent)
-            void sent.catch((e) =>
-              cancel(e instanceof Error ? e : new DisconnectedError(String(e))),
-            );
+          const failTransport = (e: unknown) => {
+            const failure =
+              e instanceof DisconnectedError
+                ? e
+                : e instanceof Error
+                  ? new DisconnectedError(e.message, { cause: e })
+                  : new DisconnectedError(String(e), { cause: e });
+            this.finish(failure);
+            try {
+              void Promise.resolve(this.transport.close()).catch(() => {});
+            } catch {}
+          };
+          if (sent) void sent.catch(failTransport);
         } catch (e) {
-          cancel(e as Error);
+          const failure =
+            e instanceof DisconnectedError
+              ? e
+              : e instanceof Error
+                ? new DisconnectedError(e.message, { cause: e })
+                : new DisconnectedError(String(e), { cause: e });
+          this.finish(failure);
+          try {
+            void Promise.resolve(this.transport.close()).catch(() => {});
+          } catch {}
         }
       });
       if (!this.sending) {
@@ -676,9 +739,19 @@ export class Connection {
         }
         this.pending.delete(m.id);
         p.cleanup();
-        if (detached)
-          p.reject(new DisconnectedError(`Session detached: ${p.sessionId} (${m.error!.message})`));
-        else if (m.error)
+        if (detached) {
+          const session = p.sessionId ? this.sessions.get(p.sessionId) : undefined;
+          const targetId =
+            session instanceof TargetSession
+              ? session.targetId
+              : (this.sessionTargets.get(p.sessionId!) ?? '');
+          p.reject(
+            new SessionEndedError('detached', targetId, {
+              sessionId: p.sessionId,
+              detail: m.error!.message,
+            }),
+          );
+        } else if (m.error)
           p.reject(
             new ProtocolError(p.method, m.error.code, m.error.message, m.error.data, {
               sessionId: p.sessionId,
@@ -699,8 +772,13 @@ export class Connection {
       } else if (typeof m.method === 'string') {
         if (metric) Object.assign(metric, { method: m.method, sessionId: m.sessionId });
         if (m.method === 'Target.attachedToTarget') {
-          const event = m.params as { sessionId: string; targetInfo?: { type?: string } };
+          const event = m.params as {
+            sessionId: string;
+            targetInfo?: { targetId?: string; type?: string };
+          };
           if (event.targetInfo?.type) this.targetTypes.set(event.sessionId, event.targetInfo.type);
+          if (event.targetInfo?.targetId)
+            this.sessionTargets.set(event.sessionId, event.targetInfo.targetId);
         }
         if (m.method === 'Target.attachedToTarget' && !m.sessionId) {
           const event = m.params as { sessionId: string; targetInfo: { targetId: string } };
@@ -717,7 +795,7 @@ export class Connection {
         if (m.method === 'Target.detachedFromTarget') {
           const id = (m.params as { sessionId: string }).sessionId;
           if (this.attachingIds.has(id)) this.attachingIds.set(id, 'detached');
-          this.detach(id, new DisconnectedError(`Session detached: ${id}`));
+          this.detach(id);
         }
         if (m.method === 'Target.targetDestroyed' || m.method === 'Target.targetCrashed') {
           const targetId = (m.params as { targetId: string }).targetId;
@@ -781,39 +859,45 @@ export class Connection {
       this.options.observe?.onResponse?.(event);
     } catch {}
   }
-  detach(id: string, reason = new DisconnectedError('Session detached')): void {
+  detach(id: string, reason?: Error): void {
     const session = this.sessions.get(id);
-    if (session instanceof TargetSession && !(reason instanceof SessionEndedError))
-      reason = new SessionEndedError('detached', session.targetId, { cause: reason });
+    const targetId =
+      session instanceof TargetSession ? session.targetId : (this.sessionTargets.get(id) ?? '');
+    const ended =
+      reason instanceof SessionEndedError
+        ? reason
+        : new SessionEndedError('detached', targetId, {
+            sessionId: id,
+            ...(reason ? { cause: reason } : {}),
+          });
     // Parent detach can suppress descendant detach events (notably BFCache
     // OOPIFs when their tab/context closes). Retire the whole ownership tree.
     this.sessionParents.delete(id);
     this.targetTypes.delete(id);
-    for (const [child, parent] of this.sessionParents)
-      if (parent === id) this.detach(child, reason);
+    this.sessionTargets.delete(id);
+    for (const [child, parent] of this.sessionParents) if (parent === id) this.detach(child, ended);
     for (const [key, p] of this.pending)
       if (p.sessionId === id) {
         this.pending.delete(key);
         p.cleanup();
-        p.reject(reason);
+        p.reject(ended);
       }
     for (const wire of this.unanswered.values()) if (wire.sessionId === id) wire.detached = true;
-    session?.invalidate(reason);
+    session?.invalidate(ended);
     this.sessions.delete(id);
     this.routes.delete(id);
     this.notifyDrain();
   }
   private finish(reason: Error): void {
     if (this.failure) return;
-    this.failure = reason;
+    const failure =
+      reason instanceof DisconnectedError
+        ? reason
+        : new DisconnectedError(reason.message || 'CDP connection closed', { cause: reason });
+    this.failure = failure;
     for (const p of this.pending.values()) {
       p.cleanup();
-      const session = p.sessionId && this.sessions.get(p.sessionId);
-      p.reject(
-        session instanceof TargetSession
-          ? new SessionEndedError('disconnected', session.targetId, { cause: reason })
-          : reason,
-      );
+      p.reject(failure);
     }
     for (const id of this.pending.keys()) this.lost.add(id);
     for (const id of this.unanswered.keys()) this.lost.add(id);
@@ -822,12 +906,13 @@ export class Connection {
     for (const { timer } of this.abandoned.values()) clearTimeout(timer);
     this.abandoned.clear();
     this.attachingIds.clear();
-    this.root.invalidate(reason);
-    for (const s of this.sessions.values()) s.invalidate(reason);
+    this.root.invalidate(failure);
+    for (const s of this.sessions.values()) s.invalidate(failure);
     this.sessions.clear();
     this.sessionParents.clear();
+    this.sessionTargets.clear();
     this.targetTypes.clear();
-    this.disconnected.emit(reason);
+    this.disconnected.emit(failure);
     this.disconnected.clear();
     this.events.clear();
     this.routes.clear();
@@ -868,7 +953,7 @@ export class Session {
     return this.connection.request(this.id, method, params, options);
   }
   on<E extends Event>(method: E, listener: Listener<EventParams<E>>): () => void {
-    if (this.closed) throw this.failure ?? new DisconnectedError('Session closed');
+    if (this.closed) throw this.closeReason ?? new DisconnectedError('Session closed');
     const off = this.connection.subscribe(this.id, method, (e) =>
       listener(e.params as EventParams<E>),
     );
@@ -881,7 +966,7 @@ export class Session {
   }
   /** Subscribes to every event of this session, in registration order with on(). */
   onAny(listener: Listener<CdpEvent>): () => void {
-    if (this.closed) throw this.failure ?? new DisconnectedError('Session closed');
+    if (this.closed) throw this.closeReason ?? new DisconnectedError('Session closed');
     const off = this.connection.subscribe(this.id, undefined, listener);
     const dispose = () => {
       off();
@@ -895,7 +980,8 @@ export class Session {
     predicate: (event: EventParams<E>) => boolean = () => true,
     options: WaitOptions = {},
   ): Promise<EventParams<E>> {
-    if (this.closed) return Promise.reject(this.failure ?? new DisconnectedError('Session closed'));
+    if (this.closed)
+      return Promise.reject(this.closeReason ?? new DisconnectedError('Session closed'));
     if (options.signal?.aborted) return Promise.reject(abortReason(options.signal));
     return new Promise((resolve, reject) => {
       const timeout = timeoutValue(options.timeout ?? this.connection.timeout);
@@ -956,22 +1042,26 @@ export class TargetSession extends Session {
   }
   override invalidate(error: Error): void {
     if (this.reason) return;
-    const ended =
-      error instanceof SessionEndedError && error.targetId === this.targetId
-        ? error
-        : new SessionEndedError(
-            error instanceof SessionEndedError ? error.reason : 'disconnected',
-            this.targetId,
-            { cause: error },
-          );
-    this.reason = ended.reason;
-    super.invalidate(ended);
+    if (error instanceof SessionEndedError) {
+      const ended =
+        error.targetId === this.targetId
+          ? error
+          : new SessionEndedError(error.reason, this.targetId, {
+              sessionId: this.id,
+              cause: error,
+            });
+      this.reason = ended.reason;
+      super.invalidate(ended);
+    } else {
+      this.reason = 'disconnected';
+      super.invalidate(error);
+    }
     this.resolveEnded(this.reason);
   }
   /** @internal */
-  end(reason: EndReason): void {
+  end(reason: SessionEndReason): void {
     if (this.closed) return;
-    const ended = new SessionEndedError(reason, this.targetId);
+    const ended = new SessionEndedError(reason, this.targetId, { sessionId: this.id });
     this.connection.detach(this.id!, ended);
     // Also when another session object has taken over this ID on the connection.
     this.invalidate(ended);

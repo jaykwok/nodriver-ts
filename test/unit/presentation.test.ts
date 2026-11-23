@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { NO_REPLY, ScriptedChrome } from '../../src/testing/index.ts';
-import { NodriverError, TimeoutError, type PresentationReport } from '../../src/index.ts';
+import {
+  DisconnectedError,
+  NodriverError,
+  SessionEndedError,
+  TimeoutError,
+  type PresentationReport,
+} from '../../src/index.ts';
 
 const frame = (sessionId: number, data: string) => ({
   data,
@@ -310,18 +316,87 @@ test('presentation lease passes screencast parameters and rejects timer overflow
   }
 });
 
-test('presentation lease start on an ended session keeps the original reason', async () => {
+test('presentation lease start on an ended session throws SessionEndedError or DisconnectedError directly', async () => {
   const { chrome, browser, session } = await target();
   try {
     chrome.crashTarget(session.targetId);
     await session.ended;
     const lease = browser.presentationLease(session);
     const error = await lease.start().catch((e) => e);
-    assert.ok(error instanceof NodriverError);
-    assert.equal(error.name, 'DisconnectedError');
-    assert.equal(error.cause, session.closeReason);
-    assert.equal((error.cause as { reason?: string }).reason, 'target-crashed');
+    assert.ok(error instanceof SessionEndedError);
+    assert.equal(error instanceof DisconnectedError, false);
+    assert.equal(error, session.closeReason);
+    assert.equal(error.reason, 'target-crashed');
     assert.match(lease.report.error!, /target-crashed/);
+
+    // A whole-connection disconnect throws DisconnectedError directly (not SessionEndedError).
+    const secondId = chrome.addPage();
+    const second = await browser.attachSession(secondId);
+    chrome.disconnect();
+    await second.ended;
+    const disconnectedLease = browser.presentationLease(second);
+    const disconnectError = await disconnectedLease.start().catch((e) => e);
+    assert.ok(disconnectError instanceof DisconnectedError);
+    assert.equal(disconnectError instanceof SessionEndedError, false);
+    assert.equal(disconnectError, second.closeReason);
+  } finally {
+    await browser.close().catch(() => {});
+    await chrome.close();
+  }
+});
+
+test('presentation lease supports explicit unbounded leases via untilClosed, Infinity or null', async () => {
+  const { chrome, browser, session } = await target();
+  try {
+    chrome.handle('Page.startScreencast', () => undefined);
+    chrome.handle('Page.stopScreencast', () => undefined);
+    chrome.handle('Page.screencastFrameAck', () => undefined);
+
+    for (const options of [
+      { untilClosed: true },
+      { maxDuration: Infinity, maxFrames: Infinity, maxBytes: Infinity },
+      { maxDuration: null, maxFrames: null, maxBytes: null },
+    ]) {
+      const lease = browser.presentationLease(session, options);
+      assert.equal(lease.options.maxDuration, Infinity);
+      assert.equal(lease.options.maxFrames, Infinity);
+      assert.equal(lease.options.maxBytes, Infinity);
+      await lease.start();
+      // Exceed default maxFrames (16) without hitting a limit.
+      for (let i = 1; i <= 20; i++) {
+        chrome.emit('Page.screencastFrame', frame(i, 'aGVsbG8='), session.id);
+        await new Promise((resolve) => setImmediate(resolve));
+      }
+      assert.equal(lease.state, 'active');
+      const report = await lease.close();
+      assert.equal(report.state, 'stopped');
+      assert.equal(report.reason, 'closed');
+      assert.equal(report.frames, 20);
+      assert.equal(report.droppedFrames, 0);
+    }
+
+    // untilClosed still honors explicit finite overrides.
+    const capped = browser.presentationLease(session, { untilClosed: true, maxFrames: 1 });
+    assert.equal(capped.options.maxDuration, Infinity);
+    assert.equal(capped.options.maxFrames, 1);
+    assert.equal(capped.options.maxBytes, Infinity);
+    await capped.start();
+    chrome.emit('Page.screencastFrame', frame(1, 'YQ=='), session.id);
+    chrome.emit('Page.screencastFrame', frame(2, 'Yg=='), session.id);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const cappedReport = await capped.close();
+    assert.equal(cappedReport.reason, 'frame-limit');
+    assert.equal(cappedReport.droppedFrames, 1);
+
+    // Invalid non-finite / negative values are still rejected.
+    for (const invalid of [
+      { maxDuration: -Infinity },
+      { maxDuration: NaN },
+      { maxDuration: 2 ** 31 },
+      { maxFrames: -Infinity },
+      { maxBytes: NaN },
+    ])
+      assert.throws(() => browser.presentationLease(session, invalid), RangeError);
   } finally {
     await browser.close();
     await chrome.close();

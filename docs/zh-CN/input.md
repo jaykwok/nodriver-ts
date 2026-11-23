@@ -58,19 +58,19 @@ human 输入在 Node 侧规划，页面中不运行任何代码来产生它。
 - **落点**：在元素位于视口内的部分中，于 `targetInset` 范围内按截断高斯分布采样，横向居中、纵向略偏上。
 - **按压**：部分按压在 `pressDelay` 过半时产生 1 px 的按住移动。元素点击会先对该位置做命中检查，检查不通过则跳过；跨进程 frame 内从不发生。释放使用最终位置。
 - **滚动**：`wheelProfile: 'trackpad'`（默认）发送先加速再衰减的滚轮事件，每 18 px 距离一个，间隔约 8 ms；`'wheel'` 发送等量的滚轮事件，每 100 px 一个，间隔 45 ms。两者都发送 1–120 个事件，每个间隔再加上 `pause`，并保持有符号、含小数的滚动总量。显式的 `scrollSteps` 指定事件数。设置 `wheelNotch`（目标平台滚轮一档的像素数）后，`'wheel'` 改为每档发送一个事件，每个事件只沿一个轴滚动，间隔 45 ms，滚动距离取整为整档：一档 100 px 时，`wheel(0, 250)` 滚动三档。instant 模式发送一个携带精确距离的事件。human 模式下把元素滚入视口时，最多用滚轮滚动 3 秒，其余由 Chrome 完成。
-- **打字**：间隔服从对数正态分布，限制在 `keyDelay` 范围内，并按 QWERTY 键距和双手交替加权。小写 `th`、`he`、`in`、`er` 可能重叠按住，规划时长 5–12 ms；修饰键、重复键和非 ASCII 片段不重叠。取消时两个键都会释放。
+- **打字**：间隔服从对数正态分布，限制在 `keyDelay` 范围内，并按 QWERTY 键距和双手交替加权。`keyDelay` 也接受 `(previous, next, index) => ms` 回调（可在 `InputPolicy` 或 `KeyboardTypeOptions` 中设置），其返回值经由动作的节拍时钟执行并计入 `plannedMs`（并关闭重叠键入，确保每一对字符都触发回调）。小写 `th`、`he`、`in`、`er` 可能重叠按住，规划时长 5–12 ms；修饰键、重复键、非 ASCII 片段、带 `onSegment` 回调或函数式 `keyDelay` 时不重叠。取消时两个键都会释放。
 
 ## 文本与按键
 
 - **`fill()`**：整段替换，使用焦点、选区和一次 `Input.insertText`。
 - **`type()`**：在当前选区按字素（Intl.Segmenter）逐个提交，也接受字符串片段数组；不会拆开 emoji 代理对、ZWJ 序列或组合字符。`type(text, { replace: true })` 先像 `fill()` 一样选中全部内容，再逐字输入覆盖它；文本为空时用 Backspace 删除原内容。单次最多 100000 个 UTF-16 单元。
-- **按键事件**：`typing: 'keys'`，或 human 模式下的默认 `auto`，会把可输入的 US 布局字符（字母、数字、常用符号、空格）逐个作为按键发送，大写字母与上档符号自动按住 Shift。产生字符的按键先发送 `rawKeyDown`，再发送 `char`，因此与物理按键一样，keydown 处理函数阻止默认行为时不会输入该字符；按住 Control、Alt 或 Meta 时只发送 `rawKeyDown`。keyUp 与 keydown 的 `key`、`code`、键码和位置一致。用 `keyboard.down('Shift')` 按住 Shift 期间，不需要 Shift 的字符改用 `insertText` 输入，以免被按住的 Shift 变成上档字符。中日韩文字、emoji、换行和制表符使用 `insertText`；`typing: 'insertText'` 则全部使用 `insertText`。
-- **`press()`**：支持命名键（Enter、Tab、Escape、方向键、Home/End、PageUp/PageDown、F1–F12、Space 等）、修饰键组合与 US 布局字符，例如 `Shift+Tab`、`Control++`；按住 Shift 时发送上档字符。`keyDefinition()` 与 `parseChord()` 已导出。
+- **按键事件**：`typing: 'keys'`，或 human 模式下的默认 `auto`，会把可输入的 US 布局字符（字母、数字、常用符号、空格）逐个作为按键发送，大写字母与上档符号自动按住 Shift。产生字符的按键先发送 `rawKeyDown`，再发送 `char`，因此与物理按键一样，keydown 处理函数阻止默认行为时不会输入该字符；按住 Control、Alt 或 Meta 时只发送 `rawKeyDown`。keyUp 与 keydown 的 `key`、`code`、键码和位置一致。用 `keyboard.down('Shift')` 按住 Shift 期间，不需要 Shift 的字符改用 `insertText` 输入，以免被按住的 Shift 变成上档字符。中日韩文字、emoji、换行和制表符使用 `insertText`；`typing: 'insertText'` 则全部使用 `insertText`。`characterKey(ch)` 与 `requiresShift(ch)` 复用 `type()` 内部的同一份映射表。
+- **`press()`**：支持命名键（Enter、Tab、Escape、方向键、Home/End、PageUp/PageDown、F1–F12、Space 等）、修饰键组合与 US 布局字符，例如 `Shift+Tab`、`Control++`；按住 Shift 时发送上档字符。`keyDefinition()`、`characterKey()`、`requiresShift()` 与 `parseChord()` 已导出。
 - **左右键与数字键盘**：`Shift`、`Control`、`Alt`、`Meta` 指左侧按键；`ShiftLeft`、`ShiftRight`、`ControlLeft`、`ControlRight`、`AltLeft`、`AltRight`、`MetaLeft`、`MetaRight` 指定左右。`Numpad0`–`Numpad9`、`NumpadAdd`、`NumpadSubtract`、`NumpadMultiply`、`NumpadDivide`、`NumpadDecimal` 和 `NumpadEnter` 按 Num Lock 开启时的方式输入。这些按键的 keydown、keypress 和 keyup 事件都把 `KeyboardEvent.location` 设为 1（左）、2（右）或 3（数字键盘），`keyDefinition()` 返回相同的 `location`。按键按物理键记录按住状态：`up('ControlLeft')` 会释放用 `down('Control')` 按下的键，`pressedKeys` 按按下时使用的名称列出按键。
 - **macOS 编辑快捷键**：浏览器运行在 macOS 上时，按键事件附带 AppKit 编辑命令（CDP `commands`），因此 `Meta+A` 全选、`Meta+Z` 撤销、`Alt+ArrowLeft` 按词移动、`Control+A` 移到段首等都与 Mac 键盘一致。启动的浏览器按宿主平台判断，`userAgent` 启动选项不影响结果；连接的浏览器按 `Browser.getVersion` 报告的 UA 判断。
 - **`select()`**：通过 DOM 修改选项并派发合成的 input/change 事件，不改写 isTrusted；需要指针或按键交互时由调用者显式执行。
 
-`keyboard.type()`、`element.type()` 和 `locator.type()` 接受同步或异步的完成回调 `onSegment(segment, index)`。字符串输入按完整字素回调，数组输入按数组项回调；每段得到 Chrome 确认且其字符键已释放后调用一次。`index` 从零开始，只属于本次 `type()`；`completedSegments` 在回调前递增。输入会等待回调结束再发送下一段，并关闭相邻字符的重叠按键，确保读回发生在段边界。页面事件处理函数可能阻止或转换输入，可在回调中读取实际值。回调耗时计入动作期限，并受取消信号约束；抛错、Promise 拒绝、超时或取消会停止后续输入并释放托管按键，不重放已完成的文本。中断的段不会调用完成回调，包括清理阶段才得到确认的段。取消会停止等待回调，但无法强制终止其中已运行的任意用户代码。`KeyboardTypeOptions` 已导出，元素和 Locator 的 `TypeOptions` 在其基础上增加 `replace`。
+`keyboard.type()`、`element.type()` 和 `locator.type()` 接受同步或异步的完成回调 `onSegment(segment, index)`。字符串输入按完整字素回调，数组输入按数组项回调；每段得到 Chrome 确认且其字符键已释放后调用一次。`index` 从零开始，只属于本次 `type()`；`completedSegments` 在回调前递增。输入会等待回调结束再发送下一段，并关闭相邻字符的重叠按键，确保读回发生在段边界。页面事件处理函数可能阻止或转换输入，可在回调中读取实际值。返回 `false`（或 Promise 解析为 `false`）表示本段完成后正常提前终止：立即释放本次 `type()` 内部持有的 Shift，跳过剩余段与尾停顿，并以 `status: 'completed'` 正常返回。回调耗时计入动作期限，并受取消信号约束；抛错、Promise 拒绝、超时或取消会以 `InputActionError` 停止后续输入并释放托管按键，不重放已完成的文本。中断的段不会调用完成回调，包括清理阶段才得到确认的段。取消会停止等待回调，但无法强制终止其中已运行的任意用户代码。`KeyboardTypeOptions` 已导出，元素和 Locator 的 `TypeOptions` 在其基础上增加 `replace`。
 
 物理按键模式下，同一次 `type()` 内连续的大写字母和上档符号复用一次 Shift 按下，包括等待 `onSegment` 的期间。例如 `['A', 'B', '!']` 在前两次回调期间保持 Shift，在最后一次回调前释放。遇到不需要 Shift 的字符或使用 `insertText` 的段、调用结束或发生错误时，键入流程释放自己取得的 Shift，不释放调用方原本按住的 Shift。多字符数组项仍用一次 `insertText` 输入；不同的 `type()` 调用之间不自动保留 Shift。
 
@@ -125,7 +125,7 @@ await tab.keyboard.type('1234', {
 
 Tab 输入、独立构造的 `new Mouse(session)` / `new Keyboard(session)` 和原始输入作用域共享每个 `Connection` 的同一个可重入队列，最多容纳 128 个等待或执行中的调用。不同连接不共享队列，直接调用 `Session.send()` / `sendWith()` 也不经过该队列。动作开始前，如果其他标签页可能位于前台，Tab 输入会调用 `Page.bringToFront`。独立的 `down()` 成功后保持按下，直到调用 `up()`；需要让多次调用作为整体保持所有权时使用作用域。作用域会按取得顺序的逆序自动释放持有的输入。
 
-`InputOptions.timeout` 是输入阶段的总预算，默认 10000 ms，从调用动作时开始计算，包含排队和准备时间；元素的 `click`、`hover`、`fill`、`type`、`setChecked` 也把前置准备计入其中。每条输入命令通过 `sendWith()` 接收剩余时间和合并后的取消信号。作用域内的子操作可以缩短预算、增加取消信号或 `guard`，但不能延长作用域的期限，也不能替换原 `guard`。
+`InputOptions.timeout` 是输入阶段的总预算，默认 10000 ms，从调用动作时开始计算，包含排队和准备时间；元素的 `click`、`hover`、`fill`、`type`、`setChecked` 也把前置准备计入其中。设置 `InputOptions.commandTimeout` 可独立限制单条 CDP 命令的回包上限：每条命令通过 `sendWith()` 接收 `Math.min(剩余总预算, commandTimeout)` 和合并后的取消信号。作用域内的子操作可以缩短 `timeout` 或 `commandTimeout`、增加取消信号或 `guard`，但不能延长作用域的期限，也不能替换原 `guard`。
 
 取消和到期会立即以 `InputActionError` 拒绝，并保留 cause。`error.report` 记录动作停止时的状态；`error.cleanup` 在清理结束后解析为 `{ status, report }`，status 为 `completed`、`failed` 或 `disconnected`。报告包含：
 
@@ -136,6 +136,7 @@ Tab 输入、独立构造的 `new Mouse(session)` / `new Keyboard(session)` 和�
 - `lateReplies`：调用方已停止等待后才到达的、动作自身请求的回复数，例如动作超时时仍在途、随后由清理等待的命令。
 - `presentationRecoveries`：见[不绘制帧的页面](#不绘制帧的页面)。
 - `plannedMs` 和 `actualMs`：规划延迟的毫秒数（指针运动、停顿、按压与按键间隔，以及作用域的 `wait()` 调用），以及从取得输入到输入结束、清理开始前的耗时。instant 模式下只有作用域的等待计入规划。
+- `finalPosition`：指针已落点时的结算视口 CSS 坐标 `{ x, y }`（在结算报告中包含清理阶段确认的移动；未落点时缺失）。
 - 种子、动作开始时的 `randomState` 和最多 2000 项 `trace`。不保存输入文本。
 
 调用方已停止等待的命令，仍可通过清理结果和连接生命周期观察到。
@@ -197,7 +198,7 @@ await tab.keyboard.compose(
 
 ## 原始输入作用域
 
-`scope.position` 返回最后一次已确认移动的 `{ x, y }` 坐标快照，单位为视口 CSS 像素；快照已冻结且只读。它也包含取消清理阶段才收到成功回包的移动：运行中断后先等待 `error.cleanup`，再读取 `scope.position`。失败或未确认的移动不会更新它。第一次移动确认前，返回创建时传入的 `pointer`，未提供时为 `(0, 0)`；human 模式规划时选出的随机起点不算已确认坐标。它只跟踪本作用域托管鼠标的移动，不查询 Chrome，之前取得的快照也不会改变。下一次运行同样使用这份状态作为起点。
+`scope.position` 返回最后一次已确认移动的 `{ x, y, placed }` 坐标快照，单位为视口 CSS 像素；快照已冻结且只读。在提供初始 `pointer` 或至少确认过一次移动之前，`placed` 为 `false`，从而区分“未落点”和“已确认位于 `(0, 0)`”。它也包含取消清理阶段才收到成功回包的移动：运行中断后先等待 `error.cleanup`，再读取 `scope.position`（或 `cleanup.report.finalPosition`）。失败或未确认的移动不会更新它。第一次移动确认前，返回创建时传入的 `pointer`（`placed: true`），未提供时为 `{ x: 0, y: 0, placed: false }`；human 模式规划时选出的随机起点不算已确认坐标。它只跟踪本作用域托管鼠标的移动，不查询 Chrome，之前取得的快照也不会改变。下一次运行同样使用这份状态作为起点。
 
 `sent` 也统计作用域回调发出的原始输入命令，包括发往其他连接的命令；计数发生在传输派发时，而非调用刚进入队列时。
 

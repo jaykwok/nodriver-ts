@@ -706,3 +706,123 @@ test('a world mismatch reads as a changed document; timeouts are not unknown foc
   assert.equal(chrome.commands.filter((c) => c.method.startsWith('Input.')).length, 0);
   await error.cleanup;
 });
+
+test('explicit ime.cancel failure fails cleanup, does not resend cancel, and blocks only that page', async () => {
+  await using chrome = await ScriptedChrome.start();
+  model(chrome);
+  let cancelAttempts = 0;
+  chrome.handle('Input.imeSetComposition', (params) => {
+    if ((params as { text: string }).text === '') {
+      cancelAttempts++;
+      throw new Error('IME cancel rejected by Chrome');
+    }
+  });
+  await using browser = await chrome.connect({ attach: 'none' });
+  const targetA = [...browser.targetInfo.keys()][0]!;
+  const sessionA = await browser.attachSession(targetA);
+  const { targetId: targetB } = await browser.cdp.send('Target.createTarget', {
+    url: 'about:blank',
+  });
+  const sessionB = await browser.attachSession(targetB);
+  const keyboardA = new Keyboard(sessionA);
+  const keyboardB = new Keyboard(sessionB);
+  const error = await keyboardA
+    .compose(async (ime) => {
+      await ime.update('x');
+      await ime.cancel();
+    })
+    .catch((e) => e);
+  assert.ok(error instanceof InputActionError);
+  assert.match(String(error.cause), /IME cancel rejected by Chrome/);
+  const cleanup = await error.cleanup;
+  assert.equal(cleanup.status, 'failed');
+  assert.equal(cancelAttempts, 1);
+  // Subsequent input on the same page is blocked by that page's composition block.
+  const blocked = await keyboardA.insertText('after').catch((e) => e);
+  assert.ok(blocked instanceof InputActionError);
+  assert.ok(blocked.cause instanceof InputBlockedError);
+  assert.equal(chrome.commands.filter((c) => c.method === 'Input.insertText').length, 0);
+  // Another page on the same connection remains usable (page-scoped composition block).
+  await keyboardB.insertText('other-page');
+  assert.equal(chrome.commands.filter((c) => c.method === 'Input.insertText').length, 1);
+});
+
+test('explicit ime.cancel respects commandTimeout for cancel command and probes without resending cancel', async () => {
+  // Case 1: empty Input.imeSetComposition reply exceeds commandTimeout, drains cleanly under cleanupTimeout with 1 send.
+  {
+    await using chrome = await ScriptedChrome.start();
+    model(chrome);
+    let cancelSends = 0;
+    const cancelSent = gate();
+    const cancelReply = gate();
+    chrome.handle('Input.imeSetComposition', async (params) => {
+      if ((params as { text: string }).text === '') {
+        cancelSends++;
+        cancelSent.resolve();
+        await cancelReply.promise;
+      }
+    });
+    await using browser = await chrome.connect({ attach: 'none' });
+    const session = await browser.attachSession([...browser.targetInfo.keys()][0]!);
+    const keyboard = new Keyboard(session);
+    const started = performance.now();
+    const failure = keyboard
+      .compose(
+        async (ime) => {
+          await ime.update('x');
+          await ime.cancel({ commandTimeout: 30 });
+        },
+        { timeout: 2000, cleanupTimeout: 1000 },
+      )
+      .catch((e) => e);
+    await cancelSent.promise;
+    const error = await failure;
+    assert.ok(error instanceof InputActionError);
+    assert.ok(error.cause instanceof TimeoutError);
+    assert.ok(performance.now() - started < 400);
+    cancelReply.resolve();
+    const cleanup = await error.cleanup;
+    assert.equal(cleanup.status, 'completed');
+    assert.equal(cancelSends, 1);
+  }
+  // Case 2: focus probe inside explicit ime.cancel exceeds commandTimeout -> times out promptly, cleanup still cancels once.
+  {
+    await using chrome = await ScriptedChrome.start();
+    model(chrome);
+    let focusProbes = 0;
+    const probeReply = gate();
+    chrome.handle('Runtime.callFunctionOn', async (params) => {
+      if (params.functionDeclaration.includes(':read-write'))
+        return { result: { type: 'object', value: { kind: 'editable', host: false } } };
+      if (params.functionDeclaration.includes('isConnected')) {
+        focusProbes++;
+        if (focusProbes === 2) await probeReply.promise;
+        return { result: { type: 'boolean', value: true } };
+      }
+      return { result: { type: 'object', objectId: 'focus' } };
+    });
+    await using browser = await chrome.connect({ attach: 'none' });
+    const session = await browser.attachSession([...browser.targetInfo.keys()][0]!);
+    const keyboard = new Keyboard(session);
+    const started = performance.now();
+    const error = await keyboard
+      .compose(
+        async (ime) => {
+          await ime.update('x');
+          await ime.cancel({ commandTimeout: 30 });
+        },
+        { timeout: 2000, cleanupTimeout: 1000 },
+      )
+      .catch((e) => e);
+    assert.ok(error instanceof InputActionError);
+    assert.ok(error.cause instanceof TimeoutError);
+    assert.ok(performance.now() - started < 400);
+    probeReply.resolve();
+    const cleanup = await error.cleanup;
+    assert.equal(cleanup.status, 'completed');
+    const emptyCancels = chrome.commands.filter(
+      (c) => c.method === 'Input.imeSetComposition' && (c.params as { text: string }).text === '',
+    );
+    assert.equal(emptyCancels.length, 1);
+  }
+});

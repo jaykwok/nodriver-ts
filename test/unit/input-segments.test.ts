@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
+  characterKey,
   createInputScope,
   InputActionError,
   Keyboard,
   ProtocolError,
+  requiresShift,
+  TimeoutError,
   type KeyboardTypeOptions,
 } from '../../src/index.ts';
 import { ScriptedChrome, type RecordedCommand } from '../../src/testing/index.ts';
@@ -298,4 +301,277 @@ test('scope callback indices belong to each type call even when the report alrea
   );
   assert.deepEqual(indices, [0, 1, 0, 1]);
   assert.equal(report.completedSegments, 5);
+});
+
+for (const asynchronous of [false, true])
+  test(`onSegment returning false cleanly ends typing, releases owned Shift and skips trailing pause, async=${asynchronous}`, async () => {
+    await using t = await target();
+    const keyboard = new Keyboard(t.session);
+    keyboard.behavior.configure({
+      mode: 'human',
+      typing: 'keys',
+      pressDelay: [0, 0],
+      keyDelay: [500, 500],
+    });
+    const seen: Array<[string, number, string[]]> = [];
+    const started = performance.now();
+    const report = await keyboard.type(['(', 'A', 'B'], {
+      onSegment: (segment, index) => {
+        seen.push([segment, index, keyboard.pressedKeys]);
+        const decision = index === 0 ? false : true;
+        return asynchronous ? Promise.resolve(decision) : decision;
+      },
+    });
+    const elapsed = performance.now() - started;
+    assert.equal(report.status, 'completed');
+    assert.equal(report.cleanup, 'completed');
+    assert.equal(report.completedSegments, 1);
+    assert.equal(report.plannedMs, 0);
+    assert.ok(elapsed < 400, `trailing keyDelay was not skipped (${elapsed}ms)`);
+    assert.deepEqual(seen, [['(', 0, ['Shift']]]);
+    assert.deepEqual(keyboard.pressedKeys, []);
+    assert.deepEqual(
+      keyEvents(t.chrome).map((e) => `${e.type}:${e.key}`),
+      ['rawKeyDown:Shift', 'rawKeyDown:(', 'char:(', 'keyUp:(', 'keyUp:Shift'],
+    );
+  });
+
+test('onSegment returning false preserves caller-held Shift and works inside an InputScope', async () => {
+  await using t = await target();
+  const scope = createInputScope(t.session, { pageEvents: false, policy: { typing: 'keys' } });
+  const report = await scope.run(async ({ keyboard }) => {
+    await keyboard.down('ShiftRight');
+    const typed = await keyboard.type('ABC', {
+      onSegment: (_seg, index) => (index === 1 ? false : true),
+    });
+    assert.equal(typed.status, 'completed');
+    assert.deepEqual(keyboard.pressedKeys, ['ShiftRight']);
+  });
+  assert.equal(report.status, 'completed');
+  assert.equal(report.completedSegments, 2);
+  assert.deepEqual(
+    keyEvents(t.chrome)
+      .filter((e) => e.type === 'char')
+      .map((e) => e.text),
+    ['A', 'B'],
+  );
+});
+
+test('commandTimeout separates per-command stalls from multi-segment typing and onSegment readback', async () => {
+  await using t = await target();
+  const keyboard = new Keyboard(t.session);
+  keyboard.behavior.configure({
+    mode: 'human',
+    typing: 'keys',
+    pressDelay: [0, 0],
+    keyDelay: [30, 30],
+    presentationRecovery: false,
+  });
+  // Total typing + onSegment readback takes > 180ms while each CDP command is fast -> succeeds with commandTimeout: 100.
+  const ok = await keyboard.type('abc', {
+    timeout: 5000,
+    commandTimeout: 100,
+    onSegment: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 45));
+    },
+  });
+  assert.equal(ok.status, 'completed');
+  assert.equal(ok.completedSegments, 3);
+  // A single stalled dispatchKeyEvent fails at commandTimeout (60ms) well before total timeout (5000ms).
+  t.chrome.replyOnce('Input.dispatchKeyEvent', async () => {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  });
+  const started = performance.now();
+  const error = await keyboard
+    .type('ab', { timeout: 5000, commandTimeout: 60 })
+    .catch((e: unknown) => e);
+  const elapsed = performance.now() - started;
+  assert.ok(error instanceof InputActionError);
+  assert.ok(error.cause instanceof TimeoutError);
+  assert.ok(elapsed < 1000, `commandTimeout took ${elapsed}ms`);
+  assert.equal((await error.cleanup).status, 'completed');
+});
+
+test('characterKey and requiresShift match physical-key typing as a single source of truth', () => {
+  assert.equal(requiresShift('A'), true);
+  assert.equal(requiresShift('('), true);
+  assert.equal(requiresShift('!'), true);
+  assert.equal(requiresShift('a'), false);
+  assert.equal(requiresShift('9'), false);
+  assert.equal(requiresShift(' '), false);
+  assert.equal(requiresShift('\n'), false);
+  assert.equal(requiresShift('\t'), false);
+  assert.equal(requiresShift('中'), false);
+  assert.equal(requiresShift('AB'), false);
+  assert.equal(requiresShift(''), false);
+
+  const paren = characterKey('(');
+  assert.ok(paren);
+  assert.equal(paren.shift, true);
+  assert.equal(paren.definition.code, 'Digit9');
+  assert.equal(paren.definition.shiftKey, '(');
+  assert.ok(Object.isFrozen(paren));
+  assert.ok(Object.isFrozen(paren.definition));
+
+  const space = characterKey(' ');
+  assert.ok(space);
+  assert.equal(space.shift, false);
+  assert.equal(space.definition.code, 'Space');
+
+  assert.equal(characterKey('中'), undefined);
+  assert.equal(characterKey('\n'), undefined);
+  assert.equal(characterKey('AB'), undefined);
+});
+
+test('callback keyDelay runs through action.pace and counts in InputReport.plannedMs', async () => {
+  await using t = await target();
+  const calls: Array<[string, string, number]> = [];
+  const scope = createInputScope(t.session, {
+    pageEvents: false,
+    policy: {
+      mode: 'human',
+      typing: 'keys',
+      pressDelay: [0, 0],
+      keyDelay: (prev, next, index) => {
+        calls.push([prev, next, index]);
+        return next === '' ? 0 : prev === ' ' ? 40 : 15;
+      },
+    },
+  });
+  const report = await scope.run(async ({ keyboard }) => {
+    await keyboard.type('a b');
+  });
+  assert.deepEqual(calls, [
+    ['a', ' ', 0],
+    [' ', 'b', 1],
+    ['b', '', 2],
+  ]);
+  assert.equal(report.plannedMs, 55);
+  // Per-call override via KeyboardTypeOptions.keyDelay
+  const overrideCalls: Array<[string, string, number]> = [];
+  const overridden = await scope.run(async ({ keyboard }) => {
+    await keyboard.type('xy', {
+      keyDelay: (prev, next, index) => {
+        overrideCalls.push([prev, next, index]);
+        return next === '' ? 0 : 25;
+      },
+    });
+  });
+  assert.deepEqual(overrideCalls, [
+    ['x', 'y', 0],
+    ['y', '', 1],
+  ]);
+  assert.equal(overridden.plannedMs, 25);
+  // Invalid callback return value fails cleanly as InputActionError.
+  const bad = await scope
+    .run(async ({ keyboard }) => {
+      await keyboard.type('a', { keyDelay: () => -5 });
+    })
+    .catch((e: unknown) => e);
+  assert.ok(bad instanceof InputActionError);
+  assert.ok(bad.cause instanceof RangeError);
+  assert.equal((await bad.cleanup).status, 'completed');
+});
+
+test('normal keyUp respects commandTimeout while cleanup drains its late reply without blocking', async () => {
+  await using t = await target();
+  const keyboard = new Keyboard(t.session);
+  keyboard.behavior.configure({
+    typing: 'keys',
+    presentationRecovery: false,
+  });
+  let keyUpReply!: () => void;
+  const keyUpHeld = new Promise<void>((resolve) => {
+    keyUpReply = resolve;
+  });
+  t.chrome.handle('Input.dispatchKeyEvent', async (params) => {
+    if (params.type === 'keyUp') await keyUpHeld;
+  });
+  const started = performance.now();
+  const pending = keyboard
+    .type('x', { commandTimeout: 40, timeout: 5000, cleanupTimeout: 1000 })
+    .catch((e: unknown) => e);
+  const error = await pending;
+  const elapsed = performance.now() - started;
+  assert.ok(error instanceof InputActionError);
+  assert.ok(error.cause instanceof TimeoutError);
+  assert.ok(elapsed < 400, `normal keyUp bypassed commandTimeout (${elapsed}ms)`);
+  assert.equal(error.report.cleanup, 'pending');
+  // Late reply arrives within cleanupTimeout -> cleanup succeeds and connection stays unblocked.
+  keyUpReply();
+  const cleanup = await error.cleanup;
+  assert.equal(cleanup.status, 'completed');
+  assert.equal(cleanup.report.lateReplies, 1);
+  t.chrome.handle('Input.dispatchKeyEvent', () => {});
+  const next = await keyboard.type('y');
+  assert.equal(next.status, 'completed');
+});
+
+test('beforeSend rejecting rawKeyDown or mousePressed never sends an orphan release', async () => {
+  await using chrome = await ScriptedChrome.start();
+  const denied = new Error('blocked before wire');
+  let block = true;
+  await using browser = await chrome.connect({
+    attach: 'none',
+    beforeSend(method, params) {
+      if (!block) return;
+      const type = (params as { type?: string } | undefined)?.type;
+      if (
+        (method === 'Input.dispatchKeyEvent' && type === 'rawKeyDown') ||
+        (method === 'Input.dispatchMouseEvent' && type === 'mousePressed')
+      )
+        throw denied;
+    },
+  });
+  chrome.handle('Input.dispatchKeyEvent', () => {});
+  chrome.handle('Input.dispatchMouseEvent', () => {});
+  const session = await browser.attachSession(browser.pageTargets[0]!.targetId);
+  const keyboard = new Keyboard(session);
+  keyboard.behavior.configure({ typing: 'keys' });
+  const keyErr = await keyboard.type('a').catch((e: unknown) => e);
+  assert.ok(keyErr instanceof InputActionError);
+  assert.equal(keyErr.cause, denied);
+  assert.equal((await keyErr.cleanup).status, 'completed');
+  assert.deepEqual(keyboard.pressedKeys, []);
+  assert.equal(chrome.commands.filter((c) => c.method === 'Input.dispatchKeyEvent').length, 0);
+  const scope = createInputScope(session, { pageEvents: false });
+  const mouseErr = await scope
+    .run(async ({ mouse }) => {
+      await mouse.down('left');
+    })
+    .catch((e: unknown) => e);
+  assert.ok(mouseErr instanceof InputActionError);
+  assert.equal(mouseErr.cause, denied);
+  assert.equal((await mouseErr.cleanup).status, 'completed');
+  assert.equal(chrome.commands.filter((c) => c.method === 'Input.dispatchMouseEvent').length, 0);
+  // Connection and coordinator holds stay completely clean.
+  block = false;
+  assert.equal((await keyboard.type('a')).status, 'completed');
+});
+
+test('callback keyDelay disables digraph rollover so every pair uses the callback', async () => {
+  await using t = await target();
+  const calls: Array<[string, string, number]> = [];
+  const keyboard = new Keyboard(t.session);
+  keyboard.behavior.configure({
+    mode: 'human',
+    typing: 'keys',
+    pressDelay: [0, 0],
+    keyDelay: (prev, next, index) => {
+      calls.push([prev, next, index]);
+      return next === '' ? 0 : 12;
+    },
+  });
+  // Force random < 0.15 which would normally trigger rollover on "th".
+  keyboard.behavior.random = () => 0.05;
+  const report = await keyboard.type('th');
+  assert.deepEqual(calls, [
+    ['t', 'h', 0],
+    ['h', '', 1],
+  ]);
+  assert.equal(report.plannedMs, 12);
+  assert.deepEqual(
+    keyEvents(t.chrome).map((e) => `${e.type}:${e.key}`),
+    ['rawKeyDown:t', 'char:t', 'keyUp:t', 'rawKeyDown:h', 'char:h', 'keyUp:h'],
+  );
 });

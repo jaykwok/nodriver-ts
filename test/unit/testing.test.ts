@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { Browser, DisconnectedError, ProtocolError, TimeoutError } from '../../src/index.ts';
+import {
+  Browser,
+  DisconnectedError,
+  ProtocolError,
+  SessionEndedError,
+  TimeoutError,
+} from '../../src/index.ts';
 import { NO_REPLY, ScriptedChrome } from '../../src/testing/index.ts';
 
 test('scripted Chrome builds real Browser, Tab and Session objects with a strict handshake', async () => {
@@ -82,7 +88,9 @@ test('an unscripted command for an unknown session is answered as Chrome does', 
   await assert.rejects(
     browser.connection.session('gone').send('Page.enable'),
     (error: unknown) =>
-      error instanceof DisconnectedError && /Session with given id not found/.test(error.message),
+      error instanceof SessionEndedError &&
+      !(error instanceof DisconnectedError) &&
+      /Session with given id not found/.test(error.message),
   );
   assert.equal(browser.closed, false);
 });

@@ -344,8 +344,8 @@ export class RemoteHandoff {
     const lease = new PresentationLease(this.tab.session, {
       screencast,
       maxDuration: Math.max(1, this.expiresAt - Date.now()),
-      maxFrames: Number.MAX_SAFE_INTEGER,
-      maxBytes: Number.MAX_SAFE_INTEGER,
+      maxFrames: null,
+      maxBytes: null,
       ackTimeout: 5000,
       startTimeout: 5000,
       deliver: (frame) => {

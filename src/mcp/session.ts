@@ -17,7 +17,7 @@ import {
 import { abortReason, delay, EventHub, type WaitOptions } from '../utils.ts';
 import { OperationQueue } from './queue.ts';
 import type { BrowserAllocation } from './pool.ts';
-import type { InputPolicy } from '../input/behavior.ts';
+import { cloneInputPolicy, type InputPolicy } from '../input/behavior.ts';
 import type { DiagnoseEnvironmentOptions, GeoIPResolver } from '../page/diagnostics.ts';
 import {
   axProperty,
@@ -348,7 +348,7 @@ export class BrowserMcpSession {
     return {
       tabId: tab.id,
       url: tab.url,
-      inputPolicy: structuredClone(tab.inputBehavior.policy),
+      inputPolicy: cloneInputPolicy(tab.inputBehavior.policy),
       lastInput: input && {
         action: input.action,
         status: input.status,

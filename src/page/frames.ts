@@ -150,7 +150,9 @@ export class Frame {
    * so it runs on the connection deadline; each caller stops waiting at its own timeout/signal.
    */
   async context(world: World, options: WaitOptions = {}): Promise<number> {
-    if (this.detached || this.session.closed) throw new DisconnectedError('Frame is detached');
+    if (this.session.closed)
+      throw this.session.closeReason ?? new DisconnectedError('Session closed');
+    if (this.detached) throw new StaleElementError('Frame is detached');
     return bounded(this.sharedContext(world), options, `${world} world lookup`);
   }
   private sharedContext(world: World): Promise<number> {

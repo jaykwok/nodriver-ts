@@ -30,12 +30,27 @@ export interface PresentationScreencastOptions {
 export interface PresentationLeaseOptions {
   /** Page.startScreencast parameters, such as a small JPEG to save bandwidth. */
   screencast?: PresentationScreencastOptions;
-  /** Total time from start() until the lease stops. Defaults to 5000 ms. */
-  maxDuration?: number;
-  /** Maximum number of frames offered for acknowledgement. Defaults to 16. */
-  maxFrames?: number;
-  /** Maximum base64-decoded frame bytes acknowledged by this lease. Defaults to 4 MiB. */
-  maxBytes?: number;
+  /**
+   * When true, omit default duration, frame and byte caps so the lease stays active until
+   * `close()`, `signal` abort, disconnect or an explicit cap is reached. Explicit finite limits
+   * still apply.
+   */
+  untilClosed?: boolean;
+  /**
+   * Total time from start() until the lease stops. Pass `Infinity` or `null` for no duration
+   * limit. Defaults to 5000 ms (or unbounded when `untilClosed` is true).
+   */
+  maxDuration?: number | null;
+  /**
+   * Maximum number of frames offered for acknowledgement. Pass `Infinity` or `null` for no frame
+   * limit. Defaults to 16 (or unbounded when `untilClosed` is true).
+   */
+  maxFrames?: number | null;
+  /**
+   * Maximum base64-decoded frame bytes acknowledged by this lease. Pass `Infinity` or `null` for
+   * no byte limit. Defaults to 4 MiB (or unbounded when `untilClosed` is true).
+   */
+  maxBytes?: number | null;
   /** Maximum concurrent Page.screencastFrameAck requests. Defaults to 4. */
   maxInFlightAcks?: number;
   /** Deadline for Page.startScreencast. Defaults to 2000 ms. */
@@ -49,6 +64,20 @@ export interface PresentationLeaseOptions {
    * Receives each frame. The frame is acknowledged once this settles, also when it throws, so
    * Chrome sends no more frames than the receiver takes; handle errors inside it.
    */
+  deliver?: (frame: EventParams<'Page.screencastFrame'>) => void | Promise<void>;
+}
+
+export interface ResolvedPresentationLeaseOptions {
+  screencast?: PresentationScreencastOptions;
+  untilClosed: boolean;
+  maxDuration: number;
+  maxFrames: number;
+  maxBytes: number;
+  maxInFlightAcks: number;
+  startTimeout: number;
+  ackTimeout: number;
+  stopTimeout: number;
+  signal?: AbortSignal;
   deliver?: (frame: EventParams<'Page.screencastFrame'>) => void | Promise<void>;
 }
 
@@ -105,6 +134,18 @@ function limit(name: string, value: number): number {
   return value;
 }
 
+function durationLimit(value: number | null | undefined, fallback: number): number {
+  if (value === null || value === Infinity) return Infinity;
+  if (value === undefined) return fallback;
+  return timeoutValue(value, 'maxDuration');
+}
+
+function countLimit(name: string, value: number | null | undefined, fallback: number): number {
+  if (value === null || value === Infinity) return Infinity;
+  if (value === undefined) return fallback;
+  return limit(name, value);
+}
+
 function positiveLimit(name: string, value: number): number {
   limit(name, value);
   if (value < 1) throw new RangeError(`${name} must be at least 1`);
@@ -138,8 +179,7 @@ function screencastOptions(
  */
 export class PresentationLease {
   readonly session: Session;
-  readonly options: Required<Omit<PresentationLeaseOptions, 'signal' | 'screencast' | 'deliver'>> &
-    Pick<PresentationLeaseOptions, 'signal' | 'screencast' | 'deliver'>;
+  readonly options: ResolvedPresentationLeaseOptions;
   readonly report: PresentationReport = {
     state: 'stopped',
     cleanup: 'pending',
@@ -175,11 +215,24 @@ export class PresentationLease {
   constructor(session: Session, options: PresentationLeaseOptions = {}) {
     if (!session.id) throw new TypeError('PresentationLease requires a target session');
     this.session = session;
+    const untilClosed = options.untilClosed ?? false;
     this.options = {
       screencast: screencastOptions(options.screencast),
-      maxDuration: timeoutValue(options.maxDuration ?? DEFAULTS.maxDuration, 'maxDuration'),
-      maxFrames: limit('maxFrames', options.maxFrames ?? DEFAULTS.maxFrames),
-      maxBytes: limit('maxBytes', options.maxBytes ?? DEFAULTS.maxBytes),
+      untilClosed,
+      maxDuration: durationLimit(
+        options.maxDuration,
+        untilClosed ? Infinity : DEFAULTS.maxDuration,
+      ),
+      maxFrames: countLimit(
+        'maxFrames',
+        options.maxFrames,
+        untilClosed ? Infinity : DEFAULTS.maxFrames,
+      ),
+      maxBytes: countLimit(
+        'maxBytes',
+        options.maxBytes,
+        untilClosed ? Infinity : DEFAULTS.maxBytes,
+      ),
       maxInFlightAcks: positiveLimit(
         'maxInFlightAcks',
         options.maxInFlightAcks ?? DEFAULTS.maxInFlightAcks,
@@ -232,10 +285,9 @@ export class PresentationLease {
       throw error;
     }
     if (this.session.closed) {
-      const error = new DisconnectedError('Presentation session is closed', {
-        cause: this.session.closeReason,
-      });
-      this.report.error = String(this.session.closeReason ?? error);
+      const error =
+        this.session.closeReason ?? new DisconnectedError('Presentation session is closed');
+      this.report.error = String(error);
       this.requestedReason = 'disconnected';
       await this.finish('disconnected');
       throw error;
@@ -262,11 +314,13 @@ export class PresentationLease {
         void this.finish('disconnected');
       });
       this.listenerOff = this.session.on('Page.screencastFrame', (event) => this.onFrame(event));
-      this.durationTimer = setTimeout(() => {
-        this.requestedReason ??= 'duration-limit';
-        this.durationController.abort(new TimeoutError('Presentation lease duration exceeded'));
-        this.requestClose('duration-limit');
-      }, this.options.maxDuration);
+      if (Number.isFinite(this.options.maxDuration)) {
+        this.durationTimer = setTimeout(() => {
+          this.requestedReason ??= 'duration-limit';
+          this.durationController.abort(new TimeoutError('Presentation lease duration exceeded'));
+          this.requestClose('duration-limit');
+        }, this.options.maxDuration);
+      }
 
       this.startAttempted = true;
       this.report.attempted = true;
@@ -448,6 +502,7 @@ export class PresentationLease {
   }
 
   private remainingDuration(): number {
+    if (!Number.isFinite(this.options.maxDuration)) return Infinity;
     return Math.max(0, this.options.maxDuration - (performance.now() - this.startAt));
   }
 
