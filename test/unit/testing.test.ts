@@ -3,11 +3,12 @@ import { test } from 'node:test';
 import {
   Browser,
   DisconnectedError,
+  InputActionError,
   ProtocolError,
   SessionEndedError,
   TimeoutError,
 } from '../../src/index.ts';
-import { NO_REPLY, ScriptedChrome } from '../../src/testing/index.ts';
+import { NO_REPLY, ScriptedChrome, createInputReport } from '../../src/testing/index.ts';
 
 test('scripted Chrome builds real Browser, Tab and Session objects with a strict handshake', async () => {
   await using chrome = await ScriptedChrome.start();
@@ -214,4 +215,52 @@ test('startup can be scripted to fail and closing the fixture rejects outstandin
   } finally {
     await chrome.close();
   }
+});
+
+test('createInputReport builds complete InputReport fixtures with partial overrides and isolated clones', () => {
+  const defaults = createInputReport();
+  assert.equal(defaults.action, 'input');
+  assert.equal(defaults.status, 'completed');
+  assert.equal(defaults.phase, 'done');
+  assert.equal(defaults.cleanup, 'completed');
+  assert.deepEqual(defaults.sent, {
+    moves: 0,
+    wheels: 0,
+    presses: 0,
+    keys: 0,
+    characters: 0,
+    releases: 0,
+    text: 0,
+    composition: 0,
+  });
+  assert.deepEqual(defaults.trace, []);
+  assert.deepEqual(defaults.cleanupErrors, []);
+  assert.equal('finalPosition' in defaults, false);
+
+  const trace = [{ type: 'down', x: 10, y: 20 }];
+  const cleanupErrors = ['warn'];
+  const finalPosition = { x: 10, y: 20 };
+  const report = createInputReport({
+    action: 'click',
+    status: 'interrupted',
+    events: 2,
+    dispatched: 1,
+    sent: { presses: 1 },
+    trace,
+    cleanupErrors,
+    finalPosition,
+  });
+  trace[0]!.x = 999;
+  cleanupErrors.push('mutated');
+  finalPosition.x = 999;
+  assert.equal(report.sent.presses, 1);
+  assert.equal(report.sent.moves, 0);
+  assert.deepEqual(report.trace, [{ type: 'down', x: 10, y: 20 }]);
+  assert.deepEqual(report.cleanupErrors, ['warn']);
+  assert.deepEqual(report.finalPosition, { x: 10, y: 20 });
+
+  const error = new InputActionError(report, new Error('target detached'));
+  assert.equal(error.report.action, 'click');
+  assert.equal(error.report.dispatched, 1);
+  assert.match(error.message, /Input click interrupted after 2 events/);
 });

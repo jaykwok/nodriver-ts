@@ -1,8 +1,9 @@
 // Exercise the published subpath export, rather than a source-relative import.
 import assert from 'node:assert/strict';
-import { ScriptedChrome } from 'nodriver-ts/testing';
+import { ScriptedChrome, createInputReport } from 'nodriver-ts/testing';
 import {
   createInputScope,
+  InputActionError,
   InputScope,
   Composition,
   createPresentationLease,
@@ -51,6 +52,15 @@ try {
     assert.equal((await presentation.start()).state, 'active');
     assert.equal((await presentation.close()).cleanup, 'completed');
     chrome.assertDone();
+    const syntheticReport = createInputReport({
+      action: 'click',
+      status: 'interrupted',
+      dispatched: 1,
+      sent: { presses: 1 },
+    });
+    const syntheticError = new InputActionError(syntheticReport, new Error('detached'));
+    assert.equal(syntheticError.report.sent.presses, 1);
+    assert.equal(syntheticError.report.sent.moves, 0);
     console.log('testing subpath smoke ok');
   } finally {
     await browser.close();

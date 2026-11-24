@@ -84,6 +84,34 @@ try {
 
 `evaluate()` 与 `evaluateIsolated()` 按需透传 `silent`、`disableBreaks`、`throwOnSideEffect`、`userGesture` 与 `executionTimeout`（为 `undefined` 时不发送；注意 V8 在 `throwOnSideEffect: true` 下对触发 layout 的 DOM getter 同样会报错，`userGesture: true` 会触发合成用户激活）。可通过 `IsolatedWorldOptions` 或单次调用的 `onEvent(event, info)`（`'created' | 'create-failed' | 'recovered'`）观测首次创建、创建失败与上下文丢失后的恢复重建（根入口亦导出 `isContextGone(error)`；可通过 `retryOnContextGone: false` 关闭自动重试）。`context()` 与 `run()` 返回或传入的数字 `executionContextId` 仅在当前文档与渲染进程存活期间有效；`run()` 同时以 `timeout` 和 `signal` 约束准备阶段与回调等待（预先中止的信号不发任何 CDP 命令，准备阶段中止不启动回调）。
 
+### 托管对象组与节点批量调用
+
+- `createObjectGroup(session, name?)` 返回实现 `AsyncDisposable` 的 `ObjectGroupScope`，`release(options?)` 发送 `Runtime.releaseObjectGroup`（默认调用方超时 1 秒），仅在 Chrome 确认释放或 session 关闭后将 `released` 置为 `true`；发送前中止不发送任何 CDP 命令；多个并发调用方共享同一条在途释放请求，但各自的 `timeout` 与 `signal` 仅结算自身等待，不会中止其他等待者。需要可观测释放成功与错误传播的场景，请直接管理 `ObjectGroupScope` 并 `await group.release(options)`。
+- `world.withObjectGroup(task, options?)` 将 `world.run()` 与全新的 `ObjectGroupScope` 结合，在正常返回、抛错、`contextGone` 重试、`world.dispose()`、超时或中止时立即在连接上登记后台释放请求而不突破调用方预算。由于后台清理会吞掉释放协议错误，`connection.drain()` 仅等待这些清理请求在线上结算，不保证远端释放均已成功。
+- `world.callOnNodes(backendNodeIds, fn, arg?, options?)` 按批（`chunkSize`，默认 `128`）解析 `backendNodeIds` 并在每个批次仅发一次 `Runtime.callFunctionOn` 执行同步回调 `fn(element, arg)`（零 `DOM`/`Runtime`/`Page` 域启用、将 `fn` 定义在不含任何包装器局部绑定的全局词法作用域中、兼容 `throwOnSideEffect: true`），并在连接上立即登记每批对象组及超时/中止后迟到 `DOM.resolveNode` 句柄的后台释放而不延长调用方超时（`connection.drain()` 仅确认清理请求在线上结算，不证明远端释放成功）。`async` 函数或返回 Promise/thenable 的回调会在类型与运行时均被 `TypeError` 拒绝（对返回的原生 rejected `Promise` 也会先接管拒绝，避免在目标世界遗留 `unhandledRejection`）。上下文失效自动重试仅发生在已确认用户回调执行零次时（调用前上下文/句柄查找失败、守卫不匹配，或前序分片已解析节点全部已脱离）；一旦 `Runtime.callFunctionOn` 已发出且以执行结果不确定的错误失败（如 `Execution context was destroyed`），则直接保留原错误而不重放回调。两个节点状态选项相互独立：`skipMissingNodes`（默认 `true`）控制 `DOM.resolveNode` 解析失败的节点（`true` 返回 `{ ok: false, backendNodeId, stale: true }`，`false` 抛出 `StaleElementError`）；`requireConnected`（默认 `true`）控制已成功解析但 `isConnected === false` 的节点（`true` 时即使 `skipMissingNodes: false` 仍返回 `stale: true`，`false` 时对已脱离节点同样执行 `fn`）。
+
+### 多帧隔离世界池与并发扇出
+
+`createIsolatedWorldPool(session, options?)`（`IsolatedWorldPool`）在单个 session 上按 `frameId` 缓存 `IsolatedWorld`（`scope: 'target'` 时跨临时 `TargetSession` 复用连接级缓存）。对于持续轮询场景，请优先复用同一个 `IsolatedWorldPool`（或使用 `scope: 'target'` 并固定 `worldName`），避免在默认会话作用域下反复调用 `evaluateAcrossFrames()` 每次新建不同名称的隔离世界。`pool.evaluateAll(frameIds, fn, arg?, options?)` 与一次性调用 `evaluateAcrossFrames(session, frameIds, fn, arg?, options?)` 在同一个总 `timeout`/`signal` 和可选 `concurrency` 上限下并发扇出，按帧返回 `{ status: 'ok', frameId, value } | { status: 'detached', frameId, error: StaleElementError } | { status: 'error', frameId, error }`：仅当协议明确报告帧不存在或已卸载（`No frame for/with given id`）时返回 `status: 'detached'`，导航期间重试耗尽的上下文错误（如 `Execution context was destroyed`）与脚本异常均保留为 `status: 'error'`，避免调用方误删仍挂载的活跃帧。
+
+## 惰性 `DOMSnapshot` 解码器
+
+`parseDOMSnapshot(raw, { computedStyles?, cssScale? })` 将原始 `DOMSnapshot.captureSnapshot` 响应包装为惰性、只读的 `DOMSnapshotView`（`documents`、`rootDocument`、`documentByFrameId()`、`findNodeByBackendId()`），不发送任何 CDP 命令，也不启用任何域。`DOMSnapshotDocumentView` 提供 `nodes()`、`node(index)` 与 `nodeByBackendId()`；`DOMSnapshotNodeView` 按需解码字符串表、`attributes` / `attribute()`、稀疏字段（`shadowRootType`、`pseudoType`、`inputValue`、`textValue`、`inputChecked`、`optionSelected`、`isClickable`、`currentSourceURL`、`originURL`、`childDocument`）、稀疏布局框（`bounds`、`allBounds`、`offsetRect`、`scrollRect`、`clientRect`，按 `cssScale` 缩放）以及 `computedStyles`（`styles` 与 O(1) `style(name)`）。
+
+## 无 `*.enable` 的事件监听器查询
+
+`getNodeEventListeners(session, { objectId } | { backendNodeId }, { depth?, pierce?, world?, executionContextId?, timeout?, signal? })` 直接调用 `DOMDebugger.getEventListeners` 而不启用 `DOM`、`Runtime`、`Page` 或 `Debugger`，并在连接上立即登记全部 `handler.objectId`、`originalHandler.objectId`（含超时或中止后的迟到响应）与临时对象组的后台释放请求，不等待超出调用方超时预算。由于后台清理会吞掉释放协议错误，`connection.drain()` 仅等待这些请求在线上结算，不证明远端资源一定释放成功；如需显式观测目标节点句柄释放结果，请自行通过 `ObjectGroupScope` 解析 `objectId` 后调用 `getNodeEventListeners(session, { objectId })` 再 `await group.release()`。
+
+Chromium 会按传入 `objectId` 所属的执行世界来限定 `DOMDebugger.getEventListeners` 的返回范围：
+
+- 查询**页面主世界监听器**时，请传 `{ backendNodeId }` 并**省略** `world` 与 `executionContextId`（默认行为）。辅助函数会在临时 `ObjectGroupScope` 中调用无 `executionContextId` 的 `DOM.resolveNode({ backendNodeId, objectGroup })`，取得主世界只读句柄（同样零 `*.enable`、不在主世界执行任何脚本）。
+- 仅在需要查询某个隔离世界自身注册的监听器时才传入 `world`（`IsolatedWorld`）、`executionContextId` 或隔离世界 `objectId`——隔离世界句柄只会返回该隔离世界自身的监听器，不包含页面主世界的监听器。
+- 节点不存在时抛出 `StaleElementError`。
+
+## 窗口状态与落定确认
+
+`setWindowState(cdp, targetId, bounds, { waitForState?, pollIntervalMs?, timeout?, signal? })`（及 `tab.windowBounds(bounds?, options?)`）通过浏览器根 CDP session 更新目标窗口的尺寸与状态。默认（`waitForState: false`）只做一次 `Browser.getWindowBounds` 读回；设置 `waitForState: true` 且指定 `bounds.windowState` 时，会按 `pollIntervalMs`（默认 `50` 毫秒）在预算内（默认 `5000` 毫秒）轮询 `Browser.getWindowBounds`，直到操作系统窗口管理器报告目标 `windowState` 已落定。
+
 ## 生命周期
 
 `TargetSession` 继承 `Session`，新增 `targetId`、`endReason`、`ended: Promise<EndReason>` 和 `detach({ signal?, timeout? })`，并沿用有类型的 `send`、`sendWith`、`on`、`onAny`、`waitFor`、`id`、`closed` 和 `closeReason`。

@@ -81,6 +81,7 @@ export class Browser {
   readonly contextMap = new Map<string, BrowserContext>();
   readonly targetInfo = new Map<string, Protocol.Target.TargetInfo>();
   readonly tabCreated = new EventHub<Tab>();
+  readonly tabClosed = new EventHub<Tab>();
   readonly errors = new EventHub<unknown>();
   readonly version: Protocol.Browser.GetVersionResponse;
   /** Tab last brought to front by this client; cleared when another page may have taken focus. */
@@ -116,9 +117,10 @@ export class Browser {
     this.contextMap.set('', new BrowserContext(this));
     connection.disconnected.on(() => {
       this.disconnected = true;
-      for (const tab of this.tabMap.values()) tab.dispose();
+      for (const tab of [...this.tabMap.values()]) tab.dispose();
       this.tabMap.clear();
       this.tabCreated.clear();
+      this.tabClosed.clear();
       // Chrome disposes a forwarded context with the connection that created it.
       for (const context of this.contexts) void context.proxy?.close().catch(() => {});
     });
@@ -319,9 +321,10 @@ export class Browser {
       this.targetInfo.set(e.targetInfo.targetId, e.targetInfo);
     });
     this.cdp.on('Target.targetDestroyed', (e) => {
-      this.tabMap.get(e.targetId)?.dispose();
+      const tab = this.tabMap.get(e.targetId);
       this.tabMap.delete(e.targetId);
       this.targetInfo.delete(e.targetId);
+      tab?.dispose();
     });
     this.cdp.on('Browser.downloadWillBegin', (e) => {
       const tab = this.tabs.find((t) => t.frames.some((f) => f.id === e.frameId));
@@ -384,6 +387,10 @@ export class Browser {
     if (info.type !== 'page') throw new TypeError(`Target ${targetId} is not a page`);
     return this.attach(info);
   }
+  /** @internal Removes a disposed tab from the live map before close listeners run. */
+  removeTab(tab: Tab): void {
+    if (this.tabMap.get(tab.id) === tab) this.tabMap.delete(tab.id);
+  }
   /** @internal The attach of a page target still in progress, until its tab is initialized. */
   attachInProgress(targetId: string): Promise<Tab> | undefined {
     return this.attaching.get(targetId);
@@ -434,7 +441,10 @@ export class Browser {
       try {
         const initializing = step();
         await bounded(tab.initialize(), initializing, 'Tab initialization');
-        this.tabCreated.emit(tab);
+        if (!tab.closed) {
+          tab.markReady();
+          this.tabCreated.emit(tab);
+        }
         return tab;
       } catch (e) {
         tab.dispose();

@@ -728,15 +728,17 @@ export class Connection {
           error: m.error ? String(m.error.code) : undefined,
         };
         this.unanswered.delete(m.id);
+        if (!p && !m.error && wire.onLateReply) {
+          // Run synchronously before wire.replied so any cleanup commands started here are
+          // tracked by Connection.drain() and InputAction cleanup before this reply settles.
+          try {
+            wire.onLateReply(m.result ?? {});
+          } catch {}
+        }
         try {
           wire.replied?.(!p, !m.error);
         } catch {}
         if (!p) {
-          if (!m.error && wire.onLateReply) {
-            try {
-              wire.onLateReply(m.result ?? {});
-            } catch {}
-          }
           const abandoned = this.abandoned.get(m.id);
           if (abandoned) {
             clearTimeout(abandoned.timer);

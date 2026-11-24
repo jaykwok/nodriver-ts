@@ -52,8 +52,22 @@ export interface ProfilePreparation extends WaitOptions {
    */
   empty: boolean;
 }
+export type BrowserChannel = 'chrome' | 'edge' | 'chromium';
+export interface FindExecutableOptions {
+  executablePath?: string;
+  /**
+   * Ordered browser channel preference when `executablePath` is omitted.
+   * When set explicitly, channel preference takes precedence over `CHROME_PATH`.
+   */
+  prefer?: readonly BrowserChannel[];
+}
 export interface LaunchOptions extends WaitOptions, ConnectionOptions {
   executablePath?: string;
+  /**
+   * Browser channel or preference order passed to `findExecutable()` when `executablePath` is
+   * omitted. Useful with persistent `userDataDir` profiles to avoid switching browser engines.
+   */
+  channel?: BrowserChannel | readonly BrowserChannel[];
   /** False by default. Set true when running without a graphical desktop. */
   headless?: boolean;
   /** False by default. True preserves Chromium's native automation flag. */
@@ -200,51 +214,164 @@ function unwatchSignals(owner: BrowserProcess): void {
     signalListeners.delete(signal);
   }
 }
-export async function findExecutable(explicit?: string): Promise<string> {
-  if (explicit) {
-    await access(explicit);
-    return resolve(explicit);
+const BROWSER_CHANNELS = new Set<BrowserChannel>(['chrome', 'edge', 'chromium']);
+const DEFAULT_BROWSER_CHANNELS: readonly BrowserChannel[] = ['chrome', 'chromium', 'edge'];
+
+function normalizeChannels(prefer: readonly BrowserChannel[]): BrowserChannel[] {
+  if (!Array.isArray(prefer) || prefer.length === 0)
+    throw new TypeError('prefer must be a non-empty array of browser channels');
+  const seen = new Set<BrowserChannel>();
+  const result: BrowserChannel[] = [];
+  for (const channel of prefer) {
+    if (typeof channel !== 'string' || !BROWSER_CHANNELS.has(channel as BrowserChannel))
+      throw new TypeError(`Invalid browser channel: ${String(channel)}`);
+    const valid = channel as BrowserChannel;
+    if (!seen.has(valid)) {
+      seen.add(valid);
+      result.push(valid);
+    }
   }
-  if (process.env.CHROME_PATH) return findExecutable(process.env.CHROME_PATH);
-  const programFiles = process.env.PROGRAMFILES ?? 'C:\\Program Files';
-  const programFilesX86 = process.env['PROGRAMFILES(X86)'] ?? 'C:\\Program Files (x86)';
-  const localAppData = process.env.LOCALAPPDATA ?? join(homedir(), 'AppData/Local');
-  const candidates =
-    process.platform === 'win32'
-      ? [
+  return result;
+}
+
+function channelCandidates(channel: BrowserChannel): {
+  stablePaths: string[];
+  previewPaths: string[];
+  pathNames: string[];
+} {
+  if (process.platform === 'win32') {
+    const programFiles = process.env.PROGRAMFILES ?? 'C:\\Program Files';
+    const programFilesX86 = process.env['PROGRAMFILES(X86)'] ?? 'C:\\Program Files (x86)';
+    const localAppData = process.env.LOCALAPPDATA ?? join(homedir(), 'AppData/Local');
+    if (channel === 'chrome')
+      return {
+        stablePaths: [
           join(programFiles, 'Google/Chrome/Application/chrome.exe'),
           join(programFilesX86, 'Google/Chrome/Application/chrome.exe'),
           join(localAppData, 'Google/Chrome/Application/chrome.exe'),
+        ],
+        previewPaths: [join(localAppData, 'Google/Chrome SxS/Application/chrome.exe')],
+        pathNames: ['chrome'],
+      };
+    if (channel === 'chromium')
+      return {
+        stablePaths: [
           join(programFiles, 'Chromium/Application/chrome.exe'),
           join(localAppData, 'Chromium/Application/chrome.exe'),
-          join(programFiles, 'Microsoft/Edge/Application/msedge.exe'),
-          join(programFilesX86, 'Microsoft/Edge/Application/msedge.exe'),
-          join(localAppData, 'Google/Chrome SxS/Application/chrome.exe'),
-        ]
-      : process.platform === 'darwin'
-        ? [
-            '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-            join(homedir(), 'Applications/Google Chrome.app/Contents/MacOS/Google Chrome'),
-            '/Applications/Chromium.app/Contents/MacOS/Chromium',
-            '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
-            '/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary',
-          ]
-        : [
-            '/usr/bin/google-chrome',
-            '/usr/bin/google-chrome-stable',
-            '/opt/google/chrome/chrome',
-            '/usr/bin/chromium',
-            '/usr/bin/chromium-browser',
-            '/snap/bin/chromium',
-            '/usr/bin/microsoft-edge',
-            '/opt/microsoft/msedge/msedge',
-          ];
-  for (const path of candidates) {
+        ],
+        previewPaths: [],
+        pathNames: ['chromium'],
+      };
+    return {
+      stablePaths: [
+        join(programFiles, 'Microsoft/Edge/Application/msedge.exe'),
+        join(programFilesX86, 'Microsoft/Edge/Application/msedge.exe'),
+        join(localAppData, 'Microsoft/Edge/Application/msedge.exe'),
+      ],
+      previewPaths: [],
+      pathNames: ['msedge'],
+    };
+  }
+  if (process.platform === 'darwin') {
+    if (channel === 'chrome')
+      return {
+        stablePaths: [
+          '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+          join(homedir(), 'Applications/Google Chrome.app/Contents/MacOS/Google Chrome'),
+        ],
+        previewPaths: [
+          '/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary',
+        ],
+        pathNames: ['google-chrome', 'google-chrome-stable'],
+      };
+    if (channel === 'chromium')
+      return {
+        stablePaths: [
+          '/Applications/Chromium.app/Contents/MacOS/Chromium',
+          join(homedir(), 'Applications/Chromium.app/Contents/MacOS/Chromium'),
+        ],
+        previewPaths: [],
+        pathNames: ['chromium', 'chromium-browser'],
+      };
+    return {
+      stablePaths: [
+        '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+        join(homedir(), 'Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge'),
+      ],
+      previewPaths: [],
+      pathNames: ['microsoft-edge'],
+    };
+  }
+  if (channel === 'chrome')
+    return {
+      stablePaths: [
+        '/usr/bin/google-chrome',
+        '/usr/bin/google-chrome-stable',
+        '/opt/google/chrome/chrome',
+      ],
+      previewPaths: [],
+      pathNames: ['google-chrome', 'google-chrome-stable'],
+    };
+  if (channel === 'chromium')
+    return {
+      stablePaths: ['/usr/bin/chromium', '/usr/bin/chromium-browser', '/snap/bin/chromium'],
+      previewPaths: [],
+      pathNames: ['chromium', 'chromium-browser'],
+    };
+  return {
+    stablePaths: [
+      '/usr/bin/microsoft-edge',
+      '/usr/bin/microsoft-edge-stable',
+      '/opt/microsoft/msedge/msedge',
+    ],
+    previewPaths: [],
+    pathNames: ['microsoft-edge', 'microsoft-edge-stable'],
+  };
+}
+
+async function firstExisting(paths: string[]): Promise<string | undefined> {
+  for (const path of paths) {
     try {
       await access(path);
       return path;
     } catch {}
   }
+  return undefined;
+}
+
+export async function findExecutable(options?: string | FindExecutableOptions): Promise<string> {
+  const explicit = typeof options === 'string' ? options : options?.executablePath;
+  const prefer =
+    typeof options === 'object' && options?.prefer !== undefined
+      ? normalizeChannels(options.prefer)
+      : undefined;
+  if (explicit) {
+    await access(explicit);
+    return resolve(explicit);
+  }
+  if (!prefer && process.env.CHROME_PATH) {
+    await access(process.env.CHROME_PATH);
+    return resolve(process.env.CHROME_PATH);
+  }
+  if (prefer) {
+    for (const channel of prefer) {
+      const { stablePaths, previewPaths, pathNames } = channelCandidates(channel);
+      const installed = await firstExisting([...stablePaths, ...previewPaths]);
+      if (installed) return installed;
+      const onPath = await executableOnPath(pathNames);
+      if (onPath) return onPath;
+    }
+    throw new NodriverError(
+      `Browser executable not found for channel(s): ${prefer.join(', ')}; set executablePath or CHROME_PATH`,
+    );
+  }
+  // Preserve legacy default priority: all stable installs across Chrome, Chromium and Edge
+  // before preview builds (Canary/SxS) and PATH lookup.
+  const allCandidates = DEFAULT_BROWSER_CHANNELS.map((channel) => channelCandidates(channel));
+  const stable = await firstExisting(allCandidates.flatMap(({ stablePaths }) => stablePaths));
+  if (stable) return stable;
+  const preview = await firstExisting(allCandidates.flatMap(({ previewPaths }) => previewPaths));
+  if (preview) return preview;
   const found = await executableOnPath(
     process.platform === 'win32'
       ? ['chrome', 'msedge']
@@ -411,7 +538,16 @@ export class BrowserProcess {
         throw new TypeError('virtualDisplay runs headful Chrome; do not set headless: true');
       checkXvfbOptions(virtualDisplay);
     }
-    const executable = await findExecutable(options.executablePath);
+    const prefer =
+      options.channel === undefined
+        ? undefined
+        : Array.isArray(options.channel)
+          ? options.channel
+          : [options.channel];
+    const executable = await findExecutable({
+      executablePath: options.executablePath,
+      ...(prefer !== undefined ? { prefer } : {}),
+    });
     if (
       options.webRtcIPHandlingPolicy &&
       ![

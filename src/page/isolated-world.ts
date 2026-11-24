@@ -8,8 +8,14 @@ import {
   type LedgerOptions,
   type Session,
 } from '../protocol/connection.ts';
-import { DisconnectedError, EvaluationError, ProtocolError, StaleElementError } from '../errors.ts';
-import { abortReason, bounded, budget, type WaitOptions } from '../utils.ts';
+import {
+  DisconnectedError,
+  EvaluationError,
+  ProtocolError,
+  StaleElementError,
+  TimeoutError,
+} from '../errors.ts';
+import { abortReason, bounded, budget, timeoutValue, type WaitOptions } from '../utils.ts';
 import { CONTEXT_GONE, isContextGone, parseRemoteObjectId } from './execution-context.ts';
 
 export type IsolatedWorldScope = 'session' | 'target';
@@ -125,6 +131,188 @@ export interface InvalidateIsolatedWorldsFilter {
   targetId?: string;
   frameId?: string;
   worldName?: string;
+}
+
+export interface IsolatedCallOnNodesOptions extends IsolatedRunOptions {
+  /** Nodes resolved and evaluated per batch. Positive integer; defaults to 128. */
+  chunkSize?: number;
+  /** Forwarded to `Runtime.callFunctionOn`. Omitted when `undefined`. */
+  silent?: boolean;
+  /** Forwarded to `Runtime.callFunctionOn`. Omitted when `undefined`. */
+  throwOnSideEffect?: boolean;
+  /** Forwarded to `Runtime.callFunctionOn`. Omitted when `undefined`. */
+  userGesture?: boolean;
+  /**
+   * Mark disconnected nodes (`!el.isConnected`) as `{ ok: false, stale: true }` instead of
+   * invoking `fn`. Defaults to `true`.
+   */
+  requireConnected?: boolean;
+  /**
+   * Mark nodes whose `DOM.resolveNode` fails with `No node found` as `{ ok: false, stale: true }`
+   * instead of rejecting. Defaults to `true`.
+   */
+  skipMissingNodes?: boolean;
+}
+
+/** Rejects async / Promise-returning callbacks in `IsolatedWorld.callOnNodes()`. */
+export type SyncNodeCallResult<T> = T extends PromiseLike<unknown> ? never : T;
+
+export type NodeCallResult<T> =
+  | {
+      readonly ok: true;
+      readonly backendNodeId: Protocol.DOM.BackendNodeId;
+      readonly value: T;
+    }
+  | {
+      readonly ok: false;
+      readonly backendNodeId: Protocol.DOM.BackendNodeId;
+      readonly stale: true;
+    };
+
+export type IsolatedWorldPoolOptions = Omit<IsolatedWorldOptions, 'frameId'>;
+
+export type FrameEvaluationOutcome<T> =
+  | { readonly status: 'ok'; readonly frameId: string; readonly value: T }
+  | { readonly status: 'detached'; readonly frameId: string; readonly error: StaleElementError }
+  | { readonly status: 'error'; readonly frameId: string; readonly error: unknown };
+
+export interface EvaluateAcrossFramesOptions
+  extends IsolatedWorldPoolOptions, IsolatedEvaluateOptions {
+  /** Maximum frames evaluated concurrently. Positive integer; defaults to all frames in parallel. */
+  concurrency?: number;
+}
+
+const FRAME_GONE = /No frame (?:for|with) given id/i;
+const NODE_GONE = /No node (?:with given id )?found|Could not find node/i;
+
+function isFrameGone(error: unknown): boolean {
+  return error instanceof ProtocolError && FRAME_GONE.test(error.message);
+}
+
+function isNodeGone(error: unknown): boolean {
+  return error instanceof ProtocolError && NODE_GONE.test(error.message);
+}
+
+/**
+ * Managed CDP `Runtime` object-group lease implementing `AsyncDisposable`.
+ * Releases all handles in the group via `Runtime.releaseObjectGroup` and tracks confirmation
+ * separately from in-flight attempts so a cancelled or timed-out `release()` can be retried.
+ */
+export class ObjectGroupScope implements AsyncDisposable {
+  readonly session: Session;
+  readonly name: string;
+  private confirmed = false;
+  private releaseStarted = false;
+  private inFlight?: Promise<void>;
+  private confirmWaiters?: Set<() => void>;
+
+  constructor(session: Session, name?: string) {
+    if (name !== undefined && !name)
+      throw new TypeError('objectGroup name must be a non-empty string');
+    this.session = session;
+    this.name = name ?? `nodriver-group-${randomUUID()}`;
+  }
+
+  /** True once `Runtime.releaseObjectGroup` has been confirmed or the session/connection has closed. */
+  get released(): boolean {
+    return this.confirmed || this.session.closed || this.session.connection.closed;
+  }
+
+  /** @internal True once a `Runtime.releaseObjectGroup` attempt has been dispatched or confirmed. */
+  get releasing(): boolean {
+    return this.releaseStarted || this.released;
+  }
+
+  private markConfirmed(): void {
+    if (this.confirmed) return;
+    this.confirmed = true;
+    const waiters = this.confirmWaiters;
+    this.confirmWaiters = undefined;
+    if (waiters) for (const wake of waiters) wake();
+  }
+
+  /**
+   * Releases every remote object in this group (1 s default caller timeout, applied even when only
+   * `signal` is provided). Idempotent once confirmed or once the session closes. Pre-aborted calls
+   * send no CDP command; concurrent and synchronously reentrant callers share one in-flight
+   * `Runtime.releaseObjectGroup`, any late confirmation wakes all active waiters, and each
+   * caller's `timeout` and `signal` settle only its own wait without aborting sibling waiters.
+   */
+  release(options: WaitOptions = {}): Promise<void> {
+    if (this.confirmed || this.session.closed || this.session.connection.closed) {
+      this.markConfirmed();
+      return Promise.resolve();
+    }
+    if (options.signal?.aborted) return Promise.reject(abortReason(options.signal));
+    const waitTimeout = timeoutValue(options.timeout ?? 1000);
+    if (!this.inFlight) {
+      this.releaseStarted = true;
+      // Register the shared attempt BEFORE calling `session.sendWith()` so synchronous reentrancy
+      // inside `observe.onSend` joins this attempt instead of sending a second release command.
+      let resolveAttempt!: () => void;
+      let rejectAttempt!: (reason?: unknown) => void;
+      const attempt = new Promise<void>((resolve, reject) => {
+        resolveAttempt = resolve;
+        rejectAttempt = reject;
+      });
+      // Prevent unhandledRejection if every caller cancels/times out before the shared send settles.
+      void attempt.catch(() => {});
+      this.inFlight = attempt;
+      const onConfirmed = () => {
+        if (this.inFlight === attempt) this.inFlight = undefined;
+        resolveAttempt();
+      };
+      (this.confirmWaiters ??= new Set()).add(onConfirmed);
+      const wireOptions: LedgerOptions = {
+        [ON_LATE_REPLY]: () => {
+          this.markConfirmed();
+        },
+      };
+      let wire: Promise<unknown>;
+      try {
+        wire = this.session.sendWith('Runtime.releaseObjectGroup', wireOptions, {
+          objectGroup: this.name,
+        });
+      } catch (error) {
+        this.confirmWaiters?.delete(onConfirmed);
+        if (this.inFlight === attempt) this.inFlight = undefined;
+        if (!this.confirmed) this.releaseStarted = false;
+        rejectAttempt(error);
+        return Promise.reject(error);
+      }
+      void wire.then(
+        () => {
+          this.confirmWaiters?.delete(onConfirmed);
+          if (this.inFlight === attempt) this.inFlight = undefined;
+          this.markConfirmed();
+          resolveAttempt();
+        },
+        (error) => {
+          this.confirmWaiters?.delete(onConfirmed);
+          if (this.inFlight === attempt) this.inFlight = undefined;
+          if (this.confirmed || this.session.closed || this.session.connection.closed) {
+            this.markConfirmed();
+            resolveAttempt();
+            return;
+          }
+          rejectAttempt(error);
+        },
+      );
+    }
+    return bounded(
+      this.inFlight,
+      { timeout: waitTimeout, signal: options.signal },
+      'Runtime.releaseObjectGroup',
+    );
+  }
+
+  async [Symbol.asyncDispose](): Promise<void> {
+    await this.release().catch(() => {});
+  }
+}
+
+export function createObjectGroup(session: Session, name?: string): ObjectGroupScope {
+  return new ObjectGroupScope(session, name);
 }
 
 interface WorldGuard {
@@ -545,6 +733,23 @@ function isWorldGone(error: unknown): boolean {
   );
 }
 
+/**
+ * Whether a `Runtime.callFunctionOn` failure proves user code never started executing
+ * (guard mismatch or pre-invocation context/object lookup failure, as opposed to
+ * `Execution context was destroyed` / `Inspected target navigated or closed` which can occur
+ * during or after callback execution).
+ */
+function isFailedBeforeCall(error: unknown): boolean {
+  return (
+    error instanceof WorldMismatchError ||
+    (error instanceof ProtocolError &&
+      error.code === -32000 &&
+      /Cannot find context with specified id|Could not find object with given id/.test(
+        error.message,
+      ))
+  );
+}
+
 class TargetWorldRegistry {
   readonly slots = new Map<string, WorldSlot<LightWorldEntry>>();
   private readonly connection: Connection;
@@ -785,10 +990,13 @@ export class IsolatedWorld {
             worldName: this.worldName,
             ...(this.grantUniversalAccess ? { grantUniveralAccess: true } : {}),
           };
-          const { executionContextId } = await this.session.send(
-            'Page.createIsolatedWorld',
-            createParams,
-          );
+          const { executionContextId } = await this.session
+            .send('Page.createIsolatedWorld', createParams)
+            .catch((error: unknown) => {
+              if (isFrameGone(error))
+                throw new StaleElementError('Frame is detached', { cause: error });
+              throw error;
+            });
           if (this.disposeEpoch !== epoch) throw this.disposedError();
           groupAllocated = true;
           const { result: global } = await this.session.send('Runtime.evaluate', {
@@ -834,10 +1042,13 @@ export class IsolatedWorld {
               throw new WorldMismatchError(
                 'Isolated world handle collided with the main-world execution context',
               );
-            const { executionContextId: confirmedId } = await this.session.send(
-              'Page.createIsolatedWorld',
-              createParams,
-            );
+            const { executionContextId: confirmedId } = await this.session
+              .send('Page.createIsolatedWorld', createParams)
+              .catch((error: unknown) => {
+                if (isFrameGone(error))
+                  throw new StaleElementError('Frame is detached', { cause: error });
+                throw error;
+              });
             if (this.disposeEpoch !== epoch) throw this.disposedError();
             if (confirmedId !== executionContextId)
               throw new WorldMismatchError(
@@ -963,10 +1174,13 @@ export class IsolatedWorld {
             worldName: this.worldName,
             ...(this.grantUniversalAccess ? { grantUniveralAccess: true } : {}),
           };
-          const { executionContextId } = await session.send(
-            'Page.createIsolatedWorld',
-            createParams,
-          );
+          const { executionContextId } = await session
+            .send('Page.createIsolatedWorld', createParams)
+            .catch((error: unknown) => {
+              if (isFrameGone(error))
+                throw new StaleElementError('Frame is detached', { cause: error });
+              throw error;
+            });
           if (this.scope === 'session' && this.disposeEpoch !== epoch) throw this.disposedError();
           groupAllocated = true;
           const globalRes = await session.send('Runtime.evaluate', {
@@ -988,10 +1202,13 @@ export class IsolatedWorld {
           const isolated = parseRemoteObjectId(global.objectId);
           if (isolated.context !== executionContextId)
             throw new WorldMismatchError('Isolated world handle context does not match creation');
-          const { executionContextId: confirmedId } = await session.send(
-            'Page.createIsolatedWorld',
-            createParams,
-          );
+          const { executionContextId: confirmedId } = await session
+            .send('Page.createIsolatedWorld', createParams)
+            .catch((error: unknown) => {
+              if (isFrameGone(error))
+                throw new StaleElementError('Frame is detached', { cause: error });
+              throw error;
+            });
           if (this.scope === 'session' && this.disposeEpoch !== epoch) throw this.disposedError();
           if (confirmedId !== executionContextId)
             throw new WorldMismatchError(
@@ -1081,11 +1298,17 @@ export class IsolatedWorld {
       let task!: Promise<NoneWorldEntry>;
       task = (async (): Promise<NoneWorldEntry> => {
         try {
-          const { executionContextId } = await session.send('Page.createIsolatedWorld', {
-            frameId: this.frameId,
-            worldName: this.worldName,
-            ...(this.grantUniversalAccess ? { grantUniveralAccess: true } : {}),
-          });
+          const { executionContextId } = await session
+            .send('Page.createIsolatedWorld', {
+              frameId: this.frameId,
+              worldName: this.worldName,
+              ...(this.grantUniversalAccess ? { grantUniveralAccess: true } : {}),
+            })
+            .catch((error: unknown) => {
+              if (isFrameGone(error))
+                throw new StaleElementError('Frame is detached', { cause: error });
+              throw error;
+            });
           if (this.scope === 'session' && this.disposeEpoch !== epoch) throw this.disposedError();
           const entry: NoneWorldEntry = {
             kind: 'none',
@@ -1448,6 +1671,277 @@ export class IsolatedWorld {
   }
 
   /**
+   * Runs `task` with a fresh managed `ObjectGroupScope` and this isolated world's execution
+   * context ID, releasing the object group automatically on completion, error, cancellation, or
+   * retry.
+   */
+  async withObjectGroup<T>(
+    task: (scope: ObjectGroupScope, contextId: number, step: () => WaitOptions) => Promise<T>,
+    options: IsolatedRunOptions & { objectGroup?: string } = {},
+  ): Promise<T> {
+    if (options.objectGroup !== undefined && !options.objectGroup)
+      throw new TypeError('objectGroup name must be a non-empty string');
+    const disposeSignal = this.disposeController.signal;
+    let activeScope: ObjectGroupScope | undefined;
+    try {
+      return await this.run(async (contextId, step) => {
+        const scope = new ObjectGroupScope(this.session, options.objectGroup);
+        activeScope = scope;
+        const onDispose = () => {
+          void scope.release().catch(() => {});
+        };
+        disposeSignal.addEventListener('abort', onDispose, { once: true });
+        try {
+          return await task(scope, contextId, step);
+        } finally {
+          disposeSignal.removeEventListener('abort', onDispose);
+          void scope.release().catch(() => {});
+        }
+      }, options);
+    } finally {
+      void activeScope?.release().catch(() => {});
+    }
+  }
+
+  /**
+   * Resolves a batch of `backendNodeId`s into this isolated world in chunks, invokes synchronous
+   * `fn(el, arg)` on every resolved node in one `Runtime.callFunctionOn` per chunk, and registers
+   * each chunk's `ObjectGroupScope` release on the connection without delaying caller deadlines.
+   * Never enables `DOM`, `Runtime`, or `Page`, never shadows page globals in `fn`'s lexical scope,
+   * and rejects `async` functions or Promise-returning callbacks with `TypeError`.
+   *
+   * Respects `verification` (`'strict'` binds to `entry.objectId`, `'guard'` verifies the world
+   * guard token before invoking `fn`, `'none'` executes directly). Rebuilds and retries once on
+   * context loss only before any chunk's user callback has executed (unless `retryOnContextGone:
+   * false`), so already-completed chunks are never replayed or mixed across documents.
+   */
+  async callOnNodes<T = unknown, A = unknown>(
+    backendNodeIds: readonly Protocol.DOM.BackendNodeId[],
+    fn: (element: Element, arg: A) => SyncNodeCallResult<T>,
+    arg?: A,
+    options: IsolatedCallOnNodesOptions = {},
+  ): Promise<Array<NodeCallResult<T>>> {
+    if (!Array.isArray(backendNodeIds)) throw new TypeError('backendNodeIds must be an array');
+    if (typeof fn !== 'function') throw new TypeError('callOnNodes requires a function');
+    if (fn.constructor?.name === 'AsyncFunction')
+      throw new TypeError(
+        'callOnNodes requires a synchronous function (async functions are not supported)',
+      );
+    for (const id of backendNodeIds) {
+      if (!Number.isInteger(id) || id <= 0)
+        throw new RangeError('backendNodeId must be a positive integer');
+    }
+    const chunkSize = options.chunkSize ?? 128;
+    if (!Number.isInteger(chunkSize) || chunkSize < 1)
+      throw new RangeError('chunkSize must be a positive integer');
+    if (this.session.closed)
+      throw this.session.closeReason ?? new DisconnectedError('Session closed');
+    if (options.signal?.aborted) throw abortReason(options.signal);
+    if (!backendNodeIds.length) return [];
+
+    const epoch = this.disposeEpoch;
+    const disposeSignal = this.disposeController.signal;
+    const step = budget(options, 'isolated world callOnNodes');
+    const retry = options.retryOnContextGone ?? true;
+    const requireConnected = options.requireConnected ?? true;
+    const skipMissingNodes = options.skipMissingNodes ?? true;
+    const callFnExtras = {
+      ...(options.silent !== undefined ? { silent: options.silent } : {}),
+      ...(options.throwOnSideEffect !== undefined
+        ? { throwOnSideEffect: options.throwOnSideEffect }
+        : {}),
+      ...(options.userGesture !== undefined ? { userGesture: options.userGesture } : {}),
+    };
+    const encodedArg = callArgument(arg);
+    const fnSource = fn.toString();
+
+    for (let attempt = 0; ; attempt++) {
+      const slot = this.activeSlot();
+      let entry: WorldEntry | undefined;
+      // True once a chunk's `Runtime.callFunctionOn` has been sent and neither failed pre-call nor
+      // confirmed zero callback invocations (e.g. all nodes in the chunk were detached).
+      let callbackInvokedOrUncertain = false;
+      try {
+        const acquired = await this.acquire(
+          slot,
+          step,
+          false,
+          epoch,
+          disposeSignal,
+          options.onEvent,
+        );
+        entry = acquired;
+        if (this.disposeEpoch !== epoch) throw this.disposedError();
+
+        const mismatch =
+          acquired.kind === 'guard' ? `__nodriver_iso_mismatch_${randomUUID()}__` : undefined;
+        const asyncSentinel = `__nodriver_iso_async_${randomUUID()}__`;
+        const guardCheck =
+          acquired.kind === 'guard'
+            ? `try{if(Object.getOwnPropertyDescriptor(globalThis,${JSON.stringify(GUARD_KEY)})?.value!==${JSON.stringify(acquired.token)})throw 0}catch{throw ${JSON.stringify(mismatch!)}};`
+            : '';
+        // Evaluate `${fnSource}` as an argument to the outer arrow IIFE in global scope so ZERO
+        // wrapper bindings (not even `__nd_a`, `__nd_fn` or `arguments`) exist in `fn`'s lexical
+        // environment, while using no `eval` so V8 `throwOnSideEffect: true` works cleanly.
+        // Attach a no-op rejection handler on native Promises before throwing `asyncSentinel` so a
+        // rejected Promise returned by a sync callback never leaks an unhandledRejection in V8.
+        const functionDeclaration = `((__nd_fn)=>function(...__nd_a){${guardCheck}const __nd_arg=__nd_a[0],__nd_out=[];for(let __nd_i=1;__nd_i<__nd_a.length;__nd_i++){const __nd_el=__nd_a[__nd_i];if(!__nd_el${requireConnected ? '||!__nd_el.isConnected' : ''}){__nd_out.push({ok:false,stale:true});continue;}const __nd_v=__nd_fn(__nd_el,__nd_arg);if(__nd_v!==null&&(typeof __nd_v==="object"||typeof __nd_v==="function")&&typeof __nd_v.then==="function"){try{Promise.prototype.then.call(__nd_v,undefined,()=>{});}catch{}throw ${JSON.stringify(asyncSentinel)};}__nd_out.push({ok:true,value:__nd_v});}return __nd_out;})(${fnSource})`;
+
+        const results: Array<NodeCallResult<T>> = [];
+        for (let offset = 0; offset < backendNodeIds.length; offset += chunkSize) {
+          if (this.disposeEpoch !== epoch) throw this.disposedError();
+          const chunk = backendNodeIds.slice(offset, offset + chunkSize);
+          const group = new ObjectGroupScope(this.session);
+          try {
+            const resolveWait: LedgerOptions = {
+              ...withSignal(step(), disposeSignal),
+              [ON_LATE_REPLY]: (reply) => {
+                const lateId = (reply as Protocol.DOM.ResolveNodeResponse | undefined)?.object
+                  ?.objectId;
+                if (lateId && !this.session.closed)
+                  void this.session
+                    .sendWith('Runtime.releaseObject', { timeout: 1000 }, { objectId: lateId })
+                    .catch(() => {});
+              },
+            };
+            const resolved = await Promise.all(
+              chunk.map(async (backendNodeId) => {
+                try {
+                  const { object } = await this.session.sendWith('DOM.resolveNode', resolveWait, {
+                    backendNodeId,
+                    executionContextId: acquired.contextId,
+                    objectGroup: group.name,
+                  });
+                  if (group.releasing && object.objectId && !this.session.closed) {
+                    void this.session
+                      .sendWith(
+                        'Runtime.releaseObject',
+                        { timeout: 1000 },
+                        { objectId: object.objectId },
+                      )
+                      .catch(() => {});
+                    return undefined;
+                  }
+                  if (!object.objectId) {
+                    if (skipMissingNodes) return undefined;
+                    throw new StaleElementError('Node no longer exists');
+                  }
+                  return object.objectId;
+                } catch (error) {
+                  if (isNodeGone(error)) {
+                    if (skipMissingNodes) return undefined;
+                    throw new StaleElementError('Node no longer exists', { cause: error });
+                  }
+                  throw error;
+                }
+              }),
+            );
+            if (this.disposeEpoch !== epoch) throw this.disposedError();
+
+            const validIndices: number[] = [];
+            const objectIds: string[] = [];
+            for (let i = 0; i < resolved.length; i++) {
+              const id = resolved[i];
+              if (id) {
+                validIndices.push(i);
+                objectIds.push(id);
+              }
+            }
+            const chunkResults: Array<NodeCallResult<T>> = chunk.map((backendNodeId) => ({
+              ok: false,
+              backendNodeId,
+              stale: true,
+            }));
+
+            if (objectIds.length) {
+              const prevInvoked: boolean = callbackInvokedOrUncertain;
+              callbackInvokedOrUncertain = true;
+              let res: Protocol.Runtime.CallFunctionOnResponse;
+              try {
+                res = await this.session.sendWith(
+                  'Runtime.callFunctionOn',
+                  withLateExceptionCleanup(step(), this.session, disposeSignal),
+                  {
+                    ...(acquired.kind === 'strict'
+                      ? { objectId: acquired.objectId }
+                      : { executionContextId: acquired.contextId }),
+                    objectGroup: group.name,
+                    functionDeclaration,
+                    arguments: [encodedArg, ...objectIds.map((objectId) => ({ objectId }))],
+                    returnByValue: true,
+                    ...callFnExtras,
+                  },
+                );
+              } catch (error) {
+                if (!prevInvoked && isFailedBeforeCall(error)) callbackInvokedOrUncertain = false;
+                throw error;
+              }
+              if (this.disposeEpoch !== epoch) {
+                releaseRemoteObjects(res, this.session);
+                throw this.disposedError();
+              }
+              if (res.exceptionDetails) {
+                const details = res.exceptionDetails;
+                const ex = details.exception;
+                const desc =
+                  ex?.description ??
+                  (ex && 'value' in ex ? `${details.text} ${String(ex.value)}` : details.text);
+                if (desc.includes(asyncSentinel)) {
+                  releaseRemoteObjects(res, this.session);
+                  throw new TypeError(
+                    'callOnNodes callback must return a synchronous value, not a Promise',
+                  );
+                }
+              }
+              try {
+                throwEvaluationException(res, this.session, mismatch);
+              } catch (error) {
+                if (!prevInvoked && isFailedBeforeCall(error)) callbackInvokedOrUncertain = false;
+                throw error;
+              }
+              const payload = remoteValue(res.result) as Array<
+                { ok: true; value: T } | { ok: false; stale: true }
+              >;
+              let chunkInvoked = false;
+              for (let j = 0; j < validIndices.length; j++) {
+                const idx = validIndices[j]!;
+                const item = payload[j];
+                if (item?.ok) {
+                  chunkInvoked = true;
+                  chunkResults[idx] = {
+                    ok: true,
+                    backendNodeId: chunk[idx]!,
+                    value: item.value,
+                  };
+                }
+              }
+              // Confirmed zero callback invocations in this chunk (every resolved node was already
+              // disconnected): preserve the prior invocation state so later pre-call context loss
+              // can still safely rebuild and retry from chunk 0.
+              if (!chunkInvoked) callbackInvokedOrUncertain = prevInvoked;
+            }
+            results.push(...chunkResults);
+          } finally {
+            // Queue group release immediately without stalling past the caller's deadline;
+            // `connection.drain()` waits for wire settlement (not release success).
+            void group.release().catch(() => {});
+          }
+        }
+        if (this.disposeEpoch !== epoch) throw this.disposedError();
+        return results;
+      } catch (error) {
+        if (this.disposeEpoch !== epoch) throw this.disposedError();
+        const siblingDetached =
+          this.scope === 'target' && !this.session.closed && error instanceof SessionEndedError;
+        if (!isWorldGone(error) && !siblingDetached) throw error;
+        if (entry) this.markEntryLost(slot, entry);
+        else if (isWorldGone(error)) slot.recovering = true;
+        if (!retry || attempt > 0 || callbackInvokedOrUncertain) throw error;
+      }
+    }
+  }
+
+  /**
    * Evaluates a string expression or function in this isolated world and returns its value.
    * Never enables `Runtime`, `Page` or `DOM`, never falls back to the main world, forwards
    * `silent`, `disableBreaks`, `throwOnSideEffect`, `userGesture` and `executionTimeout`, and
@@ -1657,6 +2151,213 @@ export function createIsolatedWorld(
   options: IsolatedWorldOptions = {},
 ): IsolatedWorld {
   return new IsolatedWorld(session, options);
+}
+
+/**
+ * Multi-frame isolated world pool on one `Session`, sharing a consistent `worldName` and caching
+ * one `IsolatedWorld` wrapper per `frameId` (with `scope: 'target'` reusing the connection-level
+ * world cache across ephemeral `TargetSession`s).
+ */
+export class IsolatedWorldPool {
+  readonly session: Session;
+  readonly worldName: string;
+  readonly scope: IsolatedWorldScope;
+  readonly verification: IsolatedWorldVerification;
+  private readonly options: IsolatedWorldPoolOptions;
+  private readonly worlds = new Map<string, IsolatedWorld>();
+  private disposed = false;
+
+  constructor(session: Session, options: IsolatedWorldPoolOptions = {}) {
+    if (!session.id) throw new TypeError('IsolatedWorldPool requires a target session');
+    if (options.worldName !== undefined && !options.worldName)
+      throw new TypeError('IsolatedWorld worldName must be a non-empty string');
+    const scope = options.scope ?? 'session';
+    const verification = options.verification ?? (scope === 'target' ? 'guard' : 'strict');
+    this.session = session;
+    this.scope = scope;
+    this.verification = verification;
+    this.worldName = options.worldName ?? randomUUID();
+    this.options = { ...options, worldName: this.worldName, scope, verification };
+  }
+
+  /** Returns (creating if needed) the `IsolatedWorld` for `frameId`. */
+  world(frameId: string): IsolatedWorld {
+    if (!frameId) throw new TypeError('frameId must be a non-empty string');
+    if (this.disposed) throw new StaleElementError('IsolatedWorldPool was disposed');
+    let world = this.worlds.get(frameId);
+    if (!world) {
+      world = new IsolatedWorld(this.session, { ...this.options, frameId });
+      this.worlds.set(frameId, world);
+    }
+    return world;
+  }
+
+  /** Evaluates in a single frame managed by this pool. */
+  evaluate<T = unknown, A = unknown>(
+    frameId: string,
+    fn: string | ((arg: A) => T | Promise<T>),
+    arg?: A,
+    options: IsolatedEvaluateOptions = {},
+  ): Promise<T> {
+    return this.world(frameId).evaluate<T, A>(fn, arg, options);
+  }
+
+  /**
+   * Fans out an isolated-world evaluation across `frameIds` under one shared timeout/signal,
+   * isolating per-frame detachments (`status: 'detached'`) and per-frame script errors
+   * (`status: 'error'`) so one disappearing subframe never aborts sibling frames.
+   */
+  async evaluateAll<T = unknown, A = unknown>(
+    frameIds: readonly string[],
+    fn: string | ((arg: A) => T | Promise<T>),
+    arg?: A,
+    options: IsolatedEvaluateOptions & { concurrency?: number } = {},
+  ): Promise<Array<FrameEvaluationOutcome<T>>> {
+    if (!Array.isArray(frameIds)) throw new TypeError('frameIds must be an array');
+    for (const frameId of frameIds) {
+      if (!frameId) throw new TypeError('frameId must be a non-empty string');
+    }
+    const concurrency = options.concurrency ?? Infinity;
+    if (concurrency !== Infinity && (!Number.isInteger(concurrency) || concurrency < 1))
+      throw new RangeError('concurrency must be a positive integer');
+    if (this.disposed) throw new StaleElementError('IsolatedWorldPool was disposed');
+    if (this.session.closed)
+      throw this.session.closeReason ?? new DisconnectedError('Session closed');
+    if (options.signal?.aborted) throw abortReason(options.signal);
+    if (!frameIds.length) return [];
+
+    const { concurrency: _unused, ...evalOptions } = options;
+    const step = budget(options, 'evaluateAcrossFrames');
+    const outcomes = new Array<FrameEvaluationOutcome<T>>(frameIds.length);
+    const fatalController = new AbortController();
+    let cursor = 0;
+    let fatalError: unknown;
+    let hasFatal = false;
+
+    const recordFatal = (error: unknown) => {
+      if (!hasFatal) {
+        hasFatal = true;
+        fatalError = error;
+        fatalController.abort(error);
+      }
+    };
+
+    const worker = async () => {
+      while (!hasFatal) {
+        const idx = cursor++;
+        if (idx >= frameIds.length) return;
+        const frameId = frameIds[idx]!;
+        let remaining: WaitOptions;
+        try {
+          if (this.disposed) throw new StaleElementError('IsolatedWorldPool was disposed');
+          if (this.session.closed)
+            throw this.session.closeReason ?? new DisconnectedError('Session closed');
+          remaining = step();
+        } catch (error) {
+          recordFatal(error);
+          return;
+        }
+        try {
+          const value = await this.world(frameId).evaluate<T, A>(fn, arg, {
+            ...evalOptions,
+            ...withSignal(remaining, fatalController.signal),
+          });
+          outcomes[idx] = { status: 'ok', frameId, value };
+        } catch (error) {
+          if (
+            hasFatal ||
+            this.disposed ||
+            this.session.closed ||
+            options.signal?.aborted ||
+            error instanceof DisconnectedError ||
+            error instanceof SessionEndedError ||
+            error instanceof TimeoutError
+          ) {
+            recordFatal(error);
+            return;
+          }
+          try {
+            step();
+          } catch (budgetError) {
+            recordFatal(budgetError);
+            return;
+          }
+          const frameDetached =
+            isFrameGone(error) || (error instanceof StaleElementError && isFrameGone(error.cause));
+          if (frameDetached) {
+            const stale =
+              error instanceof StaleElementError
+                ? error
+                : new StaleElementError('Frame is detached', { cause: error });
+            outcomes[idx] = { status: 'detached', frameId, error: stale };
+          } else {
+            outcomes[idx] = { status: 'error', frameId, error };
+          }
+        }
+      }
+    };
+
+    const workers = Math.min(concurrency, frameIds.length);
+    await Promise.all(Array.from({ length: workers }, () => worker()));
+    if (hasFatal) throw fatalError;
+    return outcomes;
+  }
+
+  /** Invalidates one frame's cached world or every frame in this pool. */
+  invalidate(frameId?: string): void {
+    if (frameId !== undefined) {
+      this.worlds.get(frameId)?.invalidate();
+      return;
+    }
+    for (const world of this.worlds.values()) world.invalidate();
+  }
+
+  /** Disposes every `IsolatedWorld` wrapper created by this pool. */
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    for (const world of this.worlds.values()) world.dispose();
+    this.worlds.clear();
+  }
+}
+
+export function createIsolatedWorldPool(
+  session: Session,
+  options: IsolatedWorldPoolOptions = {},
+): IsolatedWorldPool {
+  return new IsolatedWorldPool(session, options);
+}
+
+/**
+ * Fans out an isolated-world evaluation across multiple `frameIds` on `session` without enabling
+ * any CDP domain. Tolerates disappearing subframes (`status: 'detached'`) and per-frame script
+ * errors (`status: 'error'`), and shares connection-level target caches when `scope: 'target'`.
+ */
+export async function evaluateAcrossFrames<T = unknown, A = unknown>(
+  session: Session,
+  frameIds: readonly string[],
+  fn: string | ((arg: A) => T | Promise<T>),
+  arg?: A,
+  options: EvaluateAcrossFramesOptions = {},
+): Promise<Array<FrameEvaluationOutcome<T>>> {
+  let worldName = options.worldName;
+  if (worldName === undefined && (options.scope ?? 'session') === 'target') {
+    worldName = connectionDefaultWorldNames.get(session.connection);
+    if (!worldName) connectionDefaultWorldNames.set(session.connection, (worldName = randomUUID()));
+  }
+  const pool = new IsolatedWorldPool(session, {
+    worldName,
+    grantUniversalAccess: options.grantUniversalAccess,
+    scope: options.scope,
+    targetId: options.targetId,
+    verification: options.verification,
+    onEvent: options.onEvent,
+  });
+  try {
+    return await pool.evaluateAll<T, A>(frameIds, fn, arg, options);
+  } finally {
+    pool.dispose();
+  }
 }
 
 const sessionWorlds = new WeakMap<Session, Map<string, IsolatedWorld>>();

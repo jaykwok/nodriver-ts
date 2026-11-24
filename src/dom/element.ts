@@ -1,8 +1,16 @@
 import type { Protocol } from 'devtools-protocol';
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { access } from 'node:fs/promises';
-import type { Session, Command, Params, Result } from '../protocol/connection.ts';
+import {
+  ON_LATE_REPLY,
+  type Session,
+  type Command,
+  type Params,
+  type Result,
+  type LedgerOptions,
+} from '../protocol/connection.ts';
 import { argument, checkException, valueOf, type Frame, type World } from '../page/frames.ts';
 import { ActionabilityError, ProtocolError, StaleElementError } from '../errors.ts';
 import { bounded, budget, delay, poll, type WaitOptions } from '../utils.ts';
@@ -29,6 +37,126 @@ let objectGroupId = 0;
 const operation = new AsyncLocalStorage<() => WaitOptions>();
 /** How long human-mode scrolling wheels toward an element before Chrome finishes. */
 const WHEEL_INTO_VIEW = 3000;
+const NO_LAYOUT_OBJECT = /Node does not have a layout object/i;
+const NODE_GONE = /No node (?:with given id )?found|Could not find node/i;
+function isNoLayoutObject(error: unknown): boolean {
+  return error instanceof ProtocolError && NO_LAYOUT_OBJECT.test(error.message);
+}
+function isNoLayoutActionability(error: unknown): boolean {
+  return error instanceof ActionabilityError && isNoLayoutObject(error.cause);
+}
+function isNodeGone(error: unknown): boolean {
+  return error instanceof ProtocolError && NODE_GONE.test(error.message);
+}
+/**
+ * @internal Single-source-of-truth browser-side visibility predicate shared by `Element.isVisible()`
+ * and batched `Locator` visibility checks.
+ */
+export function isElementVisible(el: HTMLElement): boolean {
+  const style = getComputedStyle(el);
+  if (style.display === 'none' || style.visibility === 'hidden') return false;
+  if (typeof el.checkVisibility === 'function' && !el.checkVisibility({ visibilityProperty: true }))
+    return false;
+  const rect = el.getBoundingClientRect();
+  return rect.width > 0 && rect.height > 0;
+}
+/** @internal Per-element outcome from `batchEvaluateIsolated()`. */
+export type BatchProbeResult<T> = { ok: true; value: T } | { ok: false; stale: true };
+/**
+ * @internal Streams per-chunk isolated-world evaluations across `elements` of the same frame so
+ * callers that already satisfied their target index (`first()` / `nth()`) or found a visible item
+ * stop before resolving later chunks.
+ */
+export async function* batchEvaluateIsolatedChunks<T, A = undefined>(
+  elements: readonly Element[],
+  fn: (element: HTMLElement, arg: A) => T,
+  arg: A,
+  options: WaitOptions = {},
+  chunkSize = 256,
+): AsyncGenerator<{ offset: number; results: Array<BatchProbeResult<T>> }, void, void> {
+  if (!elements.length) return;
+  const first = elements[0]!;
+  const { frame, session, generation } = first;
+  for (const el of elements) {
+    el.assertValid();
+    if (el.frame !== frame || el.session !== session || el.generation !== generation)
+      throw new StaleElementError('Element belongs to an expired document/session');
+  }
+  const step = budget(options, 'batch element probe');
+  const context = await frame.context('isolated', step());
+  for (let offset = 0; offset < elements.length; offset += chunkSize) {
+    const chunk = elements.slice(offset, offset + chunkSize);
+    const group = `nodriver-batch-${++objectGroupId}`;
+    let chunkResults: Array<BatchProbeResult<T>>;
+    try {
+      const wait = step();
+      const resolved = await Promise.all(
+        chunk.map(async (el) => {
+          try {
+            const { object } = await session.sendWith('DOM.resolveNode', wait, {
+              backendNodeId: el.backendNodeId,
+              executionContextId: context,
+              objectGroup: group,
+            });
+            return object.objectId;
+          } catch (error) {
+            if (isNodeGone(error)) return undefined;
+            throw error;
+          }
+        }),
+      );
+      const validIndices: number[] = [];
+      const objectIds: string[] = [];
+      for (let i = 0; i < resolved.length; i++) {
+        const objectId = resolved[i];
+        if (objectId) {
+          validIndices.push(i);
+          objectIds.push(objectId);
+        }
+      }
+      chunkResults = Array.from({ length: chunk.length }, () => ({
+        ok: false,
+        stale: true,
+      }));
+      if (objectIds.length) {
+        first.assertValid();
+        const call = await session.sendWith('Runtime.callFunctionOn', step(), {
+          executionContextId: context,
+          objectGroup: group,
+          functionDeclaration: `function(arg, ...els){const fn=(${fn.toString()});return els.map(el=>!el||!el.isConnected?{ok:false,stale:true}:{ok:true,value:fn(el,arg)})}`,
+          arguments: [argument(arg), ...objectIds.map((objectId) => ({ objectId }))],
+          returnByValue: true,
+        });
+        checkException(call);
+        first.assertValid();
+        const values = valueOf(call.result) as Array<BatchProbeResult<T>>;
+        for (let j = 0; j < validIndices.length; j++)
+          chunkResults[validIndices[j]!] = values[j] ?? { ok: false, stale: true };
+      }
+    } finally {
+      void session
+        .sendWith('Runtime.releaseObjectGroup', { timeout: 1000 }, { objectGroup: group })
+        .catch(() => {});
+    }
+    yield { offset, results: chunkResults };
+  }
+}
+/**
+ * @internal Evaluates `fn(element, arg)` across elements of the same frame in one isolated-world
+ * call per chunk, sharing one objectGroup and one parallel `DOM.resolveNode` wave. Detached or
+ * vanished nodes are reported per index rather than discarding valid results in the same batch.
+ */
+export async function batchEvaluateIsolated<T, A = undefined>(
+  elements: readonly Element[],
+  fn: (element: HTMLElement, arg: A) => T,
+  arg: A,
+  options: WaitOptions = {},
+): Promise<Array<BatchProbeResult<T>>> {
+  const results: Array<BatchProbeResult<T>> = [];
+  for await (const chunk of batchEvaluateIsolatedChunks(elements, fn, arg, options))
+    results.push(...chunk.results);
+  return results;
+}
 /** The earlier deadline and both signals: a nested budget can only shorten the outer one. */
 function narrower(outer: WaitOptions, inner: WaitOptions): WaitOptions {
   const timeouts = [outer.timeout, inner.timeout].filter((t): t is number => t !== undefined);
@@ -74,6 +202,53 @@ export function project(point: Point, width: number, height: number, q: number[]
     throw new ActionabilityError('Degenerate frame transform');
   return result;
 }
+/** Inverse of `project()`: maps parent viewport coordinates back into an iframe's viewport. */
+function unproject(point: Point, width: number, height: number, q: number[]): Point | undefined {
+  if (q.length !== 8 || width <= 0 || height <= 0) return undefined;
+  const [x0, y0, x1, y1, x2, y2, x3, y3] = q as [
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+    number,
+  ];
+  const dx1 = x1 - x2,
+    dx2 = x3 - x2,
+    dx3 = x0 - x1 + x2 - x3,
+    dy1 = y1 - y2,
+    dy2 = y3 - y2,
+    dy3 = y0 - y1 + y2 - y3;
+  const det = dx1 * dy2 - dx2 * dy1;
+  if (!Number.isFinite(det) || Math.abs(det) < 1e-12) return undefined;
+  const g = Math.abs(dx3) + Math.abs(dy3) < 1e-8 ? 0 : (dx3 * dy2 - dx2 * dy3) / det;
+  const h = Math.abs(dx3) + Math.abs(dy3) < 1e-8 ? 0 : (dx1 * dy3 - dx3 * dy1) / det;
+  const a = x1 - x0 + g * x1,
+    b = x3 - x0 + h * x3,
+    d = y1 - y0 + g * y1,
+    e = y3 - y0 + h * y3;
+  const m00 = a - g * point.x,
+    m01 = b - h * point.x,
+    m10 = d - g * point.y,
+    m11 = e - h * point.y;
+  const invDet = m00 * m11 - m01 * m10;
+  if (!Number.isFinite(invDet) || Math.abs(invDet) < 1e-12) return undefined;
+  const rx = point.x - x0,
+    ry = point.y - y0;
+  const u = (rx * m11 - m01 * ry) / invDet,
+    v = (m00 * ry - rx * m10) / invDet;
+  if (!Number.isFinite(u) || !Number.isFinite(v)) return undefined;
+  return { x: u * width, y: v * height };
+}
+interface AncestorLayer {
+  root: Frame;
+  parent: Frame;
+  backendNodeId: Protocol.DOM.BackendNodeId;
+  ownerQuad: number[];
+  size: { width: number; height: number };
+}
 export class Element {
   readonly frame: Frame;
   readonly backendNodeId: Protocol.DOM.BackendNodeId;
@@ -110,19 +285,6 @@ export class Element {
     // Inside an input action, a read's own budget still applies, on top of the action's.
     const sending = action.send(session, method, ...params);
     return own ? bounded(sending, own, 'Element read') : sending;
-  }
-  /** Undoes a probe, best effort; inside an action, cleanup still awaits the reply. */
-  private async undo<M extends Command>(
-    session: Session,
-    method: M,
-    ...params: Params<M>
-  ): Promise<void> {
-    const action = this.frame.tab.inputBehavior.current;
-    await (
-      action
-        ? action.sendCleanup(session, method, ...params)
-        : session.sendWith(method, { timeout: 1000 }, ...params)
-    ).catch(() => {});
   }
   private async releaseGroup(objectGroup: string): Promise<void> {
     const action = this.frame.tab.inputBehavior.current;
@@ -179,11 +341,18 @@ export class Element {
     const context = await this.frame.context(world, this.step());
     const group = `nodriver-element-${++objectGroupId}`;
     try {
-      const { object } = await this.send(this.session, 'DOM.resolveNode', {
-        backendNodeId: this.backendNodeId,
-        executionContextId: context,
-        objectGroup: group,
-      });
+      let object: Protocol.Runtime.RemoteObject;
+      try {
+        ({ object } = await this.send(this.session, 'DOM.resolveNode', {
+          backendNodeId: this.backendNodeId,
+          executionContextId: context,
+          objectGroup: group,
+        }));
+      } catch (error) {
+        if (isNodeGone(error))
+          throw new StaleElementError('Node no longer exists', { cause: error });
+        throw error;
+      }
       if (!object.objectId) throw new StaleElementError('Node no longer exists');
       this.assertValid();
       const connected = await this.send(this.session, 'Runtime.callFunctionOn', {
@@ -205,14 +374,33 @@ export class Element {
     options: ElementEvaluateOptions = {},
   ): Promise<T> {
     return this.withObject(async (objectId, objectGroup) => {
+      const detachedSentinel = `__nodriver_detached_${randomUUID()}__`;
       const result = await this.send(this.session, 'Runtime.callFunctionOn', {
         objectId,
         objectGroup,
-        functionDeclaration: `function(arg){if(!this.isConnected)throw new Error('Node is detached');return (${fn.toString()})(this,arg)}`,
+        functionDeclaration: `function(arg){if(!this.isConnected)throw ${JSON.stringify(detachedSentinel)};return (${fn.toString()})(this,arg)}`,
         arguments: [argument(arg)],
         returnByValue: true,
         awaitPromise: true,
       });
+      if (result.exceptionDetails) {
+        const desc =
+          result.exceptionDetails.exception?.description ??
+          (result.exceptionDetails.exception && 'value' in result.exceptionDetails.exception
+            ? String(result.exceptionDetails.exception.value)
+            : result.exceptionDetails.text);
+        if (desc.includes(detachedSentinel)) {
+          if (result.exceptionDetails.exception?.objectId)
+            void this.session
+              .sendWith(
+                'Runtime.releaseObject',
+                { timeout: 1000 },
+                { objectId: result.exceptionDetails.exception.objectId },
+              )
+              .catch(() => {});
+          throw new StaleElementError('Element was removed from its document');
+        }
+      }
       checkException(result);
       this.assertValid();
       return valueOf(result.result) as T;
@@ -241,6 +429,51 @@ export class Element {
     return this.read('attribute', options, () =>
       this.evaluateIsolated((el, key) => el.getAttribute(key), name),
     );
+  }
+  /**
+   * Read-only visibility probe aligned with actionability checks (computed `display`/`visibility`,
+   * composed-tree `checkVisibility({ visibilityProperty: true })`, and non-empty bounding box).
+   */
+  async isVisible(options: WaitOptions = {}): Promise<boolean> {
+    return this.read('isVisible', options, () => this.evaluateIsolated(isElementVisible));
+  }
+  /**
+   * Read-only enabled probe aligned with `click()` and `setChecked()` (`:disabled`, including
+   * ancestor `<fieldset disabled>`, and `aria-disabled="true"`).
+   */
+  async isEnabled(options: WaitOptions = {}): Promise<boolean> {
+    return this.read('isEnabled', options, () =>
+      this.evaluateIsolated(
+        (el) => !el.matches(':disabled') && el.getAttribute('aria-disabled') !== 'true',
+      ),
+    );
+  }
+  /**
+   * Read-only checked probe for native checkboxes/radios and ARIA checkable elements
+   * (`role="checkbox"|"radio"|"switch"|"menuitemcheckbox"|"menuitemradio"` or explicit
+   * `aria-checked`). Throws `ActionabilityError` for non-checkable elements.
+   */
+  async isChecked(options: WaitOptions = {}): Promise<boolean> {
+    return this.read('isChecked', options, async () => {
+      const result = await this.evaluateIsolated((el) => {
+        if (el instanceof HTMLInputElement && (el.type === 'checkbox' || el.type === 'radio'))
+          return { ok: true as const, checked: el.checked };
+        const role = el.getAttribute('role')?.trim().toLowerCase();
+        const aria = el.getAttribute('aria-checked');
+        if (
+          aria !== null ||
+          (role !== undefined &&
+            ['checkbox', 'radio', 'switch', 'menuitemcheckbox', 'menuitemradio'].includes(role))
+        )
+          return { ok: true as const, checked: aria === 'true' };
+        return { ok: false as const };
+      });
+      if (!result.ok)
+        throw new ActionabilityError(
+          'isChecked() requires a checkbox, radio, or element with aria-checked',
+        );
+      return result.checked;
+    });
   }
   async describe(): Promise<Protocol.DOM.Node> {
     this.assertValid();
@@ -359,9 +592,7 @@ export class Element {
     } = {},
   ): Promise<Buffer> {
     this.assertValid();
-    await this.send(this.session, 'DOM.scrollIntoViewIfNeeded', {
-      backendNodeId: this.backendNodeId,
-    });
+    await this.scrollNodeIntoView();
     const point = await this.localPoint();
     if (!point) throw new ActionabilityError('Element is not visible');
     const rect = await this.evaluateIsolated((el) => {
@@ -398,7 +629,7 @@ export class Element {
   private async localPoint(
     u = 0.5,
     v = 0.5,
-  ): Promise<(Point & { targetWidth: number }) | undefined> {
+  ): Promise<(Point & { targetWidth: number; layers: AncestorLayer[] }) | undefined> {
     this.assertValid();
     const state = await this.evaluateIsolated(
       (el, { u, v }) => {
@@ -439,9 +670,15 @@ export class Element {
       { u, v },
     );
     if (!state.valid) return undefined;
-    const { quads } = await this.send(this.session, 'DOM.getContentQuads', {
-      backendNodeId: this.backendNodeId,
-    });
+    let quads: Protocol.DOM.Quad[];
+    try {
+      ({ quads } = await this.send(this.session, 'DOM.getContentQuads', {
+        backendNodeId: this.backendNodeId,
+      }));
+    } catch (error) {
+      if (isNoLayoutObject(error)) return undefined;
+      throw error;
+    }
     const quad = quads[0];
     if (!quad) return undefined;
     // CDP returns coordinates in the viewport of the session root, including in-process frame offsets.
@@ -451,6 +688,7 @@ export class Element {
     let corner = project({ x: 0, y: 0 }, 1, 1, quad);
     let session = this.session;
     const seen = new Set<string>();
+    const layers: AncestorLayer[] = [];
     while (session !== this.frame.tab.session) {
       const root = [...this.frame.manager.frames.values()].find(
         (f) => !f.detached && f.session === session && f.parent && f.parent.session !== session,
@@ -476,10 +714,12 @@ export class Element {
       corner = project(corner, size.width, size.height, ownerQuad);
       const hit = await this.hitTest(parent.session, point);
       if (hit?.backendNodeId !== backendNodeId && hit?.frameId !== root.id) return undefined;
+      layers.push({ root, parent, backendNodeId, ownerQuad, size });
       session = parent.session;
     }
     return {
       ...point,
+      layers,
       targetWidth: Math.max(
         1,
         Math.min(
@@ -488,6 +728,40 @@ export class Element {
         ),
       ),
     };
+  }
+  /**
+   * Re-verifies an exact root-viewport press coordinate (such as a `pointerGrid`-snapped
+   * `checkpoint`) across every ancestor frame and inside the target OOPIF without moving the mouse.
+   */
+  private async verifyOopifPoint(point: Point, layers: AncestorLayer[]): Promise<boolean> {
+    if (!layers.length) return false;
+    let current: Point = point;
+    for (let i = layers.length - 1; i >= 0; i--) {
+      const layer = layers[i]!;
+      const hit = await this.hitTest(layer.parent.session, current);
+      if (hit?.backendNodeId !== layer.backendNodeId && hit?.frameId !== layer.root.id)
+        return false;
+      const mapped = unproject(current, layer.size.width, layer.size.height, layer.ownerQuad);
+      if (
+        !mapped ||
+        mapped.x < 0 ||
+        mapped.y < 0 ||
+        mapped.x >= layer.size.width ||
+        mapped.y >= layer.size.height
+      )
+        return false;
+      current = mapped;
+    }
+    const rootFrame = layers[0]!.root;
+    if (this.frame === rootFrame) {
+      return this.evaluateIsolated((el, { x, y }) => {
+        const hit = (el.getRootNode() as Document | ShadowRoot).elementFromPoint(x, y);
+        for (let n: Node | null = hit; n; n = n.parentNode ?? (n as ShadowRoot).host)
+          if (n === el) return true;
+        return false;
+      }, current);
+    }
+    return this.unobscuredInSession(this.session, current);
   }
   /**
    * The topmost node at a viewport point of the session's root frame, possibly inside a shadow
@@ -510,47 +784,125 @@ export class Element {
       throw error;
     }
   }
-  private async receivesPointer(point: Point, options: WaitOptions): Promise<boolean> {
-    return this.withIsolatedObject(async (objectId, group) => {
-      // The probe state stays in the isolated world, held by a handle rather than on the node.
-      const { result: state } = await this.send(this.session, 'Runtime.callFunctionOn', {
-        objectId,
-        functionDeclaration:
-          'function(){const state={hit:false,listener:()=>{state.hit=true}};this.addEventListener("mousemove",state.listener,true);return state}',
-        objectGroup: group,
-      });
-      if (!state.objectId) throw new StaleElementError('Element pointer probe failed');
+  private async receivesPointer(
+    point: Point & { targetWidth?: number },
+    options: WaitOptions,
+  ): Promise<boolean> {
+    return this.withIsolatedObject(async (objectId) => {
+      // Arm the probe right before the final move to the snapped target so intermediate trajectory
+      // samples crossing the element cannot report a hit when the resting press point misses it.
+      // State gets its own explicit `stateGroup` (omitting `objectGroup` in CDP inherits the
+      // receiver's group!) so `withIsolatedObject` releasing `group` cannot invalidate `state`
+      // before late-reply cleanup calls `state.remove()`.
+      const action = this.frame.tab.inputBehavior.current;
+      const stateGroup = `nodriver-pointer-probe-${++objectGroupId}`;
+      let stateId: string | undefined;
+      let disposed = false;
+      const cleaned = new Set<string>();
+      const cleanupState = (id: string): Promise<void> => {
+        if (cleaned.has(id)) return Promise.resolve();
+        cleaned.add(id);
+        const session = this.session;
+        const remove = action
+          ? action.sendCleanup(session, 'Runtime.callFunctionOn', {
+              objectId: id,
+              functionDeclaration: 'function(){this.remove()}',
+              returnByValue: true,
+            })
+          : session.sendWith(
+              'Runtime.callFunctionOn',
+              { timeout: 1000 },
+              {
+                objectId: id,
+                functionDeclaration: 'function(){this.remove()}',
+                returnByValue: true,
+              },
+            );
+        // Queued synchronously right after `remove` so CDP executes them in FIFO order and both
+        // `InputAction.cleanup` and `Connection.drain()` wait for listener removal + group release.
+        const release = action
+          ? action.releaseObjects(session, { objectGroup: stateGroup })
+          : session.sendWith(
+              'Runtime.releaseObjectGroup',
+              { timeout: 1000 },
+              { objectGroup: stateGroup },
+            );
+        return Promise.all([remove.catch(() => {}), release.catch(() => {})]).then(() => {});
+      };
+      const arm = async () => {
+        if (stateId) {
+          await this.send(this.session, 'Runtime.callFunctionOn', {
+            objectId: stateId,
+            functionDeclaration: 'function(){this.hit=false}',
+            returnByValue: true,
+          });
+          return;
+        }
+        const params: Protocol.Runtime.CallFunctionOnRequest = {
+          objectId,
+          objectGroup: stateGroup,
+          functionDeclaration:
+            'function(){const el=this;const doc=el.ownerDocument;const inside=n=>{for(;n;n=n.parentNode??n.host)if(n===el)return true;return false};const state={hit:false,onElMove:()=>{state.hit=true},onDocMove:e=>{state.hit=inside(e.target)},onLeave:()=>{state.hit=false},remove:()=>{el.removeEventListener("mousemove",state.onElMove,true);el.removeEventListener("mouseleave",state.onLeave,false);if(doc&&doc.removeEventListener)doc.removeEventListener("mousemove",state.onDocMove,true)}};el.addEventListener("mousemove",state.onElMove,true);el.addEventListener("mouseleave",state.onLeave,false);if(doc&&doc.addEventListener)doc.addEventListener("mousemove",state.onDocMove,true);return state}',
+        };
+        const onLateReply = (reply: Protocol.Runtime.CallFunctionOnResponse) => {
+          const id = reply?.result?.objectId;
+          if (id) void cleanupState(id);
+        };
+        const own = operation.getStore()?.();
+        const raw = action
+          ? action.sendObserved(this.session, 'Runtime.callFunctionOn', { onLateReply }, params)
+          : this.session.sendWith(
+              'Runtime.callFunctionOn',
+              { ...(own ?? {}), [ON_LATE_REPLY]: onLateReply } as LedgerOptions,
+              params,
+            );
+        void raw.then(
+          (reply) => {
+            if (disposed && reply.result.objectId) void cleanupState(reply.result.objectId);
+          },
+          () => {},
+        );
+        const { result: state } = await (action && own ? bounded(raw, own, 'Element read') : raw);
+        if (!state.objectId) throw new StaleElementError('Element pointer probe failed');
+        stateId = state.objectId;
+      };
       try {
         // OOPIF compositor hit-test data may lag layout after a transform or scroll.
-        // Wait for real hover delivery before dispatching the one irreversible press. Only a
-        // pointer already resting there moves aside first; a real trajectory delivers hover.
-        await this.frame.tab.mouse.reach(point.x, point.y, this.step());
+        // Wait for real hover delivery at the final resting point before dispatching the press.
+        await this.frame.tab.mouse.reach(point.x, point.y, {
+          ...this.step(),
+          targetWidth: point.targetWidth,
+          beforeFinalMove: arm,
+        });
+        if (!stateId) return false;
         const end = performance.now() + 100;
         do {
           const r = await this.send(this.session, 'Runtime.callFunctionOn', {
-            objectId: state.objectId,
+            objectId: stateId,
             functionDeclaration: 'function(){return this.hit}',
             returnByValue: true,
           });
           if (r.result.value === true) return true;
-          await delay(10, options.signal);
+          await delay(10, this.step().signal ?? options.signal);
         } while (performance.now() < end);
         return false;
       } finally {
-        await this.undo(this.session, 'Runtime.callFunctionOn', {
-          objectId,
-          functionDeclaration:
-            'function(state){this.removeEventListener("mousemove",state.listener,true)}',
-          arguments: [{ objectId: state.objectId }],
-        });
+        disposed = true;
+        if (stateId) await cleanupState(stateId);
       }
     });
   }
   /** Root-viewport hit test: true when the point reaches this element (or, in OOPIFs, receives hover). */
-  private async unobscured(point: Point, options: WaitOptions): Promise<boolean> {
+  private async unobscured(
+    point: Point & { targetWidth?: number },
+    options: WaitOptions,
+  ): Promise<boolean> {
     const tab = this.frame.tab;
     if (this.session !== tab.session) return this.receivesPointer(point, options);
-    const hit = await this.hitTest(tab.session, point);
+    return this.unobscuredInSession(tab.session, point);
+  }
+  private async unobscuredInSession(session: Session, point: Point): Promise<boolean> {
+    const hit = await this.hitTest(session, point);
     if (!hit) return false;
     if (hit.frameId === this.frame.id && hit.backendNodeId === this.backendNodeId) return true;
     let node = hit.backendNodeId;
@@ -560,18 +912,18 @@ export class Element {
       let frame = this.frame.manager.frames.get(hit.frameId);
       while (frame?.parent && frame.parent !== this.frame) frame = frame.parent;
       if (!frame || frame.parent !== this.frame) return false;
-      ({ backendNodeId: node } = await this.send(this.session, 'DOM.getFrameOwner', {
+      ({ backendNodeId: node } = await this.send(session, 'DOM.getFrameOwner', {
         frameId: frame.id,
       }));
     }
     return this.withIsolatedObject(async (objectId, group) => {
-      const { object } = await this.send(this.session, 'DOM.resolveNode', {
+      const { object } = await this.send(session, 'DOM.resolveNode', {
         backendNodeId: node,
         executionContextId: await this.frame.context('isolated', this.step()),
         objectGroup: group,
       });
       if (!object.objectId) return false;
-      const result = await this.send(this.session, 'Runtime.callFunctionOn', {
+      const result = await this.send(session, 'Runtime.callFunctionOn', {
         objectId,
         // Composed ancestors: the hit can be inside the element's shadow tree.
         functionDeclaration:
@@ -582,6 +934,17 @@ export class Element {
       checkException(result);
       return result.result.value === true;
     });
+  }
+  private async scrollNodeIntoView(): Promise<void> {
+    try {
+      await this.send(this.session, 'DOM.scrollIntoViewIfNeeded', {
+        backendNodeId: this.backendNodeId,
+      });
+    } catch (error) {
+      if (isNoLayoutObject(error))
+        throw new ActionabilityError('Element does not have a layout object', { cause: error });
+      throw error;
+    }
   }
   /**
    * Scrolls like a user (wheel at the pointer) in human mode when the element is in the main
@@ -595,9 +958,7 @@ export class Element {
       if (scroll === 'wheel' || (scroll === 'auto' && mode === 'human'))
         if (this.frame === this.frame.tab.mainFrame) await this.wheelIntoView();
       // A no-op when already visible; also covers clipped scroll containers and nested frames.
-      await this.send(this.session, 'DOM.scrollIntoViewIfNeeded', {
-        backendNodeId: this.backendNodeId,
-      });
+      await this.scrollNodeIntoView();
     });
   }
   private async wheelIntoView(): Promise<void> {
@@ -606,13 +967,22 @@ export class Element {
     const box = () =>
       this.evaluateIsolated((el) => {
         const r = el.getBoundingClientRect();
-        return { x: r.left + r.width / 2, y: r.top + r.height / 2, w: innerWidth, h: innerHeight };
+        return {
+          x: r.left + r.width / 2,
+          y: r.top + r.height / 2,
+          w: innerWidth,
+          h: innerHeight,
+          hasBox: r.width > 0 || r.height > 0 || el.getClientRects().length > 0,
+        };
       });
     const offset = (center: number, extent: number) =>
       center >= extent * 0.08 && center <= extent * 0.92
         ? 0
         : Math.max(-2 * extent, Math.min(2 * extent, center - extent * (0.3 + 0.3 * random())));
     let current = await box();
+    // Skip wheeling when the element has no layout box (e.g. display: none); Chrome's scroll step
+    // then surfaces the normalized ActionabilityError cleanly.
+    if (current.hasBox === false) return;
     // Distant targets would spend the input budget on wheel packets; Chrome scrolls the rest.
     const until = performance.now() + WHEEL_INTO_VIEW;
     for (let attempt = 0; attempt < 12 && performance.now() < until; attempt++) {
@@ -625,6 +995,7 @@ export class Element {
       const { timeout = Infinity, signal } = this.step();
       await delay(Math.min(40 + 60 * random(), timeout), signal);
       const next = await box();
+      if (next.hasBox === false) return;
       // The pointer is over a container that cannot scroll toward the target.
       if (Math.abs(next.x - current.x) < 1 && Math.abs(next.y - current.y) < 1) return;
       current = next;
@@ -642,7 +1013,6 @@ export class Element {
   ): Promise<void> {
     await this.input('click', options, async () => {
       this.assertValid();
-      await this.scrollIntoView(options);
       const behavior = this.frame.tab.inputBehavior;
       const inset = behavior.policy.targetInset;
       const u =
@@ -653,28 +1023,48 @@ export class Element {
         behavior.policy.mode === 'human'
           ? targetCoordinate(() => behavior.random(), inset, 0.45)
           : 0.5;
+      const oopif = this.session !== this.frame.tab.session;
+      const pollBudget =
+        options.timeout === undefined ? narrower(this.step(), { timeout: 10_000 }) : this.step();
+      let scrolled = false;
+      let confirmedPointer: Point | undefined;
       const point = await poll(
-        async () => {
+        async (step) => {
+          if (!scrolled) {
+            try {
+              await this.scrollIntoView(step);
+            } catch (error) {
+              if (isNoLayoutActionability(error)) return undefined;
+              throw error;
+            }
+            scrolled = true;
+          }
           const first = await this.localPoint(u, v);
           if (!first) return undefined;
-          await delay(32, options.signal);
+          await delay(32, step.signal);
           const second = await this.localPoint(u, v);
           if (!second || Math.hypot(first.x - second.x, first.y - second.y) > 0.5) return undefined;
           // Root-session hit testing catches overlays covering iframe elements as well as local nodes.
-          return (await this.unobscured(second, options)) ? second : undefined;
+          if (!(await this.unobscured(second, step))) return undefined;
+          if (oopif) {
+            const pos = this.frame.tab.mouse.position;
+            confirmedPointer = { x: pos.x, y: pos.y };
+          }
+          return second;
         },
-        options,
+        pollBudget,
         'visible, enabled, stable and unobscured element',
       );
       this.assertValid();
       await this.frame.tab.mouse.click(point.x, point.y, {
         ...options,
         targetWidth: point.targetWidth,
+        skipMoveIfAtTarget: oopif && confirmedPointer !== undefined,
         // OOPIF hit confirmation itself moves the pointer; never run it with a held button. A
         // failed check, such as a page removing the element on mousedown, only skips the slip.
         beforeSlip: (x, y) =>
           this.session === this.frame.tab.session
-            ? this.unobscured({ x, y }, options).catch(() => false)
+            ? this.unobscured({ x, y }, this.step()).catch(() => false)
             : Promise.resolve(false),
         guard: async (checkpoint) => {
           this.assertValid();
@@ -684,8 +1074,20 @@ export class Element {
             throw new ActionabilityError(
               'Target moved or became obstructed during pointer movement; click not dispatched',
             );
+          // For OOPIFs, poll() already delivered the pointer to `confirmedPointer` and verified
+          // real hover delivery inside the same input lock. Always re-verify the actual press
+          // coordinate across ancestor frames and inside the OOPIF (even without `pointerGrid`,
+          // transformed/clipped elements can project a quad point away from the bbox hit point),
+          // without moving the mouse again.
+          const alreadyConfirmed =
+            oopif &&
+            confirmedPointer !== undefined &&
+            Math.hypot(checkpoint.x - confirmedPointer.x, checkpoint.y - confirmedPointer.y) < 0.01;
+          const pressPointOk = alreadyConfirmed
+            ? await this.verifyOopifPoint({ x: checkpoint.x, y: checkpoint.y }, current.layers)
+            : await this.unobscured({ x: checkpoint.x, y: checkpoint.y }, this.step());
           // The press goes where the pointer is, which a pointer grid can set apart from the point.
-          if (!(await this.unobscured({ x: checkpoint.x, y: checkpoint.y }, options)))
+          if (!pressPointOk)
             throw new ActionabilityError(
               this.session === this.frame.tab.session
                 ? 'Pointer is obstructed; click not dispatched'
@@ -700,7 +1102,6 @@ export class Element {
   async hover(options: InputOptions = {}): Promise<Point> {
     return this.input('hover', options, async () => {
       this.assertValid();
-      await this.scrollIntoView(options);
       const behavior = this.frame.tab.inputBehavior;
       const inset = behavior.policy.targetInset;
       const pick = (mean: number) =>
@@ -709,16 +1110,30 @@ export class Element {
           : 0.5;
       const u = pick(0.5),
         v = pick(0.45);
+      const oopif = this.session !== this.frame.tab.session;
+      const pollBudget =
+        options.timeout === undefined ? narrower(this.step(), { timeout: 10_000 }) : this.step();
+      let scrolled = false;
       const point = await poll(
-        async () => {
+        async (step) => {
+          if (!scrolled) {
+            try {
+              await this.scrollIntoView(step);
+            } catch (error) {
+              if (isNoLayoutActionability(error)) return undefined;
+              throw error;
+            }
+            scrolled = true;
+          }
           const local = await this.localPoint(u, v);
-          return local && (await this.unobscured(local, options)) ? local : undefined;
+          return local && (await this.unobscured(local, step)) ? local : undefined;
         },
-        options,
+        pollBudget,
         'visible and unobscured element',
       );
       await this.frame.tab.mouse.move(point.x, point.y, {
         ...options,
+        skipMoveIfAtTarget: oopif,
         guard: () => this.assertValid(),
       });
       return { x: point.x, y: point.y };
@@ -728,8 +1143,23 @@ export class Element {
   async clickablePoint(options: WaitOptions = {}): Promise<Point> {
     const step = budget({ ...options, timeout: options.timeout ?? 10_000 }, 'clickablePoint');
     return operation.run(step, async () => {
-      await this.scrollIntoView(step());
-      const point = await poll(() => this.localPoint(), step(), 'visible element');
+      let scrolled = false;
+      const point = await poll(
+        async (remaining) => {
+          if (!scrolled) {
+            try {
+              await this.scrollIntoView(remaining);
+            } catch (error) {
+              if (isNoLayoutActionability(error)) return undefined;
+              throw error;
+            }
+            scrolled = true;
+          }
+          return this.localPoint();
+        },
+        step(),
+        'visible element',
+      );
       return { x: point.x, y: point.y };
     });
   }

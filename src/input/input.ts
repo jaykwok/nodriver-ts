@@ -219,10 +219,19 @@ export class Mouse {
    * replies counts toward it. With `lateMoves: 'skip'`, a sample is dropped once the next one is
    * due as well; the last sample, and samples with a button held, are always sent.
    */
-  private async path(x: number, y: number, action: InputAction, width?: number) {
-    if (this.behavior.policy.mode === 'instant') return this.dispatch(x, y, action);
+  private async path(
+    x: number,
+    y: number,
+    action: InputAction,
+    width?: number,
+    beforeFinalMove?: () => Promise<void>,
+  ) {
+    if (this.behavior.policy.mode === 'instant') {
+      if (beforeFinalMove) await action.waitFor(beforeFinalMove());
+      return this.dispatch(x, y, action);
+    }
     // Rejects invalid coordinates before any input.
-    this.snap(x, y);
+    const target = this.snap(x, y);
     await this.place(action);
     const { policy } = this.behavior;
     const points = motionPlan(this.position, { x, y }, () => this.behavior.random(), {
@@ -234,9 +243,26 @@ export class Mouse {
         !this.buttons && policy.moveSteps === undefined && policy.moveDuration === undefined,
     });
     const skip = policy.lateMoves === 'skip' && !this.buttons;
+    let finalIndex = points.length - 1;
+    if (beforeFinalMove && policy.pointerGrid) {
+      while (finalIndex > 0) {
+        const previous = this.snap(points[finalIndex - 1]!.x, points[finalIndex - 1]!.y);
+        if (Math.hypot(previous.x - target.x, previous.y - target.y) >= 0.01) break;
+        finalIndex--;
+      }
+    }
     action.startPlan();
     for (const [i, point] of points.entries()) {
       await action.pace(point.delay);
+      if (beforeFinalMove && i === finalIndex) {
+        if (this.at(target)) {
+          const grid = policy.pointerGrid;
+          await this.dispatch(x + (grid ? 1 / grid.scale : 0.25), y, action);
+        }
+        await action.waitFor(beforeFinalMove());
+        await this.dispatch(point.x, point.y, action);
+        continue;
+      }
       const next = points[i + 1];
       if (skip && next && action.overdue(next.delay)) action.report.skippedMoves++;
       else await this.sample(point.x, point.y, action);
@@ -312,20 +338,43 @@ export class Mouse {
       { session: this.session },
     );
   }
-  move(x: number, y: number, options: InputOptions = {}): Promise<InputReport> {
-    return this.action('move', options, (a) => this.path(x, y, a));
+  move(
+    x: number,
+    y: number,
+    options: InputOptions & {
+      /** @internal Skip pointer movement when the pointer is already placed at the snapped target. */
+      skipMoveIfAtTarget?: boolean;
+    } = {},
+  ): Promise<InputReport> {
+    return this.action('move', options, async (a) => {
+      const target = this.snap(x, y);
+      if (options.skipMoveIfAtTarget && this.pointer.placed && this.at(target)) {
+        await a.check({ type: 'step' });
+        return;
+      }
+      await this.path(x, y, a);
+    });
   }
   /**
    * @internal Moves the pointer to (x, y) so that the page sees it arrive there: a pointer already
    * resting at that point first moves aside by the smallest step it can make.
    */
-  reach(x: number, y: number, options: InputOptions = {}): Promise<InputReport> {
+  reach(
+    x: number,
+    y: number,
+    options: InputOptions & {
+      /** @internal Root viewport target width for motion planning. */
+      targetWidth?: number;
+      /** @internal Awaited immediately before sending the final move to the snapped target. */
+      beforeFinalMove?: () => Promise<void>;
+    } = {},
+  ): Promise<InputReport> {
     return this.action('move', options, async (action) => {
       if (this.at(this.snap(x, y))) {
         const grid = this.behavior.policy.pointerGrid;
         await this.path(x + (grid ? 1 / grid.scale : 0.25), y, action);
       }
-      await this.path(x, y, action);
+      await this.path(x, y, action, options.targetWidth, options.beforeFinalMove);
     });
   }
   down(
@@ -348,13 +397,17 @@ export class Mouse {
       clickCount?: number;
       /** @internal Root viewport target width for motion planning. */
       targetWidth?: number;
+      /** @internal Skip pointer movement when the pointer is already placed at the snapped target. */
+      skipMoveIfAtTarget?: boolean;
       /** @internal Confirm that a small held-pointer move remains on the target. */
       beforeSlip?: (x: number, y: number) => Promise<boolean>;
     } = {},
   ): Promise<InputReport> {
     return this.action('click', options, async (action) => {
       if (this.hold) throw new Error('Cannot click while a mouse button is held');
-      await this.path(x, y, action, options.targetWidth);
+      const target = this.snap(x, y);
+      if (!options.skipMoveIfAtTarget || !this.pointer.placed || !this.at(target))
+        await this.path(x, y, action, options.targetWidth);
       const release = await this.press(action, options.button ?? 'left', options.clickCount ?? 1);
       let failed = false;
       try {

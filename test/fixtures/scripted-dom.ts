@@ -29,16 +29,21 @@ export interface ScriptedDom {
   /** The element's center and the viewport size, as scrolling into view reads them. */
   box: { x: number; y: number; w: number; h: number };
 }
-const detached = {
-  result: { type: 'undefined' },
-  exceptionDetails: {
-    exceptionId: 1,
-    text: 'Uncaught',
-    lineNumber: 0,
-    columnNumber: 0,
-    exception: { type: 'object', description: 'Error: Node is detached' },
-  },
-} as Protocol.Runtime.CallFunctionOnResponse;
+function detachedResponse(code: string): Protocol.Runtime.CallFunctionOnResponse {
+  const sentinel = /throw\s+"(__nodriver_detached_[^"]+__)"/.exec(code)?.[1];
+  return {
+    result: { type: 'undefined' },
+    exceptionDetails: {
+      exceptionId: 1,
+      text: 'Uncaught',
+      lineNumber: 0,
+      columnNumber: 0,
+      exception: sentinel
+        ? { type: 'string', value: sentinel, description: sentinel }
+        : { type: 'object', description: 'Error: Node is detached' },
+    },
+  };
+}
 
 /** Answers the commands of queries, element reads and instant-mode input for one element. */
 export function scriptDom(chrome: ScriptedChrome, frameId: () => string): ScriptedDom {
@@ -133,10 +138,16 @@ export function scriptDom(chrome: ScriptedChrome, frameId: () => string): Script
     if (code.includes('valid:')) {
       if (dom.replaceBeforeInput) {
         dom.replaceBeforeInput = false;
-        return detached;
+        return detachedResponse(code);
       }
       return value({ valid: true, u: 0.5, v: 0.5 });
     }
+    if (code.includes('setChecked requires checkbox or radio')) return value(dom.control);
+    if (code.includes('getBoundingClientRect') && code.includes('checkVisibility'))
+      return value(dom.control.rendered);
+    if (code.includes('aria-disabled') && !code.includes('valid:'))
+      return value(!dom.control.disabled);
+    if (code.includes('aria-checked')) return value({ ok: true, checked: dom.control.checked });
     if (code.includes('checkVisibility')) return value(dom.control);
     if (code.includes('.checked')) return value(dom.control.checked);
     return value(true);

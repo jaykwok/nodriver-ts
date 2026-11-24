@@ -90,6 +90,25 @@ await destroyed;
 
 `chrome.disconnect()` abruptly terminates the client socket, rejecting real pending requests and event waits. The fixture keeps its pages and contexts and accepts a later `connect()`. Only one controller may connect at a time; await `browser.close()` before reconnecting. `chrome.connect(options)` is `Browser.connect({ endpoint: chrome.endpoint, ...options })`.
 
+## Building `InputReport` fixtures
+
+Use `createInputReport(overrides?)` from **`nodriver-ts/testing`** when unit tests need a complete `InputReport` (for example to construct `InputActionError`). It fills all default counters and nested `sent` fields, deep-merges partial `sent` overrides, and clones mutable arrays/objects so tests stay compatible as new telemetry fields are added.
+
+```ts
+import { InputActionError } from 'nodriver-ts';
+import { createInputReport } from 'nodriver-ts/testing';
+
+const error = new InputActionError(
+  createInputReport({
+    action: 'click',
+    status: 'interrupted',
+    dispatched: 1,
+    sent: { presses: 1 },
+  }),
+  new Error('target removed'),
+);
+```
+
 ## Tracing a real launched browser
 
 `Browser.launch()` and `Browser.connect()` accept `trace: boolean | ((entry) => void)`. Callbacks receive `{ method, sessionId?, durationMs, error? }` for every command, including startup commands, protocol errors, timeouts and cancellations; `error` is the protocol error code or the error name. Parameters and results are never recorded. An explicit `trace` overrides `NODRIVER_TRACE`: `false` disables tracing, and `true` writes compact lines to stderr.

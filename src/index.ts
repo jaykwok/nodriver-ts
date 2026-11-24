@@ -15,7 +15,12 @@ export type {
 export type { IndexedDBDatabase, IndexedDBIndex, IndexedDBStore } from './browser/indexeddb.ts';
 export { encryptState, decryptState, type StateKey } from './browser/state-crypto.ts';
 export { findExecutable, acquireProfileLock, AGENT_ARGS } from './browser/launcher.ts';
-export type { LaunchOptions, ProfilePreparation } from './browser/launcher.ts';
+export type {
+  BrowserChannel,
+  FindExecutableOptions,
+  LaunchOptions,
+  ProfilePreparation,
+} from './browser/launcher.ts';
 export { updateProfileSettings } from './browser/profile.ts';
 export type { ProfileSettings, ProfileSettingsUpdate } from './browser/profile.ts';
 export { ReleaseUncertainError } from './browser/guardian.ts';
@@ -30,8 +35,8 @@ export type { XvfbOptions, XvfbStartOptions } from './optional/xvfb.ts';
 export { resolveProxyEnvironment } from './optional/native-environment.ts';
 export type { NativeEnvironment, ProxyEnvironmentOptions } from './optional/native-environment.ts';
 export { Download } from './browser/download.ts';
-export { Tab } from './page/tab.ts';
-export type { Environment } from './page/tab.ts';
+export { Tab, setWindowState } from './page/tab.ts';
+export type { Environment, TabNavigationEvent, WindowBoundsOptions } from './page/tab.ts';
 export type {
   DiagnoseEnvironmentOptions,
   EnvironmentDiagnostics,
@@ -52,8 +57,13 @@ export type { EvaluateOptions, World, EvaluationInput } from './page/frames.ts';
 export { isContextGone } from './page/execution-context.ts';
 export {
   IsolatedWorld,
+  IsolatedWorldPool,
+  ObjectGroupScope,
   createIsolatedWorld,
+  createIsolatedWorldPool,
+  createObjectGroup,
   evaluateIsolated,
+  evaluateAcrossFrames,
   invalidateIsolatedWorlds,
 } from './page/isolated-world.ts';
 export type {
@@ -65,6 +75,12 @@ export type {
   IsolatedWorldOptions,
   IsolatedRunOptions,
   IsolatedEvaluateOptions,
+  IsolatedCallOnNodesOptions,
+  SyncNodeCallResult,
+  NodeCallResult,
+  IsolatedWorldPoolOptions,
+  FrameEvaluationOutcome,
+  EvaluateAcrossFramesOptions,
   EvaluateIsolatedOptions,
   InvalidateIsolatedWorldsFilter,
 } from './page/isolated-world.ts';
@@ -79,6 +95,25 @@ export {
 } from './dom/element.ts';
 export type { FetchOptions, FetchResponse } from './page/fetch.ts';
 export { Locator } from './dom/locator.ts';
+export type {
+  LocatorFilter,
+  LocatorQueryOptions,
+  LocatorWaitState,
+  LocatorWaitOptions,
+} from './dom/locator.ts';
+export {
+  parseDOMSnapshot,
+  DOMSnapshotView,
+  DOMSnapshotDocumentView,
+  DOMSnapshotNodeView,
+} from './dom/snapshot.ts';
+export type { DOMSnapshotRect, ParseDOMSnapshotOptions } from './dom/snapshot.ts';
+export { getNodeEventListeners } from './dom/listeners.ts';
+export type {
+  NodeEventListener,
+  NodeEventListenerTarget,
+  GetNodeEventListenersOptions,
+} from './dom/listeners.ts';
 export type { Selector, QueryOptions } from './dom/query.ts';
 export {
   Mouse,

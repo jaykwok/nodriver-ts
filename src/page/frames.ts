@@ -1,7 +1,7 @@
 import type { Protocol } from 'devtools-protocol';
 import { randomUUID } from 'node:crypto';
 import type { Session, CdpEvent } from '../protocol/connection.ts';
-import { EvaluationError, StaleElementError, DisconnectedError } from '../errors.ts';
+import { EvaluationError, ProtocolError, StaleElementError, DisconnectedError } from '../errors.ts';
 import { bounded, budget, EventHub, poll, type WaitOptions } from '../utils.ts';
 import { query, type Selector, type QueryOptions } from '../dom/query.ts';
 import type { Element } from '../dom/element.ts';
@@ -111,6 +111,9 @@ export class JSHandle<T = unknown> {
     await this.dispose();
   }
 }
+function isFrameGone(error: unknown): boolean {
+  return error instanceof ProtocolError && /No frame (?:for|with) given id/i.test(error.message);
+}
 export class Frame {
   generation = 0;
   detached = false;
@@ -187,10 +190,17 @@ export class Frame {
           frameId: this.id,
           worldName: this.manager.worldName,
         })
-        .then((r) => {
-          this.assertDocument(generation, session);
-          return r.executionContextId;
-        });
+        .then(
+          (r) => {
+            this.assertDocument(generation, session);
+            return r.executionContextId;
+          },
+          (error: unknown) => {
+            if (isFrameGone(error))
+              throw new StaleElementError('Frame is detached', { cause: error });
+            throw error;
+          },
+        );
       this.isolated = { generation, promise };
       void promise.catch(() => {
         if (this.isolated?.promise === promise) this.isolated = undefined;

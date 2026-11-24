@@ -112,8 +112,24 @@ const SEARCH = `function(spec, visible, limit, walk, useDocument, ...extra) {
       for (let i = 0; i < results.snapshotLength; i++) { const e = results.snapshotItem(i); if (e.nodeType === 1) items.push(e); }
     } else {
       const text = norm(spec.text);
-      const match = e => { if (/^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE)$/.test(e.tagName)) return false; const t = textOf(e); return spec.exact ? t === text : t.includes(text); };
-      for (const e of root.querySelectorAll('*')) if (match(e) && !Array.from(e.children).some(match)) items.push(e);
+      const match = e => {
+        if (/^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE)$/.test(e.tagName)) return false;
+        const t = textOf(e);
+        if (!(spec.exact ? t === text : t.includes(text))) return false;
+        return getComputedStyle(e).pointerEvents !== 'none';
+      };
+      const all = Array.from(root.querySelectorAll('*'));
+      const matched = new Set();
+      const hasDescendant = new Set();
+      for (let i = all.length - 1; i >= 0; i--) {
+        const e = all[i];
+        if (match(e)) matched.add(e);
+        if (matched.has(e) || hasDescendant.has(e)) {
+          const p = e.parentNode;
+          if (p && p !== root) hasDescendant.add(p);
+        }
+      }
+      for (const e of all) if (matched.has(e) && !hasDescendant.has(e)) items.push(e);
     }
     if (spec.text === undefined && !visible && items.length >= limit) break;
   }

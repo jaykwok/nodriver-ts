@@ -2,8 +2,53 @@ import type { AddressInfo } from 'node:net';
 import type { Protocol } from 'devtools-protocol';
 import { Browser, type ConnectOptions } from '../browser/browser.ts';
 import type { Command, Event, EventParams, Params, Result } from '../protocol/connection.ts';
+import type { InputReport, InputSent } from '../input/behavior.ts';
 import { ProtocolError } from '../errors.ts';
 import WebSocket, { WebSocketServer } from 'ws';
+
+/** Partial overrides accepted by `createInputReport()`. */
+export type InputReportOverrides = Partial<Omit<InputReport, 'sent'>> & {
+  sent?: Partial<InputSent>;
+};
+
+/**
+ * Builds a complete `InputReport` with safe defaults for unit tests (such as constructing
+ * `InputActionError`), keeping downstream tests insulated from future telemetry fields.
+ */
+export function createInputReport(overrides: InputReportOverrides = {}): InputReport {
+  const { sent, trace, cleanupErrors, finalPosition, ...rest } = overrides;
+  return {
+    action: 'input',
+    status: 'completed',
+    seed: 0,
+    randomState: 0,
+    completedSegments: 0,
+    events: 0,
+    dispatched: 0,
+    skippedMoves: 0,
+    lateReplies: 0,
+    presentationRecoveries: 0,
+    plannedMs: 0,
+    actualMs: 0,
+    phase: 'done',
+    cleanup: 'completed',
+    ...rest,
+    sent: {
+      moves: 0,
+      wheels: 0,
+      presses: 0,
+      keys: 0,
+      characters: 0,
+      releases: 0,
+      text: 0,
+      composition: 0,
+      ...sent,
+    },
+    ...(finalPosition !== undefined ? { finalPosition: { ...finalPosition } } : {}),
+    trace: trace ? trace.map((entry) => ({ ...entry })) : [],
+    cleanupErrors: cleanupErrors ? [...cleanupErrors] : [],
+  };
+}
 
 /** Return this from a handler to leave a command pending for timeout/abort/disconnect tests. */
 export const NO_REPLY = Symbol('NO_REPLY');

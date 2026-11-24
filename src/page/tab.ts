@@ -20,9 +20,9 @@ import { Locator } from '../dom/locator.ts';
 import { StaleElementError } from '../errors.ts';
 import type { Selector, QueryOptions } from '../dom/query.ts';
 import type { Element } from '../dom/element.ts';
-import { bounded, budget, EventHub, type WaitOptions } from '../utils.ts';
+import { bounded, budget, delay, EventHub, timeoutValue, type WaitOptions } from '../utils.ts';
 import type { Download } from '../browser/download.ts';
-import { NodriverError } from '../errors.ts';
+import { NodriverError, TimeoutError } from '../errors.ts';
 import type { EnvironmentReport, InspectEnvironmentOptions } from './environment.ts';
 import {
   diagnoseEnvironment,
@@ -31,6 +31,58 @@ import {
   type AlignEnvironmentOptions,
   type GeoIPResolver,
 } from './diagnostics.ts';
+export interface TabNavigationEvent {
+  readonly tab: Tab;
+  readonly frame: Frame;
+  readonly url: string;
+  readonly sameDocument: boolean;
+  readonly restored: boolean;
+  readonly isMainFrame: boolean;
+}
+export interface WindowBoundsOptions extends WaitOptions {
+  /**
+   * When `bounds.windowState` is set, poll `Browser.getWindowBounds` until the OS window manager
+   * reports that `windowState` (avoids transient Windows DWM / macOS WM races). Defaults to
+   * `false` (single read-back, no polling).
+   */
+  waitForState?: boolean;
+  /** Poll interval in milliseconds when `waitForState` is true. Defaults to 50 ms. */
+  pollIntervalMs?: number;
+}
+/**
+ * Updates browser window bounds/state for `targetId` through the root browser CDP session.
+ * With `waitForState: true` and an explicit `bounds.windowState`, polls `Browser.getWindowBounds`
+ * within the budget (default 5 s) until `windowState` settles.
+ */
+export async function setWindowState(
+  cdp: Session,
+  targetId: string,
+  bounds: Protocol.Browser.Bounds,
+  options: WindowBoundsOptions = {},
+): Promise<Protocol.Browser.Bounds> {
+  const interval =
+    options.pollIntervalMs === undefined
+      ? 50
+      : timeoutValue(options.pollIntervalMs, 'pollIntervalMs');
+  const wait = options.waitForState === true && bounds.windowState !== undefined;
+  const step = budget(
+    wait ? { ...options, timeout: options.timeout ?? 5000 } : options,
+    'windowBounds',
+  );
+  const { windowId } = await cdp.sendWith('Browser.getWindowForTarget', step(), { targetId });
+  await cdp.sendWith('Browser.setWindowBounds', step(), { windowId, bounds });
+  if (!wait) return (await cdp.sendWith('Browser.getWindowBounds', step(), { windowId })).bounds;
+  const targetState = bounds.windowState!;
+  for (;;) {
+    const remaining = step();
+    const current = (await cdp.sendWith('Browser.getWindowBounds', remaining, { windowId })).bounds;
+    if (current.windowState === targetState) return current;
+    const after = step();
+    const left = after.timeout ?? 0;
+    if (left <= 0) throw new TimeoutError(`Timed out waiting for windowState "${targetState}"`);
+    await delay(Math.min(interval, left), after.signal);
+  }
+}
 export interface Environment {
   viewport?: {
     width: number;
@@ -70,6 +122,8 @@ export class Tab {
   readonly mouse: Mouse;
   readonly keyboard: Keyboard;
   readonly downloads = new EventHub<Download>();
+  readonly navigated: EventHub<TabNavigationEvent>;
+  readonly onClose: EventHub<Tab>;
   crashed = false;
   readonly inputBehavior: InputBehavior;
   private environment: Environment = {};
@@ -87,6 +141,8 @@ export class Tab {
   private readonly scriptWorld = randomUUID();
   private closing?: Promise<void>;
   private disposed = false;
+  private ready = false;
+  private readonly offSessionDisconnected: () => void;
   /** HTTP(S) origins any frame of this tab has committed, whose sessionStorage the tab can hold. */
   private readonly committedOrigins = new Set<string>();
   readonly browser: Browser;
@@ -98,15 +154,27 @@ export class Tab {
     this.context = context;
     this.id = id;
     this.session = session;
+    this.navigated = new EventHub<TabNavigationEvent>((error) => this.reportError(error));
+    this.onClose = new EventHub<Tab>((error) => this.reportError(error));
     browser.input.registerSession(session, id);
     this.environment = structuredClone(browser.baseEnvironment);
     this.framesManager = new FrameManager(this, session);
-    this.framesManager.changes.on(({ frame, sameDocument }) => {
-      if (sameDocument) return;
-      this.noteOrigin(frame.url);
-      // A new document in the main frame replaces a crashed renderer.
-      if (frame === this.mainFrame) this.crashed = false;
+    this.framesManager.changes.on(({ frame, sameDocument, restored }) => {
+      if (!sameDocument) {
+        this.noteOrigin(frame.url);
+        // A new document in the main frame replaces a crashed renderer.
+        if (frame === this.mainFrame) this.crashed = false;
+      }
+      this.navigated.emit({
+        tab: this,
+        frame,
+        url: frame.url,
+        sameDocument,
+        restored: restored === true,
+        isMainFrame: frame === this.mainFrame,
+      });
     });
+    this.offSessionDisconnected = session.disconnected.on(() => this.dispose());
     this.network = new Network(this);
     this.inputBehavior = new InputBehavior(
       (task) => this.browser.input.run(task),
@@ -545,13 +613,14 @@ export class Tab {
       }
     return remove;
   }
-  async windowBounds(bounds?: Protocol.Browser.Bounds): Promise<Protocol.Browser.Bounds> {
-    const result = await this.browser.cdp.send('Browser.getWindowForTarget', { targetId: this.id });
-    if (bounds) {
-      await this.browser.cdp.send('Browser.setWindowBounds', { windowId: result.windowId, bounds });
-      return (await this.browser.cdp.send('Browser.getWindowBounds', { windowId: result.windowId }))
-        .bounds;
-    }
+  async windowBounds(
+    bounds?: Protocol.Browser.Bounds,
+    options: WindowBoundsOptions = {},
+  ): Promise<Protocol.Browser.Bounds> {
+    if (bounds) return setWindowState(this.browser.cdp, this.id, bounds, options);
+    const result = await this.browser.cdp.sendWith('Browser.getWindowForTarget', options, {
+      targetId: this.id,
+    });
     return result.bounds;
   }
   waitForDownload(options: WaitOptions = {}): Promise<Download> {
@@ -575,14 +644,27 @@ export class Tab {
       this.dispose();
     })());
   }
+  /** @internal Marks the tab as live so disposal notifies `onClose` and `browser.tabClosed`. */
+  markReady(): void {
+    this.ready = true;
+  }
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.offSessionDisconnected();
     if (this.browser.frontTab === this) this.browser.frontTab = undefined;
     this.framesManager.dispose();
     this.network.dispose();
     this.downloads.clear();
-    if (this.session.id) this.session.connection.detach(this.session.id);
+    this.navigated.clear();
+    const shouldNotify = this.ready;
+    this.browser.removeTab(this);
+    if (this.session.id && !this.session.closed) this.session.connection.detach(this.session.id);
+    if (shouldNotify) {
+      this.onClose.emit(this);
+      this.browser.tabClosed.emit(this);
+    }
+    this.onClose.clear();
   }
   async [Symbol.asyncDispose](): Promise<void> {
     await this.close();

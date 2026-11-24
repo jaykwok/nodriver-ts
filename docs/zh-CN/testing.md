@@ -90,6 +90,25 @@ await destroyed;
 
 `chrome.disconnect()` 突然终止客户端 socket，拒绝真实的挂起请求和事件等待。fixture 保留页面和上下文，之后仍可再次 `connect()`。同一时间只允许一个控制端连接；重连前请等待 `browser.close()` 完成。`chrome.connect(options)` 等同于 `Browser.connect({ endpoint: chrome.endpoint, ...options })`。
 
+## 构造 `InputReport` 测试夹具
+
+当单元测试需要构造完整的 `InputReport`（例如构造 `InputActionError`）时，可从 **`nodriver-ts/testing`** 导入 `createInputReport(overrides?)`。它会补齐全部默认计数与嵌套 `sent` 字段，合并部分 `sent` 覆盖，并复制可变数组与对象，避免后续 `InputReport` 新增遥测字段时导致下游测试类型中断。
+
+```ts
+import { InputActionError } from 'nodriver-ts';
+import { createInputReport } from 'nodriver-ts/testing';
+
+const error = new InputActionError(
+  createInputReport({
+    action: 'click',
+    status: 'interrupted',
+    dispatched: 1,
+    sent: { presses: 1 },
+  }),
+  new Error('target removed'),
+);
+```
+
 ## 追踪真实启动的浏览器
 
 `Browser.launch()` 与 `Browser.connect()` 都接受 `trace: boolean | ((entry) => void)`。回调对每条命令收到 `{ method, sessionId?, durationMs, error? }`，包括启动命令、协议错误、超时和取消；`error` 是协议错误码或错误名。参数和结果从不记录。显式的 `trace` 优先于 `NODRIVER_TRACE`：`false` 关闭追踪，`true` 把紧凑格式的记录写到 stderr。

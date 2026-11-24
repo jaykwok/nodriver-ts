@@ -4,6 +4,7 @@ import { ProtocolError, StaleElementError, TimeoutError } from '../errors.ts';
 import { isContextGone } from '../page/execution-context.ts';
 import {
   Connection,
+  ON_LATE_REPLY,
   REQUEST_LEDGER,
   SessionEndedError,
   type RequestRecorder,
@@ -388,11 +389,15 @@ export class InputAction {
   ): Promise<Result<M>> {
     return this.sendObserved(session, method, { confirmed }, ...params);
   }
-  /** @internal Sends a command with optional transport-dispatch (`onSent`) and reply callbacks. */
+  /** @internal Sends a command with optional transport-dispatch (`onSent`), reply, and late-reply callbacks. */
   async sendObserved<M extends Command>(
     session: Session,
     method: M,
-    hooks: { confirmed?: () => void; onSent?: () => void },
+    hooks: {
+      confirmed?: () => void;
+      onSent?: () => void;
+      onLateReply?: (result: Result<M>) => void;
+    },
     ...params: Params<M>
   ): Promise<Result<M>> {
     const options = this.commandOptions();
@@ -412,13 +417,17 @@ export class InputAction {
       hooks.onSent?.();
     };
     if (!realConnection) track();
-    const result = await session.sendWith(
-      method,
-      this.ledger(options, confirm, realConnection ? track : undefined, (_late, succeeded) => {
+    const ledgerOptions = this.ledger(
+      options,
+      confirm,
+      realConnection ? track : undefined,
+      (_late, succeeded) => {
         if (succeeded) acknowledged?.();
-      }),
-      ...params,
+      },
     );
+    if (hooks.onLateReply)
+      ledgerOptions[ON_LATE_REPLY] = hooks.onLateReply as (result: unknown) => void;
+    const result = await session.sendWith(method, ledgerOptions, ...params);
     confirm?.();
     acknowledged?.();
     return result;

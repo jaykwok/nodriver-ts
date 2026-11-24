@@ -1,6 +1,6 @@
 {
   "name": "nodriver-ts",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "TypeScript redesign of nodriver: Chrome automation over CDP without Runtime.enable, with a native MCP server (Streamable HTTP and stdio)",
   "keywords": [
     "nodriver",
