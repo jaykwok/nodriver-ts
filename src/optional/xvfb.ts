@@ -31,7 +31,10 @@ export function checkXvfbOptions(options: XvfbOptions): void {
     throw new UnsupportedError('virtualDisplay is only supported on Linux');
   if (options.screen !== undefined && !/^\d{2,5}x\d{2,5}x(8|16|24)$/.test(options.screen))
     throw new RangeError('screen must look like 1920x1080x24');
-  if (options.timeout !== undefined) timeoutValue(options.timeout);
+  if (options.timeout !== undefined) {
+    timeoutValue(options.timeout);
+    if (options.timeout <= 0) throw new RangeError('timeout must be a positive number');
+  }
 }
 
 /** One record of an Xauthority file, for any host. An empty `display` matches every display. */

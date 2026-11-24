@@ -413,21 +413,21 @@ test('2. findExecutable respectEnv precedence, non-contradictory channel errors,
       assert.doesNotMatch(error.message, /prefer/i);
       return true;
     });
-    // When respectEnv is false and channel is missing, error must NOT misleadingly say "set CHROME_PATH" alone.
-    const binDir = join(dir, 'bin');
-    await mkdir(binDir);
-    const fakeChromium = join(binDir, process.platform === 'win32' ? 'chromium.exe' : 'chromium');
-    await writeFile(fakeChromium, '');
-    process.env.PATH = binDir;
-    delete process.env.CHROME_PATH;
-    // PATH discovery finds chromium and returns resolved absolute path.
-    assert.equal(await findExecutable({ prefer: ['chromium'] }), resolve(fakeChromium));
-
-    // Empty PATH with respectEnv: false + missing channel gives accurate hint mentioning respectEnv: true.
-    process.env.PATH = dir;
-    process.env.CHROME_PATH = fakeEnvBin;
-    // Use chromium channel which has no default Windows Program Files candidate.
+    // Empty PATH / PATH discovery with respectEnv: false + chromium channel (which has no
+    // default Windows Program Files candidate).
     if (process.platform === 'win32') {
+      const binDir = join(dir, 'bin');
+      await mkdir(binDir);
+      const fakeChromium = join(binDir, 'chromium.exe');
+      await writeFile(fakeChromium, '');
+      process.env.PATH = binDir;
+      delete process.env.CHROME_PATH;
+      // PATH discovery finds chromium and returns resolved absolute path.
+      assert.equal(await findExecutable({ prefer: ['chromium'] }), resolve(fakeChromium));
+
+      // Empty PATH with respectEnv: false + missing channel gives accurate hint mentioning respectEnv: true.
+      process.env.PATH = dir;
+      process.env.CHROME_PATH = fakeEnvBin;
       await assert.rejects(findExecutable({ prefer: ['chromium'] }), (error: unknown) => {
         assert.ok(error instanceof Error);
         assert.match(error.message, /respectEnv: true/);
