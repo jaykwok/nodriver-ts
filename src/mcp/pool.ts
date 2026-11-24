@@ -1,7 +1,9 @@
 import { Browser } from '../browser/browser.ts';
 import type { BrowserContext } from '../browser/context.ts';
+import { isProxyProtocol } from '../optional/proxy.ts';
 import type { BrowserMcpOptions } from './session.ts';
 import { OperationQueue } from './queue.ts';
+import { defaultMcpLaunchOptions } from './auth.ts';
 
 export interface BrowserAllocation {
   browser: Browser;
@@ -40,6 +42,7 @@ export class BrowserPool {
     this.exclusive = !!(options.connect || options.launch?.userDataDir);
     if (options.proxy) {
       const proxy = new URL(options.proxy);
+      if (!isProxyProtocol(proxy.protocol)) throw new TypeError('Unsupported proxy protocol');
       if (options.connect) throw new TypeError('A proxy cannot be applied to a connected browser');
       if ((proxy.username || proxy.password) && this.exclusive)
         throw new TypeError(
@@ -48,7 +51,7 @@ export class BrowserPool {
     }
   }
   private launchOptions() {
-    const launch = { transport: 'pipe' as const, ...this.options.launch };
+    const launch = defaultMcpLaunchOptions(this.options.launch);
     // A persistent profile has no per-lease context, so its proxy is browser-wide.
     if (this.options.proxy && this.exclusive) launch.proxyServer ??= this.options.proxy;
     return launch;

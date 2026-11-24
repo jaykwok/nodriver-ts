@@ -10,6 +10,7 @@ import {
   type EvaluateOptions,
   type JSHandle,
   type EvaluationInput,
+  type LoadState,
 } from './frames.ts';
 import { NavigationWatcher, type NavigationOptions } from './navigation.ts';
 import { Network } from './network.ts';
@@ -17,12 +18,19 @@ import { Keyboard, Mouse } from '../input/input.ts';
 import { InputBehavior, type InputPolicy } from '../input/behavior.ts';
 import type { FetchOptions, FetchResponse } from './fetch.ts';
 import { Locator } from '../dom/locator.ts';
-import { StaleElementError } from '../errors.ts';
+import { NodriverError, StaleElementError, TimeoutError } from '../errors.ts';
 import type { Selector, QueryOptions } from '../dom/query.ts';
 import type { Element } from '../dom/element.ts';
-import { bounded, budget, delay, EventHub, timeoutValue, type WaitOptions } from '../utils.ts';
+import {
+  bounded,
+  budget,
+  delay,
+  EventHub,
+  httpOrigin,
+  timeoutValue,
+  type WaitOptions,
+} from '../utils.ts';
 import type { Download } from '../browser/download.ts';
-import { NodriverError, TimeoutError } from '../errors.ts';
 import type { EnvironmentReport, InspectEnvironmentOptions } from './environment.ts';
 import {
   diagnoseEnvironment,
@@ -73,13 +81,30 @@ export async function setWindowState(
   await cdp.sendWith('Browser.setWindowBounds', step(), { windowId, bounds });
   if (!wait) return (await cdp.sendWith('Browser.getWindowBounds', step(), { windowId })).bounds;
   const targetState = bounds.windowState!;
+  const stateTimeout = (cause?: unknown) =>
+    new TimeoutError(
+      `Timed out waiting for windowState "${targetState}"`,
+      cause ? { cause } : undefined,
+    );
   for (;;) {
-    const remaining = step();
-    const current = (await cdp.sendWith('Browser.getWindowBounds', remaining, { windowId })).bounds;
+    let current: Protocol.Browser.Bounds;
+    try {
+      const remaining = step();
+      current = (await cdp.sendWith('Browser.getWindowBounds', remaining, { windowId })).bounds;
+    } catch (error) {
+      if (error instanceof TimeoutError) throw stateTimeout(error);
+      throw error;
+    }
     if (current.windowState === targetState) return current;
-    const after = step();
+    let after: WaitOptions;
+    try {
+      after = step();
+    } catch (error) {
+      if (error instanceof TimeoutError) throw stateTimeout(error);
+      throw error;
+    }
     const left = after.timeout ?? 0;
-    if (left <= 0) throw new TimeoutError(`Timed out waiting for windowState "${targetState}"`);
+    if (left <= 0) throw stateTimeout();
     await delay(Math.min(interval, left), after.signal);
   }
 }
@@ -121,7 +146,7 @@ export class Tab {
   readonly network: Network;
   readonly mouse: Mouse;
   readonly keyboard: Keyboard;
-  readonly downloads = new EventHub<Download>();
+  readonly downloads: EventHub<Download>;
   readonly navigated: EventHub<TabNavigationEvent>;
   readonly onClose: EventHub<Tab>;
   crashed = false;
@@ -142,6 +167,7 @@ export class Tab {
   private closing?: Promise<void>;
   private disposed = false;
   private ready = false;
+  private originSuppressionDepth = 0;
   private readonly offSessionDisconnected: () => void;
   /** HTTP(S) origins any frame of this tab has committed, whose sessionStorage the tab can hold. */
   private readonly committedOrigins = new Set<string>();
@@ -154,6 +180,7 @@ export class Tab {
     this.context = context;
     this.id = id;
     this.session = session;
+    this.downloads = new EventHub<Download>((error) => this.reportError(error));
     this.navigated = new EventHub<TabNavigationEvent>((error) => this.reportError(error));
     this.onClose = new EventHub<Tab>((error) => this.reportError(error));
     browser.input.registerSession(session, id);
@@ -165,14 +192,16 @@ export class Tab {
         // A new document in the main frame replaces a crashed renderer.
         if (frame === this.mainFrame) this.crashed = false;
       }
-      this.navigated.emit({
+      const event: TabNavigationEvent = {
         tab: this,
         frame,
         url: frame.url,
         sameDocument,
         restored: restored === true,
         isMainFrame: frame === this.mainFrame,
-      });
+      };
+      this.navigated.emit(event);
+      if (this.ready) this.browser.tabNavigated.emit(event);
     });
     this.offSessionDisconnected = session.disconnected.on(() => this.dispose());
     this.network = new Network(this);
@@ -185,8 +214,14 @@ export class Tab {
         const frame = this.mainFrame,
           generation = frame.generation;
         return () => {
-          if (frame.detached || frame.generation !== generation)
-            throw new StaleElementError('Document changed during input');
+          if (frame.detached)
+            throw new StaleElementError('Frame detached during input', {
+              reason: 'frame-detached',
+            });
+          if (frame.generation !== generation)
+            throw new StaleElementError('Document changed during input', {
+              reason: 'context-gone',
+            });
         };
       },
       async (action) => {
@@ -277,14 +312,28 @@ export class Tab {
   }
   /** @internal Records an origin a frame of this tab committed, here and in its context. */
   noteOrigin(url: string): void {
-    if (!URL.canParse(url)) return;
-    const { protocol, origin } = new URL(url);
-    if (protocol !== 'http:' && protocol !== 'https:') return;
+    if (this.originSuppressionDepth > 0) return;
+    const origin = httpOrigin(url);
+    if (!origin) return;
     this.committedOrigins.add(origin);
-    this.context.noteOrigin(url);
+    this.context.noteOrigin(origin);
   }
-  /** @internal Origins any frame of this tab has committed since it was attached. */
-  get origins(): string[] {
+  /** @internal Drops an origin from this tab's tracked committed origins (e.g. after clearing). */
+  forgetOrigin(origin: string): void {
+    const normalized = httpOrigin(origin) ?? origin;
+    this.committedOrigins.delete(normalized);
+  }
+  /** @internal Runs `fn` without recording transient internal origin visits (such as `clearSiteData`). */
+  async withoutRecordingOrigins<T>(fn: () => Promise<T>): Promise<T> {
+    this.originSuppressionDepth++;
+    try {
+      return await fn();
+    } finally {
+      this.originSuppressionDepth--;
+    }
+  }
+  /** Read-only snapshot of HTTP(S) origins any frame of this tab has committed since it was attached. */
+  get origins(): readonly string[] {
     return [...this.committedOrigins];
   }
   setInputPolicy(policy: InputPolicy): void {
@@ -328,25 +377,22 @@ export class Tab {
     }
   }
   async go(delta: number, options: NavigationOptions = {}): Promise<string | undefined> {
-    const started = performance.now();
-    const history = await this.session.sendWith('Page.getNavigationHistory', options);
+    const step = budget(options, 'Navigation');
+    const history = await this.session.sendWith('Page.getNavigationHistory', step());
     const entry = history.entries[history.currentIndex + delta];
     if (!entry) return undefined;
-    const timeout =
-      options.timeout === undefined
-        ? undefined
-        : Math.max(0, options.timeout - (performance.now() - started));
+    const wait = step();
     // A same-document change elsewhere, such as the old document's replaceState(), does not count.
     const watcher = new NavigationWatcher(
       this,
-      { ...options, timeout },
+      { ...options, ...wait },
       true,
       (url) => url === entry.url,
     );
     try {
       await this.session.sendWith(
         'Page.navigateToHistoryEntry',
-        { ...options, timeout },
+        { ...options, ...wait },
         { entryId: entry.id },
       );
       return await watcher.promise;
@@ -354,6 +400,13 @@ export class Tab {
       watcher.cancel(e as Error);
       throw e;
     }
+  }
+  /**
+   * Waits until the main frame reaches the requested `document.readyState`; see
+   * `Frame.waitForLoadState()`.
+   */
+  waitForLoadState(state: LoadState = 'load', options: WaitOptions = {}): Promise<void> {
+    return this.mainFrame.waitForLoadState(state, options);
   }
   async bringToFront(): Promise<void> {
     await this.session.send('Page.bringToFront');
@@ -441,6 +494,7 @@ export class Tab {
   }
   async setContent(html: string): Promise<void> {
     await this.session.send('Page.setDocumentContent', { frameId: this.mainFrame.id, html });
+    this.framesManager.retireChildren(this.mainFrame);
     this.mainFrame.invalidate();
   }
   async screenshot(
@@ -518,7 +572,10 @@ export class Tab {
         Object.entries(environment).filter(([, value]) => value !== undefined),
       ) as Environment;
       const previous = this.environment;
-      this.environment = { ...previous, ...given };
+      const merged: Environment = { ...previous, ...given };
+      if (given.userAgent === '' && given.userAgentMetadata === undefined)
+        delete merged.userAgentMetadata;
+      this.environment = merged;
       this.environmentApplications = [];
       try {
         for (const s of this.framesManager.sessions)
@@ -562,8 +619,10 @@ export class Tab {
     // nested OOPIF sessions can fail with "Another locale override". Apply at
     // the page root and verify each document/Worker rather than promise scope.
     if (e.locale && session === this.session && e.locale !== this.appliedLocale) {
-      if (this.appliedLocale)
+      if (this.appliedLocale) {
         await session.sendWith('Emulation.setLocaleOverride', step(), { locale: '' });
+        this.appliedLocale = undefined;
+      }
       await session.sendWith('Emulation.setLocaleOverride', step(), { locale: e.locale });
       this.appliedLocale = e.locale;
     }
@@ -617,6 +676,8 @@ export class Tab {
     bounds?: Protocol.Browser.Bounds,
     options: WindowBoundsOptions = {},
   ): Promise<Protocol.Browser.Bounds> {
+    if (options.pollIntervalMs !== undefined)
+      timeoutValue(options.pollIntervalMs, 'pollIntervalMs');
     if (bounds) return setWindowState(this.browser.cdp, this.id, bounds, options);
     const result = await this.browser.cdp.sendWith('Browser.getWindowForTarget', options, {
       targetId: this.id,
@@ -627,9 +688,16 @@ export class Tab {
     return this.waitEvent(this.downloads, () => true, options, 'download');
   }
   async waitForPopup(options: WaitOptions = {}): Promise<Tab> {
-    return this.browser.waitForTab(
-      (tab) => this.browser.targetInfo.get(tab.id)?.openerId === this.id,
+    return this.waitEvent(
+      this.browser.tabCreated,
+      (tab) => {
+        const info = this.browser.targetInfo.get(tab.id);
+        if (!info) return false;
+        if (info.openerId === this.id) return true;
+        return !!info.openerFrameId && this.frames.some((f) => f.id === info.openerFrameId);
+      },
       options,
+      'popup',
     );
   }
   close(): Promise<void> {

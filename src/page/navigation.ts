@@ -1,8 +1,7 @@
 import type { Protocol } from 'devtools-protocol';
 import type { Tab } from './tab.ts';
 import { abortReason, timeoutValue, type WaitOptions } from '../utils.ts';
-import { DisconnectedError, TimeoutError } from '../errors.ts';
-import { SessionEndedError } from '../protocol/connection.ts';
+import { SessionEndedError, TimeoutError } from '../errors.ts';
 export interface NavigationOptions extends WaitOptions {
   /** "networkidle" waits for Chrome's networkIdle lifecycle event (no requests for 500ms). */
   waitUntil?: 'commit' | 'domcontentloaded' | 'load' | 'networkidle';
@@ -12,6 +11,7 @@ const lifecycleName = {
   load: 'load',
   networkidle: 'networkIdle',
 } as const;
+const WAIT_UNTIL_VALUES = new Set(['commit', 'domcontentloaded', 'load', 'networkidle']);
 export class NavigationWatcher {
   readonly promise: Promise<string>;
   private resolve!: (url: string) => void;
@@ -45,9 +45,15 @@ export class NavigationWatcher {
       this.reject = reject;
     });
     void this.promise.catch(() => {});
+    if (options.waitUntil !== undefined && !WAIT_UNTIL_VALUES.has(options.waitUntil))
+      throw new TypeError(`Invalid waitUntil: ${String(options.waitUntil)}`);
     const timeout = timeoutValue(options.timeout ?? tab.session.connection.timeout);
     if (tab.session.closed) {
-      this.cancel(tab.session.closeReason ?? new DisconnectedError('Session closed'));
+      this.cancel(tab.session.closedError());
+      return;
+    }
+    if (options.signal?.aborted) {
+      this.cancel(abortReason(options.signal));
       return;
     }
     this.cleanups.push(
@@ -79,15 +85,17 @@ export class NavigationWatcher {
         this.check();
       }),
     );
+    const onCrash = () =>
+      this.cancel(
+        new SessionEndedError('target-crashed', tab.id, {
+          sessionId: tab.session.id,
+          detail: 'Page crashed during navigation',
+        }),
+      );
     this.cleanups.push(
-      tab.session.on('Inspector.targetCrashed', () =>
-        this.cancel(
-          new SessionEndedError('target-crashed', tab.id, {
-            sessionId: tab.session.id,
-            detail: 'Page crashed during navigation',
-          }),
-        ),
-      ),
+      tab.session.crashed
+        ? tab.session.crashed.on(onCrash)
+        : tab.session.on('Inspector.targetCrashed', onCrash),
     );
     this.cleanups.push(tab.session.disconnected.on((e) => this.cancel(e)));
     const timer = setTimeout(

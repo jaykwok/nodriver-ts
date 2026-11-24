@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import type { Protocol } from 'devtools-protocol';
 import { TargetSession, type Session } from '../protocol/connection.ts';
-import { ActionabilityError, ProtocolError } from '../errors.ts';
-import { isContextGone } from '../page/execution-context.ts';
+import { ActionabilityError } from '../errors.ts';
+import { isNodeGone, isObjectGone, isWorldMismatch } from '../protocol/errors.ts';
 import type { InputAction, InputRelease } from './action.ts';
 import type { InputOptions } from './behavior.ts';
 export interface CompositionSelection {
@@ -42,9 +42,10 @@ const CLASSIFY =
 const EDITING_HOST =
   'function(){let el=this;while(el.parentElement?.isContentEditable)el=el.parentElement;return el}';
 // Whether an empty IME update at this editor cannot delete text: Chrome deletes the selection when
-// no composition exists, so only a collapsed (or absent) selection is safe.
+// no composition exists, so only a collapsed (or absent) selection is safe. `<input type="email|number">`
+// does not expose `selectionStart` (always null in Chromium), so fall back to document selection there.
 const COLLAPSED =
-  "function(){if(this.localName==='input'||this.localName==='textarea')return this.selectionStart!==null&&this.selectionStart===this.selectionEnd;const sel=this.getRootNode().getSelection?.();return !!sel&&(sel.rangeCount===0||sel.isCollapsed)}";
+  "function(){const html=this.namespaceURI==='http://www.w3.org/1999/xhtml';if(html&&(this.localName==='input'||this.localName==='textarea')){if(this.selectionStart!==null)return this.selectionStart===this.selectionEnd;if(this.localName==='input'&&['email','number'].includes(this.type)){const sel=this.getRootNode().getSelection?.();return !sel||sel.rangeCount===0||sel.isCollapsed}return false}const sel=this.getRootNode().getSelection?.();return !!sel&&(sel.rangeCount===0||sel.isCollapsed)}";
 // Tracks in the probe world whether the composition is over, for example because Chrome finished it
 // when focus left. A new composition starts over.
 const WATCH_END =
@@ -63,13 +64,7 @@ const WORLD_GROUP = 'nodriver-composition-world';
 type Kind = 'editable' | 'content' | 'none' | 'unknown';
 type Send = InputAction['send'];
 function isStale(error: unknown): boolean {
-  return (
-    isContextGone(error) ||
-    (error instanceof ProtocolError &&
-      /Could not find object with given id|Argument should belong to the same JavaScript world/.test(
-        error.message,
-      ))
-  );
+  return isObjectGone(error) || isWorldMismatch(error) || isNodeGone(error);
 }
 /** One explicit composition, with at most one commit attempt. Created by compose() or a scope. */
 export class Composition {
@@ -105,6 +100,7 @@ export class Composition {
     } catch (error) {
       // Timeouts and disconnects stop the action as they are; only a replaced document is mapped.
       if (!isStale(error)) throw error;
+      this.global = undefined;
       throw new ActionabilityError('Composition target lost focus or its document changed', {
         cause: error,
       });

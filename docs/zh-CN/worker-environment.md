@@ -17,7 +17,7 @@ npm run bench:worker-environment
 | `WORKER_AUDIT_VARIANTS`   | 默认六组全跑；可用下表名称，以逗号分隔 |
 | `WORKER_AUDIT_TRANSPORTS` | `websocket,pipe`                       |
 | `WORKER_AUDIT_REPEATS`    | `1`，范围 1–5                          |
-| `WORKER_AUDIT_HEADFUL`    | `1` 选择 headful，否则 headless        |
+| `WORKER_AUDIT_HEADFUL`    | `1` 选择有界面模式，否则无界面模式     |
 | `WORKER_AUDIT_REPORT`     | 输出 JSON 路径                         |
 
 回归工作流（Windows 与 Linux）和 Beta/Dev/Canary 工作流会采集 Pipe 矩阵并上传报告。采集失败会使任务失败；配置差异记录在报告中，不视为失败。
@@ -50,7 +50,7 @@ JSON 分开保存命令结果、首段脚本观测、请求值核验、跨上下
 - `prepared-navigation`：请求的字段、跨上下文值（含高熵 UA-CH）与 UA 请求头均一致。Service Worker 和嵌套 Worker 的初始请求使用启动时的 `Accept-Language` 列表（如 `fr-FR,fr,en-US,en`），后续请求使用 CDP 列表（`fr-FR,fr`）。由于 Locale 覆盖按渲染进程共享，每次运行还会产生 4 个 Locale 命令冲突。
 - `prepared-locale-check`：先读取空白页和 Worker 上已生效的 Locale，只在需要时申请覆盖；不产生命令错误，请求的首段脚本字段一致。暂停的 OOPIF 尚无默认执行上下文，因此在上下文创建前覆盖，再通过 fixture 样本核对。
 
-`already-observed` 表示所需 Locale 已存在，因此没有取得新的覆盖所有权。该检查会在 fixture 第一条语句之前额外执行 `Runtime.evaluate`，但不启用 Runtime 事件。Worker 请求中缺少的 Client Hints 按实际缺失记录。持久化 Profile、Service Worker 更新/重启、已在运行的 Worker、弹窗与外部浏览器不在本基准范围内。
+`already-observed` 表示所需 Locale 已存在，因此没有取得新的覆盖所有权。该检查会在 fixture 第一条语句之前额外执行 `Runtime.evaluate`，但不启用 Runtime 事件。Worker 请求中缺少的 Client Hints 按实际缺失记录。持久化 Profile、Service Worker 更新/重启、已在运行的 Worker、弹出页与外部浏览器不在本基准范围内。
 
 ## 浏览器级策略的约束
 

@@ -70,15 +70,18 @@ export async function decryptState(bytes: Uint8Array, key: StateKey): Promise<Sa
   } catch (cause) {
     throw new Error(FAILED, { cause });
   }
-  if (!header || typeof header !== 'object') throw new Error(FAILED);
-  const iv = Buffer.from(String(header.iv), 'base64');
+  if (!header || typeof header !== 'object' || typeof header.iv !== 'string')
+    throw new Error(FAILED);
+  const iv = Buffer.from(header.iv, 'base64');
   if (iv.length !== 12) throw new Error(FAILED);
   let secret: Buffer;
   if (typeof key === 'string') {
+    if (!key) throw new RangeError('A state passphrase must not be empty');
     const kdf = header.scrypt;
     if (
       !kdf ||
       typeof kdf !== 'object' ||
+      typeof kdf.salt !== 'string' ||
       !Number.isSafeInteger(kdf.N) ||
       kdf.N < 2 ||
       (kdf.N & (kdf.N - 1)) !== 0 ||
@@ -90,11 +93,9 @@ export async function decryptState(bytes: Uint8Array, key: StateKey): Promise<Sa
       kdf.N * kdf.r * kdf.p > MAX_WORK
     )
       throw new Error(FAILED);
-    secret = await derive(key, Buffer.from(String(kdf.salt), 'base64'), kdf).catch(
-      (cause: unknown) => {
-        throw new Error(FAILED, { cause });
-      },
-    );
+    secret = await derive(key, Buffer.from(kdf.salt, 'base64'), kdf).catch((cause: unknown) => {
+      throw new Error(FAILED, { cause });
+    });
   } else {
     secret = rawKey(key);
     if (header.scrypt) throw new Error(FAILED);

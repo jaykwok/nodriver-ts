@@ -1,10 +1,13 @@
 import type { Protocol } from 'devtools-protocol';
 import type { Frame } from '../page/frames.ts';
 import { checkException } from '../page/frames.ts';
+import { releaseObjectGroup } from '../page/runtime.ts';
 import type { Session } from '../protocol/connection.ts';
+import { isNodeGone } from '../protocol/errors.ts';
 import { Element } from './element.ts';
+import { isElementEnabled, isElementVisible } from './predicates.ts';
 import { StaleElementError } from '../errors.ts';
-import { budget, type WaitOptions } from '../utils.ts';
+import { budget, normalizeText, type WaitOptions } from '../utils.ts';
 export type Selector =
   string | { css: string } | { xpath: string } | { text: string; exact?: boolean };
 /** `timeout` and `signal` bound the whole query, including every CDP request it makes. */
@@ -99,10 +102,11 @@ const SEARCH = `function(spec, visible, limit, walk, useDocument, ...extra) {
     const add = r => { if (r.shadowRoot && !roots.includes(r.shadowRoot)) { roots.push(r.shadowRoot); add(r.shadowRoot); } for (const e of r.querySelectorAll('*')) if (e.shadowRoot) { roots.push(e.shadowRoot); add(e.shadowRoot); } };
     for (const r of [...roots]) add(r);
   }
-  const norm = s => s.replace(/\\s+/g, ' ').trim();
+  const norm = ${normalizeText.toString()};
+  const shown = ${isElementVisible.toString()};
+  const enabled = ${isElementEnabled.toString()};
   const texts = new Map();
   const textOf = e => { let t = texts.get(e); if (t === undefined) { t = norm(e.textContent || ''); texts.set(e, t); } return t; };
-  const shown = e => { const s = getComputedStyle(e); return s.visibility !== 'hidden' && s.display !== 'none' && e.getClientRects().length > 0; };
   let items = [];
   for (const root of roots) {
     if (spec.css !== undefined) items.push(...root.querySelectorAll(spec.css));
@@ -112,19 +116,23 @@ const SEARCH = `function(spec, visible, limit, walk, useDocument, ...extra) {
       for (let i = 0; i < results.snapshotLength; i++) { const e = results.snapshotItem(i); if (e.nodeType === 1) items.push(e); }
     } else {
       const text = norm(spec.text);
-      const match = e => {
-        if (/^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE)$/.test(e.tagName)) return false;
+      const textMatch = e => {
+        if (/^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE)$/i.test(e.tagName)) return false;
         const t = textOf(e);
-        if (!(spec.exact ? t === text : t.includes(text))) return false;
-        return getComputedStyle(e).pointerEvents !== 'none';
+        return spec.exact ? t === text : t.includes(text);
       };
       const all = Array.from(root.querySelectorAll('*'));
       const matched = new Set();
       const hasDescendant = new Set();
       for (let i = all.length - 1; i >= 0; i--) {
         const e = all[i];
-        if (match(e)) matched.add(e);
-        if (matched.has(e) || hasDescendant.has(e)) {
+        const hitsText = textMatch(e);
+        const clickable = hitsText && getComputedStyle(e).pointerEvents !== 'none';
+        if (clickable) matched.add(e);
+        // A disabled control with pointer-events: none still owns its text and must block outer
+        // non-disabled wrapper elements from being selected as a fallback.
+        const blockedByDisabled = hitsText && !enabled(e);
+        if (matched.has(e) || hasDescendant.has(e) || blockedByDisabled) {
           const p = e.parentNode;
           if (p && p !== root) hasDescendant.add(p);
         }
@@ -172,7 +180,8 @@ export async function query(
   options: QueryOptions = {},
   scope?: Protocol.DOM.BackendNodeId,
 ): Promise<Element[]> {
-  if (frame.detached) throw new StaleElementError('Cannot query detached frame');
+  if (frame.detached)
+    throw new StaleElementError('Cannot query detached frame', { reason: 'frame-detached' });
   if (options.limit !== undefined && (!Number.isInteger(options.limit) || options.limit < 1))
     throw new RangeError('limit must be a positive integer');
   const session = frame.session;
@@ -195,14 +204,26 @@ export async function query(
     if (!closed) {
       // Fast path: one call in the isolated world over the document and its open shadow roots.
       let objectId: string | undefined;
-      if (scope)
-        objectId = (
-          await session.sendWith('DOM.resolveNode', step(), {
-            backendNodeId: scope,
-            executionContextId: context,
-            objectGroup: group,
-          })
-        ).object.objectId;
+      if (scope) {
+        try {
+          objectId = (
+            await session.sendWith('DOM.resolveNode', step(), {
+              backendNodeId: scope,
+              executionContextId: context,
+              objectGroup: group,
+            })
+          ).object.objectId;
+        } catch (error) {
+          if (isNodeGone(error))
+            throw new StaleElementError('Scope node no longer exists', {
+              cause: error,
+              reason: 'node-detached',
+            });
+          throw error;
+        }
+        if (!objectId)
+          throw new StaleElementError('Scope node no longer exists', { reason: 'node-detached' });
+      }
       result = await session.sendWith('Runtime.callFunctionOn', step(), {
         ...(objectId ? { objectId } : { executionContextId: context }),
         objectGroup: group,
@@ -211,8 +232,10 @@ export async function query(
       });
     } else {
       // Closed shadow roots exist: resolve every root CDP reports and search them in one call.
-      const roots = scope
-        ? shadowRoots(
+      let roots: Protocol.DOM.BackendNodeId[];
+      if (scope) {
+        try {
+          roots = shadowRoots(
             (
               await session.sendWith('DOM.describeNode', step(), {
                 backendNodeId: scope,
@@ -220,19 +243,38 @@ export async function query(
                 pierce: true,
               })
             ).node,
-          )
-        : closed;
+          );
+        } catch (error) {
+          if (isNodeGone(error))
+            throw new StaleElementError('Scope node no longer exists', {
+              cause: error,
+              reason: 'node-detached',
+            });
+          throw error;
+        }
+      } else {
+        roots = closed;
+      }
       const objects = await Promise.all(
-        roots.map(
-          async (backendNodeId) =>
-            (
-              await session.sendWith('DOM.resolveNode', step(), {
-                backendNodeId,
-                executionContextId: context,
-                objectGroup: group,
-              })
-            ).object.objectId!,
-        ),
+        roots.map(async (backendNodeId) => {
+          try {
+            const { object } = await session.sendWith('DOM.resolveNode', step(), {
+              backendNodeId,
+              executionContextId: context,
+              objectGroup: group,
+            });
+            if (!object.objectId)
+              throw new StaleElementError('Node no longer exists', { reason: 'node-detached' });
+            return object.objectId;
+          } catch (error) {
+            if (isNodeGone(error))
+              throw new StaleElementError('Node no longer exists', {
+                cause: error,
+                reason: 'node-detached',
+              });
+            throw error;
+          }
+        }),
       );
       result = await session.sendWith('Runtime.callFunctionOn', step(), {
         objectId: objects[0]!,
@@ -261,13 +303,13 @@ export async function query(
       for (const { node } of nodes)
         matches.push(new Element(frame, node.backendNodeId, generation, session));
     }
+    if (frame.detached)
+      throw new StaleElementError('Frame detached during query', { reason: 'frame-detached' });
     if (generation !== frame.generation || session !== frame.session)
-      throw new StaleElementError('Document changed during query');
+      throw new StaleElementError('Document changed during query', { reason: 'context-gone' });
     return options.limit ? matches.slice(0, options.limit) : matches;
   } finally {
     // Cleanup has its own short deadline and never delays the caller's timeout or abort.
-    void session
-      .sendWith('Runtime.releaseObjectGroup', { timeout: 1000 }, { objectGroup: group })
-      .catch(() => {});
+    void releaseObjectGroup(session, group);
   }
 }

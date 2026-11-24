@@ -39,7 +39,7 @@ import { Browser } from 'nodriver-ts';
 
 设置 `detached: true` 且未启用 `supervised` 时，所有平台都以分离方式启动 Chrome，其 stdin/stdout/stderr 不绑定宿主管道，因此 stderr 不会进入启动诊断。监管模式则通过独立辅助进程采集有界的 stderr。CDP 使用 WebSocket，调试端口须在浏览器存活期间保持可用。
 
-`release()` 幂等，返回浏览器的 WebSocket 端点。它不发送 `Browser.close`、不终止进程、不关闭标签页，也不删除 profile；它会解除信号清理，取消子进程对 Node 事件循环的引用，并断开 CDP。之后 `browser.owned === false`、`browser.closed === true`（指本连接），`close()`、`Symbol.asyncDispose` 和原来的 `browser.process.close()` 都不会再终止 Chrome。旧的 Tab/Session 对象不能继续使用，重连后获取新对象。
+`release()` 幂等，返回浏览器的 WebSocket 端点。它不发送 `Browser.close`、不终止进程、不关闭标签页，也不删除 profile；它会解除信号清理，取消子进程对 Node 事件循环的引用，并断开 CDP（在 `supervised` 模式下，若辅助进程在提交前拒绝交接，所有权与 CDP 连接均保持不变）。之后 `browser.owned === false`、`browser.closed === true`（指本连接），`close()`、`Symbol.asyncDispose` 和原来的 `browser.process.close()` 都不会再终止 Chrome。旧的 Tab/Session 对象不能继续使用，重连后获取新对象。
 
 一旦调用过 `close()`，即使它失败了，`release()` 也会拒绝。Chrome 已退出时同样拒绝，因为已没有可交接的进程；`close()` 仍会确认其退出。在 `release()` 进行期间调用的 `close()` 会等待交接完成，然后只断开连接。
 
@@ -93,7 +93,7 @@ const offDestroyed = browser.cdp.on('Target.targetDestroyed', ({ targetId }) => 
 // 用完后调用 offCreated()、offChanged()、offDestroyed()。
 ```
 
-`browser.tabCreated.on(...)` 在 Tab 完成附加和初始化后触发；原始的 `Target.targetCreated` 更早触发，此时可能还没有可用的 Tab。`pageTargets` 包括附加策略没有自动附加的页面，可用 `attachTarget(id)` 附加它们。
+`browser.tabCreated.on(...)` 在 Tab 完成附加和初始化后触发，`browser.tabClosed.on(...)` 在已初始化标签页关闭或分离时触发一次，`browser.tabNavigated.on(...)`（以及 `TabScope` 上的 `scope.navigated`）在已初始化标签页发生 frame 导航时派发事件，因此追踪导航无需再解析原始的 `Target.targetInfoChanged`。原始的 `Target.targetCreated` 更早触发，此时可能还没有可用的 Tab。`pageTargets` 包括附加策略没有自动附加的页面，可用 `attachTarget(id)` 附加它们。
 
 ## 焦点边界
 

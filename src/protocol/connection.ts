@@ -1,8 +1,24 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { ProtocolMapping } from 'devtools-protocol/types/protocol-mapping.js';
 import type { Transport } from '../transport/transport.ts';
-import { DisconnectedError, NodriverError, ProtocolError, TimeoutError } from '../errors.ts';
-import { abortReason, EventHub, timeoutValue, type Listener, type WaitOptions } from '../utils.ts';
+import {
+  DisconnectedError,
+  ProtocolError,
+  SessionEndedError,
+  TimeoutError,
+  type EndReason,
+  type SessionEndReason,
+} from '../errors.ts';
+import {
+  abortReason,
+  bounded,
+  EventHub,
+  timeoutValue,
+  type Listener,
+  type WaitOptions,
+} from '../utils.ts';
+import { isAttachmentGone } from './errors.ts';
+export { SessionEndedError, type EndReason, type SessionEndReason };
 export type Command = keyof ProtocolMapping.Commands;
 export type Event = keyof ProtocolMapping.Events;
 export type Params<M extends Command> = ProtocolMapping.Commands[M]['paramsType'];
@@ -19,39 +35,6 @@ export interface TraceEntry {
   sessionId?: string;
   durationMs: number;
   error?: string;
-}
-export type EndReason =
-  'detach-requested' | 'detached' | 'target-destroyed' | 'target-crashed' | 'disconnected';
-/** Single-session termination reasons (excluding whole-connection disconnect). */
-export type SessionEndReason = Exclude<EndReason, 'disconnected'>;
-/**
- * A single target or session ended while the browser CDP connection remained distinct from it.
- * Connection-level disconnects throw `DisconnectedError` instead.
- */
-export class SessionEndedError extends NodriverError {
-  override name = 'SessionEndedError';
-  readonly reason: SessionEndReason;
-  readonly targetId: string;
-  readonly sessionId?: string;
-  constructor(
-    reason: SessionEndReason,
-    targetId: string,
-    options?: ErrorOptions & { sessionId?: string; detail?: string },
-  ) {
-    const label = targetId || options?.sessionId || 'unknown';
-    const detail = options?.detail ? `: ${options.detail}` : '';
-    super(`Target session ended: ${reason} (${label})${detail}`, options);
-    this.reason = reason;
-    this.targetId = targetId;
-    this.sessionId = options?.sessionId;
-  }
-}
-/** Chrome's reply when an attachment no longer exists: it detached, or its target closed. */
-function attachmentGone(error: unknown): boolean {
-  return (
-    error instanceof ProtocolError &&
-    /session.*(not found|not exist)|no session/i.test(error.message)
-  );
 }
 export interface ConnectionObserver {
   /** Synchronous transport-send observation. at is performance.now(), not wall-clock time. */
@@ -102,6 +85,15 @@ export interface ResponseObservation {
   /** CDP error code only; error messages, data and response payloads are omitted. */
   error?: string;
 }
+export interface DrainOptions extends WaitOptions {
+  /**
+   * How to handle unanswerable commands belonging to sessions that detached before replying:
+   * - `'ignore'` (default): wait only for active, still-answerable requests and cleanup.
+   * - `'throw'`: once answerable requests settle, reject immediately with `SessionEndedError`
+   *   if any detached unanswerable command exists.
+   */
+  detached?: 'ignore' | 'throw';
+}
 export interface ConnectionOptions {
   timeout?: number;
   onError?: (error: unknown) => void;
@@ -150,14 +142,25 @@ interface Unanswered {
   sessionId?: string;
   at: number;
   transportAt?: number;
-  /** The session detached; Chrome never answers a detached session's requests. */
-  detached?: boolean;
+  /** Whether a RequestRecorder (e.g. InputAction ledger) is tracking this request ID. */
+  hasLedger?: boolean;
   /** Told when the reply arrives, and whether its caller had stopped waiting by then. */
   replied?: (late: boolean, succeeded: boolean) => void;
   /** Invoked synchronously if a successful CDP reply arrives after the caller stopped waiting. */
   onLateReply?: (result: unknown) => void;
+  /** For root `Target.setDiscoverTargets`, tracks the requested discovery state on the wire. */
+  discoverTargets?: boolean;
+}
+interface DetachedWire {
+  method: string;
+  sessionId: string;
+  at: number;
+  transportAt?: number;
+  ended: SessionEndedError;
+  replied?: (late: boolean, succeeded: boolean) => void;
 }
 const ATTACH_CLEANUP_TIMEOUT = 5000;
+const MAX_DETACHED_WIRES = 512;
 /**
  * @internal Receives the ID and method of each request a connection creates for its owner, and
  * its session and parameters. Its listeners observe transport dispatch and the reply, including
@@ -184,7 +187,15 @@ export const requestLedger = new AsyncLocalStorage<RequestRecorder>();
 export class Connection {
   private nextId = 0;
   private pending = new Map<number, Pending>();
+  /** Active (non-detached) send attempts still awaiting a correlated CDP response. */
   private unanswered = new Map<number, Unanswered>();
+  /**
+   * Bounded FIFO retention of requests whose session detached before replying, kept solely to
+   * correlate late browser-level errors for `observe.onResponse` and report `detached: 'throw'`.
+   */
+  private detachedWires = new Map<number, DetachedWire>();
+  /** Detached requests tracked by an active RequestRecorder ledger until consumed by unanswerable(). */
+  private detachedLedger = new Map<number, string>();
   /** Requests that were awaiting settlement or a reply when the connection closed. */
   private lost = new Set<number>();
   private sessions = new Map<string, Session>();
@@ -193,15 +204,48 @@ export class Connection {
   private sessionTargets = new Map<string, string>();
   /** Target type of each attachment, for errors. */
   private targetTypes = new Map<string, string>();
+  /**
+   * Per-session crash generation tracking pairing Chrome's two independent crash channels
+   * (`Inspector.targetCrashed` on the page session and `Target.targetCrashed` on browser root).
+   * Each distinct crash advances `generation` once and records its pre-crash request watermark so a
+   * lagging second notification (even after recovery commits) never retires new requests or cancels
+   * a recovery navigation.
+   */
+  private crashStates = new Map<
+    string,
+    {
+      inspectorCount: number;
+      targetCount: number;
+      generation: number;
+      watermarks: Map<number, number>;
+    }
+  >();
+  /** Last confirmed root `Target.setDiscoverTargets` state (`undefined` if never confirmed). */
+  private targetDiscovery?: boolean;
+  /** Request ID of the highest-seq confirmed root `Target.setDiscoverTargets` reply. */
+  private targetDiscoveryConfirmedSeq = 0;
+  /**
+   * In-flight root `Target.setDiscoverTargets({ discover: true })` request IDs mapped to an
+   * optional deferred disable boundary (`firstConfirmedEnableAfterThis`, or `undefined` when no
+   * confirmed disable is waiting on this candidate). Strictly 1 entry per unanswered enable.
+   */
+  private inFlightDiscoverEnables = new Map<number, number | undefined>();
+  /**
+   * In-flight root `Target.setDiscoverTargets({ discover: false })` commands mapped to the
+   * earliest confirmed `discover: true` request ID after each (`Infinity` if none yet).
+   * Strictly 1 entry per unanswered disable.
+   */
+  private inFlightDiscoverDisables = new Map<number, number>();
   private abandoned = new Map<
     number,
     { timer: ReturnType<typeof setTimeout>; recorder?: RequestRecorder }
   >();
-  private attachingIds = new Map<string, SessionEndReason | undefined>();
   private sendQueue: Array<() => void> = [];
   private sending = false;
   private cleanupCount = 0;
   private settlingCount = 0;
+  private sessionSettling = new Map<string, number>();
+  private attachingIds = new Map<string, SessionEndReason | undefined>();
   private readonly drainWaiters = new Set<() => void>();
   private drainScheduled = false;
   /** Per-session listeners in registration order, so dispatch cost tracks one session only. */
@@ -237,19 +281,29 @@ export class Connection {
     return this.pending.size;
   }
   /**
-   * Send attempts without a correlated response. Cancellation, timeout, session end and send
-   * errors do not erase this debt; only a response or connection closure does. Zero on a closed
-   * connection is not evidence of successful responses or completion of browser-side work.
+   * Active (non-detached) send attempts without a correlated response. Cancellation and timeout
+   * keep this debt until a response arrives or the session detaches / connection closes; requests
+   * belonging to detached sessions move to `detachedUnansweredCount` so `drain()` does not hang.
    */
   get unansweredCount(): number {
     return this.unanswered.size;
   }
   /**
-   * Wait for caller requests, wire replies and library attachment cleanup. Rejects on
-   * disconnect/timeout/abort; never retries commands or closes the connection itself.
-   * Stop producers first: this is a quiescence check, not a lock against future sends.
+   * Recently detached send attempts that had not received a response before their session ended
+   * (bounded FIFO retention for late browser-level error correlation).
    */
-  drain(options: WaitOptions = {}): Promise<void> {
+  get detachedUnansweredCount(): number {
+    return this.detachedWires.size;
+  }
+  /**
+   * Wait for active caller requests, answerable wire replies and library attachment cleanup.
+   * Requests belonging to already-detached sessions do not hang `drain()` by default
+   * (`detached: 'ignore'`); pass `{ detached: 'throw' }` to reject with `SessionEndedError` once
+   * answerable debt reaches zero. Rejects on disconnect/timeout/abort; never retries commands or
+   * closes the connection itself. Stop producers first: this is a quiescence check, not a lock.
+   */
+  drain(options: DrainOptions = {}): Promise<void> {
+    const mode = this.drainDetachedMode(options.detached);
     return this.waitIdle(
       () =>
         !this.pending.size &&
@@ -260,7 +314,45 @@ export class Connection {
         !this.sending &&
         !this.sendQueue.length,
       options,
+      mode === 'throw' ? () => this.detachedWires.values().next().value?.ended : undefined,
     );
+  }
+  /**
+   * Wait until one session's active requests, wire replies and `onSettle` observers have settled,
+   * without waiting on unrelated sessions sharing the same `Connection`.
+   */
+  drainSession(sessionId: string | undefined, options: DrainOptions = {}): Promise<void> {
+    const mode = this.drainDetachedMode(options.detached);
+    const settleKey = sessionId ?? '';
+    return this.waitIdle(
+      () => {
+        if (this.sending || this.sendQueue.length) return false;
+        if ((this.sessionSettling.get(settleKey) ?? 0) > 0) return false;
+        for (const p of this.pending.values()) if (p.sessionId === sessionId) return false;
+        for (const w of this.unanswered.values()) if (w.sessionId === sessionId) return false;
+        return true;
+      },
+      options,
+      mode === 'throw'
+        ? () => {
+            for (const w of this.detachedWires.values())
+              if (w.sessionId === sessionId) return w.ended;
+            return undefined;
+          }
+        : undefined,
+    );
+  }
+  private drainDetachedMode(mode: DrainOptions['detached']): 'ignore' | 'throw' {
+    if (mode === undefined || mode === 'ignore' || mode === 'throw') return mode ?? 'ignore';
+    throw new TypeError('detached must be "ignore" or "throw"');
+  }
+  private recordDetachedWire(id: number, wire: DetachedWire): void {
+    this.detachedWires.set(id, wire);
+    while (this.detachedWires.size > MAX_DETACHED_WIRES) {
+      const oldest = this.detachedWires.keys().next().value;
+      if (oldest === undefined) break;
+      this.detachedWires.delete(oldest);
+    }
   }
   /**
    * @internal Like drain(), but waits only until each of the ledger's requests is settled and
@@ -274,9 +366,7 @@ export class Connection {
   private answerable(ledger: Set<number>): boolean {
     if (!this.outstanding(ledger)) return false;
     for (const id of ledger) {
-      if (this.pending.has(id)) return true;
-      const wire = this.unanswered.get(id);
-      if (wire && !wire.detached) return true;
+      if (this.pending.has(id) || this.unanswered.has(id)) return true;
     }
     return false;
   }
@@ -287,7 +377,13 @@ export class Connection {
   outstanding(ledger: Set<number>): boolean {
     let found = false;
     for (const id of ledger)
-      if (this.pending.has(id) || this.unanswered.has(id) || this.lost.has(id)) found = true;
+      if (
+        this.pending.has(id) ||
+        this.unanswered.has(id) ||
+        this.detachedLedger.has(id) ||
+        this.lost.has(id)
+      )
+        found = true;
       else ledger.delete(id);
     return found;
   }
@@ -298,14 +394,19 @@ export class Connection {
   unanswerable(ledger: Set<number>): Set<string> {
     const sessions = new Set<string>();
     for (const id of ledger) {
-      const wire = this.unanswered.get(id);
-      if (!wire?.detached) continue;
-      sessions.add(wire.sessionId!);
+      const sessionId = this.detachedLedger.get(id);
+      if (sessionId === undefined) continue;
+      sessions.add(sessionId);
+      this.detachedLedger.delete(id);
       ledger.delete(id);
     }
     return sessions;
   }
-  private waitIdle(idle: () => boolean, options: WaitOptions): Promise<void> {
+  private waitIdle(
+    idle: () => boolean,
+    options: WaitOptions,
+    detachedError?: () => SessionEndedError | undefined,
+  ): Promise<void> {
     const timeout = timeoutValue(options.timeout ?? this.timeout);
     if (this.failure) return Promise.reject(this.drainFailure());
     if (options.signal?.aborted) return Promise.reject(abortReason(options.signal));
@@ -319,7 +420,7 @@ export class Connection {
       };
       const check = () => {
         if (this.failure) finish(this.drainFailure());
-        else if (idle()) finish();
+        else if (idle()) finish(detachedError?.());
       };
       const abort = () => finish(abortReason(options.signal!));
       const timer = setTimeout(
@@ -428,6 +529,28 @@ export class Connection {
       },
     ).then(() => session);
   }
+  /** @internal Attaches a plain high-level Session with abandoned-attach cleanup on cancellation. */
+  attachPlainSession(targetId: string, options: WaitOptions = {}): Promise<Session> {
+    let session!: Session;
+    return this.requestCommand(
+      undefined,
+      'Target.attachToTarget',
+      [{ targetId, flatten: true }],
+      options,
+      {
+        targetId,
+        accept: (result) => {
+          const id = (result as { sessionId?: string }).sessionId;
+          if (!id) throw new DisconnectedError('Attach response has no sessionId');
+          const ended = this.attachingIds.get(id);
+          this.attachingIds.delete(id);
+          if (ended) throw new SessionEndedError(ended, targetId, { sessionId: id });
+          this.sessionTargets.set(id, targetId);
+          session = this.session(id);
+        },
+      },
+    ).then(() => session);
+  }
   /** @internal Cleanup has its own deadline and never uses the cancelled operation signal. */
   async cleanupAttachment(id: string): Promise<void> {
     if (this.closed) return;
@@ -440,7 +563,7 @@ export class Connection {
       );
     } catch (error) {
       // A missing attachment is already clean. Other failures cannot establish ownership.
-      if (attachmentGone(error)) return;
+      if (isAttachmentGone(error)) return;
       if (!this.closed) {
         this.reportError(error);
         await this.close();
@@ -457,7 +580,7 @@ export class Connection {
       await this.root.sendWith('Target.detachFromTarget', options, { sessionId: id });
     } catch (error) {
       // A missing attachment is already detached.
-      if (attachmentGone(error)) return;
+      if (isAttachmentGone(error)) return;
       void this.cleanupAttachment(id);
       throw error;
     } finally {
@@ -497,7 +620,9 @@ export class Connection {
           session.closeReason ??
             new SessionEndedError(
               'detached',
-              session instanceof TargetSession ? session.targetId : '',
+              session instanceof TargetSession
+                ? session.targetId
+                : (this.sessionTargets.get(sessionId!) ?? ''),
               { sessionId },
             ),
         );
@@ -577,12 +702,34 @@ export class Connection {
         try {
           started = performance.now();
           sentOnWire = true;
+          const discoverTargets =
+            sessionId === undefined && method === 'Target.setDiscoverTargets'
+              ? Boolean((params[0] as { discover?: boolean } | undefined)?.discover)
+              : undefined;
+          if (discoverTargets === true) {
+            // Only confirmed disables (<= targetDiscoveryConfirmedSeq) cut off earlier enable
+            // candidates; a failed or still-in-flight disable must not clear an active enable's
+            // crash pairings.
+            const hasEarlierCandidate = [...this.inFlightDiscoverEnables.keys()].some(
+              (seq) => seq > this.targetDiscoveryConfirmedSeq,
+            );
+            if (this.targetDiscovery !== true && !hasEarlierCandidate) {
+              this.reconcileUnpairedRootCrashes(id);
+              this.inFlightDiscoverEnables.set(id, Infinity);
+            } else {
+              this.inFlightDiscoverEnables.set(id, undefined);
+            }
+          } else if (discoverTargets === false) {
+            this.inFlightDiscoverDisables.set(id, Infinity);
+          }
           const wire: Unanswered = {
             method,
             sessionId,
             at: started,
+            ...(recorder ? { hasLedger: true } : {}),
             replied: recorded?.replied,
             ...(onLateReply ? { onLateReply } : {}),
+            ...(discoverTargets !== undefined ? { discoverTargets } : {}),
           };
           this.unanswered.set(id, wire);
           try {
@@ -610,30 +757,9 @@ export class Connection {
               });
             } catch {}
           }
-          const failTransport = (e: unknown) => {
-            const failure =
-              e instanceof DisconnectedError
-                ? e
-                : e instanceof Error
-                  ? new DisconnectedError(e.message, { cause: e })
-                  : new DisconnectedError(String(e), { cause: e });
-            this.finish(failure);
-            try {
-              void Promise.resolve(this.transport.close()).catch(() => {});
-            } catch {}
-          };
-          if (sent) void sent.catch(failTransport);
+          if (sent) void sent.catch((e) => this.failTransport(e));
         } catch (e) {
-          const failure =
-            e instanceof DisconnectedError
-              ? e
-              : e instanceof Error
-                ? new DisconnectedError(e.message, { cause: e })
-                : new DisconnectedError(String(e), { cause: e });
-          this.finish(failure);
-          try {
-            void Promise.resolve(this.transport.close()).catch(() => {});
-          } catch {}
+          this.failTransport(e);
         }
       });
       if (!this.sending) {
@@ -648,14 +774,31 @@ export class Connection {
     });
     if (record) {
       this.settlingCount++;
+      const settleKey = sessionId ?? '';
+      this.sessionSettling.set(settleKey, (this.sessionSettling.get(settleKey) ?? 0) + 1);
       const settled = (error?: Error) => {
         record(error);
         this.settlingCount--;
+        const remaining = (this.sessionSettling.get(settleKey) ?? 1) - 1;
+        if (remaining <= 0) this.sessionSettling.delete(settleKey);
+        else this.sessionSettling.set(settleKey, remaining);
         this.notifyDrain();
       };
       void pending.then(() => settled(), settled);
     }
     return pending;
+  }
+  private failTransport(e: unknown): void {
+    const failure =
+      e instanceof DisconnectedError
+        ? e
+        : e instanceof Error
+          ? new DisconnectedError(e.message, { cause: e })
+          : new DisconnectedError(String(e), { cause: e });
+    this.finish(failure);
+    try {
+      void Promise.resolve(this.transport.close()).catch(() => {});
+    } catch {}
   }
   private abandonAttach(id: number, recorder?: RequestRecorder): void {
     if (this.closed || this.abandoned.has(id)) return;
@@ -698,7 +841,9 @@ export class Connection {
         };
       }
       if (m.id !== undefined) {
-        const wire = this.unanswered.get(m.id);
+        const activeWire = this.unanswered.get(m.id);
+        const detachedWire = activeWire ? undefined : this.detachedWires.get(m.id);
+        const wire = activeWire ?? detachedWire;
         // Unknown IDs and duplicate responses cannot acknowledge another request.
         if (!wire) return;
         if (metric)
@@ -727,12 +872,59 @@ export class Connection {
           late: !p,
           error: m.error ? String(m.error.code) : undefined,
         };
-        this.unanswered.delete(m.id);
-        if (!p && !m.error && wire.onLateReply) {
+        if (activeWire) this.unanswered.delete(m.id);
+        else this.detachedWires.delete(m.id);
+        this.detachedLedger.delete(m.id);
+        if (activeWire?.discoverTargets !== undefined) {
+          if (activeWire.discoverTargets) {
+            const deferBoundary = this.inFlightDiscoverEnables.get(m.id);
+            this.inFlightDiscoverEnables.delete(m.id);
+            if (!m.error) {
+              if (m.id > this.targetDiscoveryConfirmedSeq) {
+                this.targetDiscoveryConfirmedSeq = m.id;
+                this.targetDiscovery = true;
+              }
+              for (const [disableSeq, firstConfirmed] of this.inFlightDiscoverDisables) {
+                if (m.id > disableSeq && m.id < firstConfirmed) {
+                  this.inFlightDiscoverDisables.set(disableSeq, m.id);
+                }
+              }
+              for (const [enableSeq, bound] of this.inFlightDiscoverEnables) {
+                if (bound !== undefined && m.id > enableSeq && m.id < bound) {
+                  this.inFlightDiscoverEnables.set(enableSeq, m.id);
+                }
+              }
+              if (deferBoundary !== undefined) {
+                this.reconcileUnpairedRootCrashes(m.id);
+              }
+            } else if (deferBoundary !== undefined) {
+              const nextPending = this.minPendingEnableAfter(m.id);
+              this.reconcileUnpairedRootCrashes(Math.min(deferBoundary, nextPending));
+              if (nextPending < deferBoundary) {
+                this.attachDeferredDisable(nextPending, deferBoundary);
+              }
+            }
+          } else {
+            const firstConfirmed = this.inFlightDiscoverDisables.get(m.id) ?? Infinity;
+            this.inFlightDiscoverDisables.delete(m.id);
+            if (!m.error) {
+              if (m.id > this.targetDiscoveryConfirmedSeq) {
+                this.targetDiscoveryConfirmedSeq = m.id;
+                this.targetDiscovery = false;
+              }
+              const minPending = this.minPendingEnableAfter(m.id);
+              this.reconcileUnpairedRootCrashes(Math.min(firstConfirmed, minPending));
+              if (minPending < firstConfirmed) {
+                this.attachDeferredDisable(minPending, firstConfirmed);
+              }
+            }
+          }
+        }
+        if (activeWire && !p && !m.error && activeWire.onLateReply) {
           // Run synchronously before wire.replied so any cleanup commands started here are
           // tracked by Connection.drain() and InputAction cleanup before this reply settles.
           try {
-            wire.onLateReply(m.result ?? {});
+            activeWire.onLateReply(m.result ?? {});
           } catch {}
         }
         try {
@@ -833,10 +1025,49 @@ export class Connection {
           for (const session of [...this.sessions.values()])
             if (session instanceof TargetSession && session.targetId === targetId)
               session.end(reason);
+          if (reason === 'target-destroyed') {
+            for (const [sid, tid] of [...this.sessionTargets]) {
+              if (tid !== targetId) continue;
+              this.detach(
+                sid,
+                new SessionEndedError('target-destroyed', targetId, { sessionId: sid }),
+              );
+            }
+          } else {
+            // Plain Sessions (high-level Tabs) stay open so they can recover via navigation,
+            // but requests sent to the crashed renderer will never answer and must not hang drain().
+            for (const [sid, tid] of [...this.sessionTargets]) {
+              if (tid !== targetId || this.sessions.get(sid) instanceof TargetSession) continue;
+              this.onPlainSessionCrashed(sid, targetId, 'target');
+            }
+          }
         }
         if (m.method === 'Inspector.targetCrashed' && m.sessionId) {
           const session = this.sessions.get(m.sessionId);
           if (session instanceof TargetSession) session.end('target-crashed');
+          else
+            this.onPlainSessionCrashed(
+              m.sessionId,
+              this.sessionTargets.get(m.sessionId) ?? '',
+              'inspector',
+            );
+        }
+        if (m.method === 'Page.frameNavigated' && m.sessionId) {
+          const frame = (m.params as { frame?: { parentId?: string } } | undefined)?.frame;
+          if (frame && !frame.parentId) {
+            // `Inspector.targetCrashed` and `Page.frameNavigated` are FIFO-ordered on the same
+            // session: once a new main document commits, any earlier lone `Target.targetCrashed`
+            // cannot have a lagging `Inspector.targetCrashed` arrive later, whereas an unpaired
+            // `Inspector.targetCrashed` may still receive a late root `Target.targetCrashed` and
+            // must keep its watermark.
+            const state = this.crashStates.get(m.sessionId);
+            if (state && state.inspectorCount < state.targetCount) {
+              for (let gen = state.inspectorCount + 1; gen <= state.targetCount; gen++) {
+                state.watermarks.delete(gen);
+              }
+              state.inspectorCount = state.targetCount;
+            }
+          }
         }
         this.dispatch({ method: m.method, params: m.params ?? {}, sessionId: m.sessionId });
       } else throw new Error('Invalid CDP message');
@@ -880,6 +1111,125 @@ export class Connection {
       this.options.observe?.onResponse?.(event);
     } catch {}
   }
+  private minPendingEnableAfter(seq: number): number {
+    let min = Infinity;
+    for (const enableSeq of this.inFlightDiscoverEnables.keys()) {
+      if (enableSeq > seq && enableSeq < min) min = enableSeq;
+    }
+    return min;
+  }
+  private attachDeferredDisable(enableSeq: number, firstConfirmed: number): void {
+    const prev = this.inFlightDiscoverEnables.get(enableSeq);
+    if (prev === undefined || firstConfirmed < prev) {
+      this.inFlightDiscoverEnables.set(enableSeq, firstConfirmed);
+    }
+  }
+  /**
+   * Closes unpaired `Inspector.targetCrashed` records whose watermark is strictly before
+   * `beforeSeq`, since root target discovery was disabled before that boundary and Chrome will
+   * never emit a paired root `Target.targetCrashed` for them.
+   */
+  private reconcileUnpairedRootCrashes(beforeSeq = Infinity): void {
+    for (const state of this.crashStates.values()) {
+      while (state.targetCount < state.inspectorCount) {
+        const nextGen = state.targetCount + 1;
+        const wm = state.watermarks.get(nextGen);
+        if (wm !== undefined && wm >= beforeSeq) break;
+        state.watermarks.delete(nextGen);
+        state.targetCount = nextGen;
+      }
+    }
+  }
+  /**
+   * Pairs the session-level (`Inspector.targetCrashed`) and browser-level (`Target.targetCrashed`)
+   * channels per crash generation:
+   * - The first notification of generation `k` advances `state.generation`, captures `watermark`,
+   *   retires requests `<= watermark`, and notifies `session.crashed` once.
+   * - The lagging second notification of generation `k` (even arriving after a recovery navigation
+   *   has committed) reuses generation `k`'s watermark and does not fire `session.crashed` again.
+   */
+  private onPlainSessionCrashed(
+    id: string,
+    targetId: string,
+    source: 'inspector' | 'target',
+  ): void {
+    let state = this.crashStates.get(id);
+    if (!state) {
+      state = { inspectorCount: 0, targetCount: 0, generation: 0, watermarks: new Map() };
+      this.crashStates.set(id, state);
+    }
+    const seq = source === 'inspector' ? ++state.inspectorCount : ++state.targetCount;
+    const isNewCrash = seq > state.generation;
+    let watermark: number;
+    if (isNewCrash) {
+      state.generation = seq;
+      watermark = this.nextId;
+      const hasNewerEnableInFlight = [...this.inFlightDiscoverEnables.keys()].some(
+        (enableSeq) => enableSeq > this.targetDiscoveryConfirmedSeq,
+      );
+      if (source === 'inspector' && this.targetDiscovery === false && !hasNewerEnableInFlight) {
+        // Root discovery is confirmed off with no newer enable in flight, so no paired
+        // Target.targetCrashed will ever arrive.
+        state.targetCount = seq;
+      } else {
+        state.watermarks.set(seq, watermark);
+        while (state.watermarks.size > 16) {
+          const oldest = state.watermarks.keys().next().value;
+          if (oldest === undefined) break;
+          state.watermarks.delete(oldest);
+        }
+      }
+    } else {
+      watermark = state.watermarks.get(seq) ?? 0;
+      state.watermarks.delete(seq);
+    }
+    const ended = new SessionEndedError('target-crashed', targetId, { sessionId: id });
+    this.retireCrashedSession(id, targetId, watermark, ended);
+    if (isNewCrash) this.sessions.get(id)?.noteCrash(ended);
+  }
+  /**
+   * Retires pre-crash pending and unanswered requests (up to `watermark`) for a plain Session
+   * without invalidating the session itself, so high-level Tabs can recover by navigating to a new
+   * document while Connection.drain() no longer waits forever for the dead renderer.
+   */
+  private retireCrashedSession(
+    id: string,
+    targetId: string,
+    watermark: number,
+    ended: SessionEndedError,
+  ): void {
+    for (const [child, parent] of this.sessionParents) {
+      if (parent === id && !(this.sessions.get(child) instanceof TargetSession)) {
+        const childTarget = this.sessionTargets.get(child) ?? targetId;
+        this.retireCrashedSession(
+          child,
+          childTarget,
+          watermark,
+          new SessionEndedError('target-crashed', childTarget, { sessionId: child }),
+        );
+      }
+    }
+    for (const [key, p] of this.pending) {
+      if (p.sessionId !== id || key > watermark) continue;
+      this.pending.delete(key);
+      p.cleanup();
+      p.reject(ended);
+    }
+    for (const [reqId, wire] of this.unanswered) {
+      if (wire.sessionId !== id || reqId > watermark) continue;
+      this.unanswered.delete(reqId);
+      if (wire.hasLedger) this.detachedLedger.set(reqId, id);
+      this.recordDetachedWire(reqId, {
+        method: wire.method,
+        sessionId: id,
+        at: wire.at,
+        transportAt: wire.transportAt,
+        ended,
+        replied: wire.replied,
+      });
+    }
+    this.notifyDrain();
+  }
   detach(id: string, reason?: Error): void {
     const session = this.sessions.get(id);
     const targetId =
@@ -896,6 +1246,7 @@ export class Connection {
     this.sessionParents.delete(id);
     this.targetTypes.delete(id);
     this.sessionTargets.delete(id);
+    this.crashStates.delete(id);
     for (const [child, parent] of this.sessionParents) if (parent === id) this.detach(child, ended);
     for (const [key, p] of this.pending)
       if (p.sessionId === id) {
@@ -903,7 +1254,19 @@ export class Connection {
         p.cleanup();
         p.reject(ended);
       }
-    for (const wire of this.unanswered.values()) if (wire.sessionId === id) wire.detached = true;
+    for (const [reqId, wire] of this.unanswered) {
+      if (wire.sessionId !== id) continue;
+      this.unanswered.delete(reqId);
+      if (wire.hasLedger) this.detachedLedger.set(reqId, id);
+      this.recordDetachedWire(reqId, {
+        method: wire.method,
+        sessionId: id,
+        at: wire.at,
+        transportAt: wire.transportAt,
+        ended,
+        replied: wire.replied,
+      });
+    }
     session?.invalidate(ended);
     this.sessions.delete(id);
     this.routes.delete(id);
@@ -922,8 +1285,11 @@ export class Connection {
     }
     for (const id of this.pending.keys()) this.lost.add(id);
     for (const id of this.unanswered.keys()) this.lost.add(id);
+    for (const id of this.detachedLedger.keys()) this.lost.add(id);
     this.pending.clear();
     this.unanswered.clear();
+    this.detachedWires.clear();
+    this.detachedLedger.clear();
     for (const { timer } of this.abandoned.values()) clearTimeout(timer);
     this.abandoned.clear();
     this.attachingIds.clear();
@@ -933,6 +1299,11 @@ export class Connection {
     this.sessionParents.clear();
     this.sessionTargets.clear();
     this.targetTypes.clear();
+    this.crashStates.clear();
+    this.targetDiscovery = undefined;
+    this.targetDiscoveryConfirmedSeq = 0;
+    this.inFlightDiscoverEnables.clear();
+    this.inFlightDiscoverDisables.clear();
     this.disconnected.emit(failure);
     this.disconnected.clear();
     this.events.clear();
@@ -948,12 +1319,19 @@ export class Session {
   private failure?: Error;
   private readonly subscriptions = new Set<() => void>();
   readonly disconnected: EventHub<Error>;
+  /** @internal Emits once per distinct renderer crash generation (deduplicated across Inspector/Target). */
+  readonly crashed: EventHub<SessionEndedError>;
   readonly connection: Connection;
   readonly id?: string;
   constructor(connection: Connection, id?: string) {
     this.connection = connection;
     this.id = id;
     this.disconnected = new EventHub<Error>(connection.options.onError);
+    this.crashed = new EventHub<SessionEndedError>(connection.options.onError);
+  }
+  /** @internal Notifies crash subscribers once per distinct crash generation. */
+  noteCrash(reason: SessionEndedError): void {
+    if (!this.failure) this.crashed.emit(reason);
   }
   get closed(): boolean {
     return !!this.failure || this.connection.closed;
@@ -961,6 +1339,10 @@ export class Session {
   /** The error that ended this session or its connection, once closed. */
   get closeReason(): Error | undefined {
     return this.failure ?? this.connection.closeReason;
+  }
+  /** @internal The error to throw when an operation observes this session is closed. */
+  closedError(): Error {
+    return this.closeReason ?? new DisconnectedError('Session closed');
   }
   send<M extends Command>(method: M, ...params: Params<M>): Promise<Result<M>> {
     return this.sendWith(method, {}, ...params);
@@ -973,8 +1355,12 @@ export class Session {
     if (this.failure) return Promise.reject(this.failure);
     return this.connection.request(this.id, method, params, options);
   }
+  /** Wait for this session's active requests, wire replies and `onSettle` observers to settle. */
+  drain(options: DrainOptions = {}): Promise<void> {
+    return this.connection.drainSession(this.id, options);
+  }
   on<E extends Event>(method: E, listener: Listener<EventParams<E>>): () => void {
-    if (this.closed) throw this.closeReason ?? new DisconnectedError('Session closed');
+    if (this.closed) throw this.closedError();
     const off = this.connection.subscribe(this.id, method, (e) =>
       listener(e.params as EventParams<E>),
     );
@@ -987,7 +1373,7 @@ export class Session {
   }
   /** Subscribes to every event of this session, in registration order with on(). */
   onAny(listener: Listener<CdpEvent>): () => void {
-    if (this.closed) throw this.closeReason ?? new DisconnectedError('Session closed');
+    if (this.closed) throw this.closedError();
     const off = this.connection.subscribe(this.id, undefined, listener);
     const dispose = () => {
       off();
@@ -1001,11 +1387,10 @@ export class Session {
     predicate: (event: EventParams<E>) => boolean = () => true,
     options: WaitOptions = {},
   ): Promise<EventParams<E>> {
-    if (this.closed)
-      return Promise.reject(this.closeReason ?? new DisconnectedError('Session closed'));
+    if (this.closed) return Promise.reject(this.closedError());
     if (options.signal?.aborted) return Promise.reject(abortReason(options.signal));
+    const timeout = timeoutValue(options.timeout ?? this.connection.timeout);
     return new Promise((resolve, reject) => {
-      const timeout = timeoutValue(options.timeout ?? this.connection.timeout);
       const cleanup = () => {
         clearTimeout(timer);
         off();
@@ -1040,6 +1425,7 @@ export class Session {
     this.failure = reason;
     this.disconnected.emit(reason);
     this.disconnected.clear();
+    this.crashed.clear();
     for (const off of this.subscriptions) off();
     this.subscriptions.clear();
   }
@@ -1089,7 +1475,8 @@ export class TargetSession extends Session {
     if (reason === 'target-crashed') void this.connection.cleanupAttachment(this.id!);
   }
   detach(options: WaitOptions = {}): Promise<void> {
-    if (this.detaching) return this.detaching;
+    if (options.timeout !== undefined) timeoutValue(options.timeout);
+    if (this.detaching) return bounded(this.detaching, options, 'TargetSession.detach');
     if (this.closed) return Promise.resolve();
     if (options.signal?.aborted) return Promise.reject(abortReason(options.signal));
     timeoutValue(options.timeout ?? this.connection.timeout);

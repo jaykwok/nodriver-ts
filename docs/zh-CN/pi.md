@@ -6,7 +6,7 @@
 
 ## 配置
 
-在 Pi 的 MCP 配置中，给 stdio 服务参数加入 `--mcp-compat`。使用 HTTP 时，以 `--mcp-compat` 启动服务，让 Pi 连接 `/mcp/compat` 并携带 Bearer token。配置格式见 [Pi 的 MCP 文档](https://github.com/earendil-works/pi/blob/v1.3.0/packages/coding-agent/docs/mcp.md)。
+在 Pi 的 MCP 配置中，给 stdio 服务参数加入 `--mcp-compat`。使用 HTTP 时，以 `--mcp-compat` 启动服务，让 Pi 连接 `/mcp/compat` 并携带 Bearer 令牌。配置格式见 [Pi 的 MCP 文档](https://github.com/earendil-works/pi/blob/v1.3.0/packages/coding-agent/docs/mcp.md)。
 
 ## 行为
 

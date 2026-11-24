@@ -1,6 +1,7 @@
 import type { Frame } from '../page/frames.ts';
 import {
   batchEvaluateIsolatedChunks,
+  batchProbeFilterChunks,
   isElementVisible,
   type Element,
   type SetCheckedResult,
@@ -8,15 +9,19 @@ import {
 } from './element.ts';
 import type { QueryOptions, Selector } from './query.ts';
 import { InputActionError, type InputOptions, type InputReport } from '../input/behavior.ts';
-import { EvaluationError, ProtocolError, StaleElementError } from '../errors.ts';
-import { isContextGone } from '../page/execution-context.ts';
-import { budget, poll, type WaitOptions } from '../utils.ts';
+import { EvaluationError, StaleElementError } from '../errors.ts';
+import { isContextGone, isNodeGone } from '../protocol/errors.ts';
+import { budget, normalizeText, poll, type WaitOptions } from '../utils.ts';
 
 export type LocatorQueryOptions = Omit<QueryOptions, 'timeout' | 'signal' | 'limit'>;
 
 export interface LocatorFilter {
   hasText?: string | RegExp;
   has?: Selector;
+  /** Filter matches by visibility (`isElementVisible()`). */
+  visible?: boolean;
+  /** Filter matches by enabled state (`isElementEnabled()`). */
+  enabled?: boolean;
 }
 
 export type LocatorWaitState = 'visible' | 'hidden' | 'attached' | 'detached';
@@ -33,10 +38,6 @@ type LocatorStep =
 
 const WAIT_STATES = new Set<LocatorWaitState>(['visible', 'hidden', 'attached', 'detached']);
 
-function normalizeText(value: string): string {
-  return value.replace(/\s+/g, ' ').trim();
-}
-
 function matchesText(text: string, expected: string | RegExp): boolean {
   const normalized = normalizeText(text);
   if (typeof expected === 'string') return normalized.includes(normalizeText(expected));
@@ -48,16 +49,16 @@ function matchesText(text: string, expected: string | RegExp): boolean {
 function replaced(error: unknown): boolean {
   return (
     error instanceof StaleElementError ||
-    ((error instanceof EvaluationError || error instanceof ProtocolError) &&
-      /Node is detached|No node (with given id )?found|Could not find node/i.test(error.message))
+    isNodeGone(error) ||
+    (error instanceof EvaluationError && /Node is detached/i.test(error.message))
   );
 }
 
-/** Whether an action may run again on a new match: it failed on a replaced element before any input. */
+/** Whether an action may run again on a new match: it failed on a replaced element/context before any input. */
 function retryable(error: unknown): boolean {
   if (error instanceof InputActionError)
-    return error.report.dispatched === 0 && replaced(error.cause);
-  return replaced(error);
+    return error.report.dispatched === 0 && (replaced(error.cause) || isContextGone(error.cause));
+  return replaced(error) || isContextGone(error);
 }
 
 /**
@@ -90,7 +91,7 @@ export class Locator {
       { kind: 'query', selector, options },
     ]);
   }
-  /** Narrows matches by text content (`hasText`) and/or a matching descendant (`has`). */
+  /** Narrows matches by text (`hasText`), descendant (`has`), visibility (`visible`), and/or enabled state (`enabled`). */
   filter(filter: LocatorFilter): Locator {
     if (
       filter.hasText !== undefined &&
@@ -98,6 +99,10 @@ export class Locator {
       !(filter.hasText instanceof RegExp)
     )
       throw new TypeError('filter.hasText must be a string or RegExp');
+    if (filter.visible !== undefined && typeof filter.visible !== 'boolean')
+      throw new TypeError('filter.visible must be a boolean');
+    if (filter.enabled !== undefined && typeof filter.enabled !== 'boolean')
+      throw new TypeError('filter.enabled must be a boolean');
     return new Locator(this.root, this.selector, this.options, [
       ...this.steps,
       { kind: 'filter', filter: { ...filter } },
@@ -168,14 +173,20 @@ export class Locator {
           elements = collected;
         }
       } else if (current.kind === 'filter') {
-        const { hasText, has } = current.filter;
+        const { hasText, has, visible, enabled } = current.filter;
         const needed = isLast && single ? 1 : nextIsLastNth ? next.index + 1 : Infinity;
         const filtered: Element[] = [];
-        if (hasText !== undefined) {
-          if (elements.length === 1) {
+        const probeSpec = {
+          text: hasText !== undefined,
+          visible: visible !== undefined,
+          enabled: enabled !== undefined,
+        };
+        const needsProbe = probeSpec.text || probeSpec.visible || probeSpec.enabled;
+        if (needsProbe) {
+          if (elements.length === 1 && !probeSpec.visible && !probeSpec.enabled && probeSpec.text) {
             const el = elements[0]!;
             const text = await el.text(step());
-            if (matchesText(text, hasText)) {
+            if (matchesText(text, hasText!)) {
               if (
                 has === undefined ||
                 (await el.query(has, { ...(forceAttached ? { visible: false } : {}), ...step() }))
@@ -183,10 +194,9 @@ export class Locator {
                 filtered.push(el);
             }
           } else {
-            for await (const { offset, results } of batchEvaluateIsolatedChunks(
+            for await (const { offset, results } of batchProbeFilterChunks(
               elements,
-              (el) => el.textContent ?? '',
-              undefined,
+              probeSpec,
               step(),
             )) {
               for (let j = 0; j < results.length; j++) {
@@ -195,7 +205,10 @@ export class Locator {
                 // A vanished item cannot affect matches already decided ahead of it; only
                 // re-query when a stale item could still occupy or precede the needed match.
                 if (!probe.ok) throw new StaleElementError('Element was removed from its document');
-                if (!matchesText(probe.value, hasText)) continue;
+                if (hasText !== undefined && !matchesText(probe.value.text ?? '', hasText))
+                  continue;
+                if (visible !== undefined && probe.value.visible !== visible) continue;
+                if (enabled !== undefined && probe.value.enabled !== enabled) continue;
                 if (has !== undefined) {
                   const match = await el.query(has, {
                     ...(forceAttached ? { visible: false } : {}),
@@ -231,6 +244,39 @@ export class Locator {
     }
     return single ? elements.slice(0, 1) : elements;
   }
+  private describe(): string {
+    return this.steps
+      .map((s) => {
+        if (s.kind === 'query') return JSON.stringify(s.selector);
+        if (s.kind === 'nth') return s.index === 0 ? 'first()' : `nth(${s.index})`;
+        const parts: string[] = [];
+        if (s.filter.hasText !== undefined) parts.push(`hasText=${String(s.filter.hasText)}`);
+        if (s.filter.has !== undefined) parts.push(`has=${JSON.stringify(s.filter.has)}`);
+        if (s.filter.visible !== undefined) parts.push(`visible=${s.filter.visible}`);
+        if (s.filter.enabled !== undefined) parts.push(`enabled=${s.filter.enabled}`);
+        return `filter(${parts.join(', ')})`;
+      })
+      .join(' -> ');
+  }
+  private async hasVisibleMatch(
+    matches: readonly Element[],
+    step: () => WaitOptions,
+  ): Promise<{ anyVisible: boolean; sawStale: boolean }> {
+    if (!matches.length) return { anyVisible: false, sawStale: false };
+    if (matches.length === 1)
+      return { anyVisible: await matches[0]!.isVisible(step()), sawStale: false };
+    let sawStale = false;
+    for await (const { results } of batchEvaluateIsolatedChunks(
+      matches,
+      isElementVisible,
+      undefined,
+      step(),
+    )) {
+      if (results.some((entry) => entry.ok && entry.value)) return { anyVisible: true, sawStale };
+      if (results.some((entry) => !entry.ok)) sawStale = true;
+    }
+    return { anyVisible: false, sawStale };
+  }
   /** All current matches, without waiting. */
   async all(options: WaitOptions = {}): Promise<Element[]> {
     const step = budget(options, 'all');
@@ -238,8 +284,6 @@ export class Locator {
   }
   /** Waits for the first match. The element itself goes stale if it is replaced. */
   async element(options: WaitOptions = {}): Promise<Element> {
-    if (this.steps.length === 1)
-      return this.root().waitForSelector(this.selector, { ...this.options, ...options });
     return poll(
       async (step) => {
         const frame = this.root();
@@ -251,10 +295,14 @@ export class Locator {
         }
       },
       options,
-      `locator ${JSON.stringify(this.selector)}`,
+      `locator ${this.describe()}`,
     );
   }
-  /** Waits until the locator reaches the requested state (`'visible'` by default). */
+  /**
+   * Waits until the locator reaches the requested state (`'visible'` by default).
+   * `'visible'` waits until at least one match is visible (complementing `'hidden'`, which waits
+   * until no match is visible); chain `.first()` or `.nth(i)` to target a specific index.
+   */
   async waitFor(options: LocatorWaitOptions = {}): Promise<void> {
     const state = options.state ?? 'visible';
     if (!WAIT_STATES.has(state)) throw new TypeError(`Invalid waitFor state: ${String(state)}`);
@@ -277,28 +325,15 @@ export class Locator {
             });
             return matches.length === 0 ? true : undefined;
           }
-          if (state === 'visible') {
-            const matches = await this.resolveMatches(attempt, { single: true });
-            const el = matches[0];
-            if (!el) return undefined;
-            return (await el.isVisible(attempt())) ? true : undefined;
-          }
-          // 'hidden': preserve this locator's own filtering/indexing semantics so `first()`/`nth()`
-          // target the exact same element(s) as `isVisible()` and actions.
           const matches = await this.resolveMatches(attempt);
-          if (!matches.length) return true;
-          if (matches.length === 1)
-            return (await matches[0]!.isVisible(attempt())) ? undefined : true;
-          let sawStale = false;
-          for await (const { results } of batchEvaluateIsolatedChunks(
-            matches,
-            isElementVisible,
-            undefined,
-            attempt(),
-          )) {
-            if (results.some((entry) => entry.ok && entry.value)) return undefined;
-            if (results.some((entry) => !entry.ok)) sawStale = true;
+          if (state === 'visible') {
+            const { anyVisible } = await this.hasVisibleMatch(matches, attempt);
+            return anyVisible ? true : undefined;
           }
+          // 'hidden': waits until zero matches remain visible.
+          if (!matches.length) return true;
+          const { anyVisible, sawStale } = await this.hasVisibleMatch(matches, attempt);
+          if (anyVisible) return undefined;
           if (sawStale) throw new StaleElementError('Element was removed from its document');
           return true;
         } catch (error) {
@@ -307,7 +342,7 @@ export class Locator {
         }
       },
       options,
-      `locator ${JSON.stringify(this.selector)} to be ${state}`,
+      `locator ${this.describe()} to be ${state}`,
     );
   }
   /** The number of current matches, without waiting. */
@@ -315,16 +350,16 @@ export class Locator {
     return (await this.all(options)).length;
   }
   /**
-   * Whether the first current match is visible, using the same visibility predicate as
-   * `Element.isVisible()`. Does not wait; returns `false` when nothing matches.
+   * Whether any current match is visible (or the indexed match when `.first()` / `.nth()` is
+   * chained), using the same visibility predicate as `Element.isVisible()`. Strictly complementary
+   * to `waitFor({ state: 'hidden' })`. Does not wait; returns `false` when nothing matches.
    */
   async isVisible(options: WaitOptions = {}): Promise<boolean> {
     const step = budget(options, 'isVisible');
     const frame = this.root();
     try {
-      const match = (await this.resolveMatches(step, { single: true }))[0];
-      if (!match) return false;
-      return await match.isVisible(step());
+      const matches = await this.resolveMatches(step);
+      return (await this.hasVisibleMatch(matches, step)).anyVisible;
     } catch (error) {
       if (this.pending(frame, error)) return false;
       throw error;

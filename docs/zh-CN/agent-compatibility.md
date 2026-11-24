@@ -33,7 +33,7 @@ const service = await startBrowserMcpHttpServer({
 
 SDK 负责版本协商、旧协议请求的取消和服务端发起的 elicitation。现代请求各自携带能力声明。旧协议的能力来自该连接的 initialize 消息，不同协议会话之间从不共享能力缓存。
 
-HTTP MCP session ID 随机生成，作用域同时绑定已认证的主体 **与**浏览器租约；它不能用于认证调用者，也不能访问其他租约。`/mcp` 的令牌、Origin/Host、请求体、并发请求、响应缓冲和期限限制在这里同样适用。兼容会话使用 SSE 响应。每个租约默认最多保留四个 MCP 会话：超出上限的新会话返回 429，未知 session ID 的请求返回 404，initialize 失败的会话立即释放名额。空闲会话五分钟后到期；活动的响应或 GET 流会推迟到期，但仍受 HTTP 流期限约束。DELETE 或会话到期只关闭协议状态；浏览器状态保留到被显式关闭、租约被释放或租约自身到期。释放浏览器租约或停止服务会关闭其 MCP 会话。SSE 流未返回结果就结束时，旧协议 HTTP 客户端可能要等到自身超时或显式关闭才结算等待中的请求，因此应配置有限的客户端请求超时。
+HTTP MCP session ID 随机生成，作用域同时绑定认证主体**与**浏览器租约；它不能用于认证调用方，也不能访问其他租约。`/mcp` 的令牌、Origin/Host、请求体、并发请求、响应缓冲和期限限制在这里同样适用。兼容会话使用 SSE 响应。每个租约默认最多保留四个 MCP 会话：超出上限的新会话返回 429，未知 session ID 的请求返回 404，initialize 失败的会话立即释放名额。空闲会话五分钟后到期；活动的响应或 GET 流会推迟到期，但仍受 HTTP 流期限约束。DELETE 或会话到期只关闭协议状态；浏览器状态保留到被显式关闭、租约被释放或租约自身到期。释放浏览器租约或停止服务会关闭其 MCP 会话。SSE 流未返回结果就结束时，旧协议 HTTP 客户端可能要等到自身超时或显式关闭才结算等待中的请求，因此应配置有限的客户端请求超时。
 
 取消会先释放操作队列，后续写入才能继续。错误和断线都不会触发输入重放。元素引用仍受同样的文档与租约边界约束。
 
@@ -41,7 +41,7 @@ HTTP MCP session ID 随机生成，作用域同时绑定已认证的主体 **与
 
 人工接管是可选功能：需宿主启用，客户端须声明 form elicitation 并实现处理器。2025-06-18 的 `elicitation: {}` 能力视为支持表单。SDK 将 input-required 续传转换为一次 elicitation 往返。能力缺失时返回错误，不会自动替用户确认。
 
-如需手动试用接管，在图形桌面的交互终端中运行 `npm run bench:handoff:manual`。它会在一个本地测试页上打开一次性浏览器。输入 `manual-check` 并点击 Complete，再在终端回答 `accept`、`decline` 或 `cancel`；回答 `accept` 后，它会检查新的无障碍快照是否显示页面已完成。它不会代填、代点或代为确认。`HANDOFF_TRANSPORT=http` 选择 HTTP（默认 stdio），`HANDOFF_PROTOCOL=2025-06-18` 选择该协议版本（默认 2025-11-25）。结果写入 `test-results/handoff-manual-<timestamp>.json`。
+如需手动试用接管，在图形桌面的交互终端中运行 `npm run bench:handoff:manual`。它会在一个本地测试页上打开一次性浏览器。输入 `manual-check` 并点击 Complete，再在终端回答 `accept`、`decline` 或 `cancel`；回答 `accept` 后，它会检查新的可访问性快照是否显示页面已完成。它不会代填、代点或代为确认。`HANDOFF_TRANSPORT=http` 选择 HTTP（默认 stdio），`HANDOFF_PROTOCOL=2025-06-18` 选择该协议版本（默认 2025-11-25）。结果写入 `test-results/handoff-manual-<timestamp>.json`。
 
 ## 覆盖与限制
 

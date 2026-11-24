@@ -9,10 +9,11 @@ import {
   isEncryptedState,
   type StateKey,
 } from '../browser/state-crypto.ts';
+import { STATE_NAME_RE } from './auth.ts';
 
 /** A principal's name when it is safe as a path segment; otherwise a digest, too long for a name. */
 function principalDirectory(principal: string): string {
-  if (!principal) throw new TypeError('Invalid state principal');
+  if (!principal || principal.length > 200) throw new TypeError('Invalid state principal');
   return /^[a-z0-9_-]{1,64}$/.test(principal)
     ? principal
     : `p-${createHash('sha256').update(principal).digest('hex')}`;
@@ -24,7 +25,7 @@ async function statePath(
   name: string,
   create: boolean,
 ): Promise<string> {
-  if (!/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$/.test(name)) throw new TypeError('Invalid state name');
+  if (!STATE_NAME_RE.test(name)) throw new TypeError('Invalid state name');
   const owner = principalDirectory(principal);
   if (create) await mkdir(resolve(directory), { recursive: true });
   const parent = join(await realpath(resolve(directory)), owner);
@@ -67,9 +68,10 @@ export async function readState(
       await file.close();
     }
   } catch (cause) {
-    // A missing name looks the same whoever else saved it; the file system message names host paths.
-    if ((cause as NodeJS.ErrnoException).code === 'ENOENT')
-      throw new Error(`No saved state named ${name}`, { cause });
+    // A missing name looks the same whoever else saved it; file system errors name host paths.
+    const code = (cause as NodeJS.ErrnoException | undefined)?.code;
+    if (code === 'ENOENT') throw new Error(`No saved state named ${name}`, { cause });
+    if (typeof code === 'string') throw new Error(`Cannot read saved state ${name}`, { cause });
     throw cause;
   }
 }
@@ -81,19 +83,25 @@ export async function writeState(
   state: SavedStorageState,
   key?: StateKey,
 ): Promise<void> {
-  const path = await statePath(directory, principal, name, true);
-  const content = key === undefined ? JSON.stringify(state) : await encryptState(state, key);
-  const temporary = join(dirname(path), `.state-${randomUUID()}.tmp`);
-  const file = await open(temporary, 'wx', 0o600);
   try {
+    const path = await statePath(directory, principal, name, true);
+    const content = key === undefined ? JSON.stringify(state) : await encryptState(state, key);
+    const temporary = join(dirname(path), `.state-${randomUUID()}.tmp`);
+    const file = await open(temporary, 'wx', 0o600);
     try {
-      await file.writeFile(content);
+      try {
+        await file.writeFile(content);
+      } finally {
+        await file.close();
+      }
+      // Replacing the entry avoids following links and preserves the previous state on write errors.
+      await rename(temporary, path);
     } finally {
-      await file.close();
+      await rm(temporary, { force: true }).catch(() => {});
     }
-    // Replacing the entry avoids following links and preserves the previous state on write errors.
-    await rename(temporary, path);
-  } finally {
-    await rm(temporary, { force: true });
+  } catch (cause) {
+    const code = (cause as NodeJS.ErrnoException | undefined)?.code;
+    if (typeof code === 'string') throw new Error(`Cannot write saved state ${name}`, { cause });
+    throw cause;
   }
 }

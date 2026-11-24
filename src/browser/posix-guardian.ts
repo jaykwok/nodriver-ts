@@ -39,7 +39,9 @@ function stop(): void {
     try {
       process.kill(-child.pid, 'SIGKILL');
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ESRCH')
+      const code = (error as NodeJS.ErrnoException).code;
+      // macOS reports EPERM when only zombies remain in our own process group.
+      if (code !== 'ESRCH' && !(code === 'EPERM' && process.platform === 'darwin'))
         send({ type: 'error', error: String(error) });
     }
   }

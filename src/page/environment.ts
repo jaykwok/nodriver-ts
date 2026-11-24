@@ -1,9 +1,7 @@
 import type { Frame, World } from './frames.ts';
-import type { WaitOptions } from '../utils.ts';
-import { timeoutValue } from '../utils.ts';
-import { abortReason } from '../utils.ts';
-import { StaleElementError, TimeoutError } from '../errors.ts';
-import { isContextGone } from './execution-context.ts';
+import { budget, type WaitOptions } from '../utils.ts';
+import { StaleElementError } from '../errors.ts';
+import { isContextGone } from '../protocol/errors.ts';
 
 export interface NavigatorSnapshot {
   userAgent: string;
@@ -96,7 +94,10 @@ export async function inspectEnvironment(
     return await sampleEnvironment(frame, options);
   } catch (error) {
     if (isContextGone(error))
-      throw new StaleElementError('Frame changed during environment sampling', { cause: error });
+      throw new StaleElementError('Frame changed during environment sampling', {
+        cause: error,
+        reason: frame.detached ? 'frame-detached' : 'context-gone',
+      });
     throw error;
   }
 }
@@ -105,28 +106,30 @@ async function sampleEnvironment(
   frame: Frame,
   options: InspectEnvironmentOptions,
 ): Promise<EnvironmentReport> {
-  const timeout = timeoutValue(options.timeout ?? 5000);
-  const deadline = performance.now() + timeout;
+  const step = budget(
+    { timeout: options.timeout ?? 5000, signal: options.signal },
+    'Environment sampling',
+  );
   const generation = frame.generation;
   const session = frame.session;
   const execution = () => {
-    if (options.signal?.aborted) throw abortReason(options.signal);
-    const remaining = deadline - performance.now();
-    if (remaining <= 0) throw new TimeoutError('Environment sampling timed out');
+    const wait = step();
     return {
-      timeout: remaining,
-      signal: options.signal,
+      timeout: wait.timeout!,
+      signal: wait.signal,
       world: options.world ?? ('isolated' as World),
     };
   };
   const assertDocument = () => {
-    if (
-      frame.detached ||
-      session.closed ||
-      frame.generation !== generation ||
-      frame.session !== session
-    )
-      throw new StaleElementError('Frame changed during environment sampling');
+    if (session.closed) throw session.closedError();
+    if (frame.detached)
+      throw new StaleElementError('Frame detached during environment sampling', {
+        reason: 'frame-detached',
+      });
+    if (frame.generation !== generation || frame.session !== session)
+      throw new StaleElementError('Frame changed during environment sampling', {
+        reason: 'context-gone',
+      });
   };
   assertDocument();
   const document = await frame.evaluate<DocumentEnvironment>(
@@ -219,7 +222,8 @@ async function sampleEnvironment(
   return report;
 }
 
-function stableJSON(value: unknown): string | undefined {
+/** @internal Key-order-independent JSON serialization for comparing nested environment objects. */
+export function stableJSON(value: unknown): string | undefined {
   return JSON.stringify(value, (_key, item: unknown) =>
     item && typeof item === 'object' && !Array.isArray(item)
       ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a.localeCompare(b)))

@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
-import { DisconnectedError, NodriverError } from '../errors.ts';
+import { DisconnectedError, NodriverError, TimeoutError } from '../errors.ts';
 import { abortReason, bounded, removeTree, type WaitOptions } from '../utils.ts';
 import type { StartupProcessDiagnostics } from './startup.ts';
 
@@ -14,9 +14,18 @@ import type { StartupProcessDiagnostics } from './startup.ts';
 export class ReleaseUncertainError extends NodriverError {
   override name = 'ReleaseUncertainError';
 }
-/** The helper did not perform a command: it refused it, or the command never reached it. */
-class CommandNotPerformed extends NodriverError {
-  override name = 'CommandNotPerformed';
+/** Marks a NodriverError for a command the helper refused or never received. */
+const COMMAND_NOT_PERFORMED = Symbol('COMMAND_NOT_PERFORMED');
+function commandNotPerformed(message: string, options?: ErrorOptions): NodriverError {
+  const error = new NodriverError(message, options);
+  (error as unknown as Record<symbol, boolean>)[COMMAND_NOT_PERFORMED] = true;
+  return error;
+}
+function isCommandNotPerformed(error: unknown): boolean {
+  return (
+    error instanceof NodriverError &&
+    (error as unknown as Record<symbol, boolean>)[COMMAND_NOT_PERFORMED] === true
+  );
 }
 
 const HELPER_PREFIX = 'nodriver-guardian-';
@@ -123,8 +132,11 @@ export class Guardian {
           },
         );
       } catch (error) {
-        await rm(buildDirectory, { recursive: true, force: true });
+        await removeTree(buildDirectory).catch(() => {});
         if (options.signal?.aborted) throw abortReason(options.signal);
+        const execError = error as NodeJS.ErrnoException & { killed?: boolean };
+        if (execError.killed)
+          throw new TimeoutError('Compiling Windows guardian timed out', { cause: error });
         throw new NodriverError(
           `Could not compile Windows guardian: ${String(error).slice(-16384)}`,
           { cause: error },
@@ -132,7 +144,7 @@ export class Guardian {
       }
     }
     if (options.signal?.aborted) {
-      if (buildDirectory) await rm(buildDirectory, { recursive: true, force: true });
+      if (buildDirectory) await removeTree(buildDirectory).catch(() => {});
       throw abortReason(options.signal);
     }
     // Chrome-specific env overrides must not change helper compilation/runtime configuration,
@@ -170,9 +182,11 @@ export class Guardian {
       for (const request of this.requests.values()) request.reject(error);
       this.requests.clear();
     };
+    let helperStderr = '';
     this.child.stderr!.setEncoding('utf8');
     this.child.stderr!.on('data', (text: string) => {
-      this.state.stderr = (this.state.stderr + text).slice(-16384);
+      helperStderr = (helperStderr + text).slice(-16384);
+      if (!this.state.stderr) this.state.stderr = helperStderr;
     });
     this.child.stdin!.on('error', fail);
     this.child.on('error', fail);
@@ -181,7 +195,9 @@ export class Guardian {
         // Windows can keep the helper executable locked for a moment after it exits.
         if (buildDirectory) this.removed = removeTree(buildDirectory).catch(() => {});
         if (this.released && code === 0) this.state.exited = true;
-        fail(new DisconnectedError(`Browser guardian exited (${code}): ${this.state.stderr}`));
+        const detail = this.state.stderr || helperStderr;
+        if (!this.state.stderr && helperStderr) this.state.stderr = helperStderr;
+        fail(new DisconnectedError(`Browser guardian exited (${code}): ${detail}`));
         resolve();
       });
     });
@@ -197,8 +213,10 @@ export class Guardian {
           stderr?: string;
           error?: string;
         };
-        if (message.stderr !== undefined)
-          this.state.stderr = Buffer.from(message.stderr, 'base64').toString('utf8').slice(-16384);
+        if (message.stderr !== undefined) {
+          const decoded = Buffer.from(message.stderr, 'base64').toString('utf8').slice(-16384);
+          if (decoded || !helperStderr) this.state.stderr = decoded;
+        }
         if (message.type === 'started') {
           this.state.pid = message.pid;
           ready();
@@ -212,7 +230,7 @@ export class Guardian {
         if (message.id !== undefined) {
           const request = this.requests.get(message.id);
           this.requests.delete(message.id);
-          if (message.error) request?.reject(new CommandNotPerformed(message.error));
+          if (message.error) request?.reject(commandNotPerformed(message.error));
           else request?.resolve();
         }
       } catch (error) {
@@ -229,7 +247,7 @@ export class Guardian {
   }
   private async request(command: string, timeout = 5000): Promise<void> {
     if (this.failure)
-      throw new CommandNotPerformed(`Browser guardian ${command} not sent`, {
+      throw commandNotPerformed(`Browser guardian ${command} not sent`, {
         cause: this.failure,
       });
     const id = ++this.sequence;
@@ -237,7 +255,7 @@ export class Guardian {
       this.requests.set(id, { resolve, reject });
       this.child.stdin!.write(JSON.stringify({ command, id }) + '\n', (error) => {
         if (error)
-          reject(new CommandNotPerformed(`Browser guardian ${command} not sent`, { cause: error }));
+          reject(commandNotPerformed(`Browser guardian ${command} not sent`, { cause: error }));
       });
     });
     try {
@@ -254,15 +272,14 @@ export class Guardian {
    * any other failure is uncertain.
    */
   async release(): Promise<void> {
-    if (this.state.exited) throw new CommandNotPerformed('Browser already exited');
+    if (this.state.exited) throw commandNotPerformed('Browser already exited');
     try {
       await this.request('release');
     } catch (error) {
-      if (error instanceof CommandNotPerformed) throw error;
+      if (isCommandNotPerformed(error)) throw error;
       // Helpers report an exit only while unreleased. The Windows helper stops reading commands
       // once Chrome exits, so a release that raced the exit ends with the helper unanswered.
-      if (this.state.exited)
-        throw new CommandNotPerformed('Browser already exited', { cause: error });
+      if (this.state.exited) throw commandNotPerformed('Browser already exited', { cause: error });
       // EOF kills an uncommitted browser; committed release survives. Never send terminate.
       this.disconnect();
       throw new ReleaseUncertainError(

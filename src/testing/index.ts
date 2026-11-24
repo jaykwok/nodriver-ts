@@ -70,11 +70,68 @@ export type CommandHandler<M extends Command> = (
   params: Params<M>[0],
   command: RecordedCommand<M>,
 ) => Result<M> | typeof NO_REPLY | Promise<Result<M> | typeof NO_REPLY>;
+export interface ScriptedPageOptions {
+  url?: string;
+  title?: string;
+  browserContextId?: string;
+  openerId?: string;
+  openerFrameId?: string;
+}
 export interface ScriptedChromeOptions {
   /** Defaults to one about:blank page. [] starts with no targets. */
-  pages?: Array<{ url?: string; title?: string }>;
+  pages?: ScriptedPageOptions[];
+  /** Optional default browser context ID reported by `Target.getBrowserContexts`. */
+  defaultBrowserContextId?: string;
+}
+export interface ScriptedNavigationOptions {
+  /** Frame to navigate; defaults to the session's main frame (`targetId`). */
+  frameId?: string;
+  /**
+   * Explicit parent frame ID for `Page.frameNavigated`. When omitted on a subframe (`frameId !== targetId`),
+   * uses the parent recorded from `Page.frameAttached` or falls back to the session's main frame (`targetId`).
+   */
+  parentId?: string;
+  /** Loader ID for the navigation; generated automatically if omitted. */
+  loaderId?: string;
+  /** Emit `Page.navigatedWithinDocument` instead of `Page.frameNavigated` and lifecycle events. */
+  sameDocument?: boolean;
+  /**
+   * Lifecycle events emitted after `Page.frameNavigated` for cross-document navigations.
+   * Defaults to `['DOMContentLoaded', 'load']`. Pass `[]` to emit no lifecycle events.
+   */
+  lifecycle?: readonly string[];
+  /** Navigation type for `Page.frameNavigated`; defaults to `'Navigation'`. */
+  type?: Protocol.Page.NavigationType;
+}
+export interface ScriptedNavigationDecision {
+  url?: string;
+  errorText?: string;
+  isDownload?: boolean;
+  sameDocument?: boolean;
+  lifecycle?: readonly string[];
+  delayMs?: number;
+}
+export interface ScriptedNavigationHandlerOptions {
+  /** Delay in milliseconds before committing the navigation; defaults to `setImmediate`. */
+  delayMs?: number;
+  /** Default lifecycle events passed to `commitNavigation()`; defaults to `['DOMContentLoaded', 'load']`. */
+  lifecycle?: readonly string[];
+  /**
+   * Optional callback invoked on each `Page.navigate` command. Return `errorText` or `isDownload`
+   * to simulate a failed or download navigation (no commit events are emitted), or override
+   * `url`, `sameDocument`, `lifecycle`, or `delayMs`.
+   */
+  onNavigate?: (
+    params: Protocol.Page.NavigateRequest,
+    command: RecordedCommand<'Page.navigate'>,
+  ) => void | ScriptedNavigationDecision | Promise<void | ScriptedNavigationDecision>;
 }
 type Handler = (command: RecordedCommand) => unknown | Promise<unknown>;
+function frameSecurityOrigin(url: string): string {
+  if (!URL.canParse(url)) return '://';
+  const parsed = new URL(url);
+  return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.origin : '://';
+}
 
 /**
  * A strict, scripted CDP peer for real Browser/Tab/Session objects. No Chrome process or JS
@@ -92,7 +149,9 @@ export class ScriptedChrome {
   private readonly queued = new Map<Command, Handler[]>();
   private readonly pages = new Map<string, Protocol.Target.TargetInfo>();
   private readonly sessions = new Map<string, string>();
+  private readonly frameParents = new Map<string, Map<string, string>>();
   private readonly contexts = new Set<string>();
+  private readonly defaultBrowserContextId?: string;
   private sequence = 0;
   private discovering = false;
   /** Delay modeled attach replies (not attachment creation) to exercise cancelled late replies. */
@@ -100,6 +159,7 @@ export class ScriptedChrome {
 
   private constructor(server: WebSocketServer, options: ScriptedChromeOptions) {
     this.server = server;
+    this.defaultBrowserContextId = options.defaultBrowserContextId;
     this.endpoint = `ws://127.0.0.1:${(server.address() as AddressInfo).port}/devtools/browser/scripted`;
     for (const page of options.pages ?? [{}]) this.addPage(page);
     server.on('connection', (socket) => {
@@ -109,12 +169,14 @@ export class ScriptedChrome {
       }
       this.socket = socket;
       this.sessions.clear();
+      this.frameParents.clear();
       this.discovering = false;
       socket.on('error', () => socket.terminate());
       socket.on('close', () => {
         if (this.socket !== socket) return;
         this.socket = undefined;
         this.sessions.clear();
+        this.frameParents.clear();
         for (const info of this.pages.values()) info.attached = false;
         this.discovering = false;
       });
@@ -162,21 +224,51 @@ export class ScriptedChrome {
     this.queued.set(method, queue);
   }
 
-  /** Emit a raw event; this does not mutate the fake's target/frame model. */
+  /** Emit a raw event; records `Page.frameAttached`/`Page.frameDetached` parent links for `commitNavigation()`. */
   emit<E extends Event>(method: E, params: EventParams<E>, sessionId?: string): void {
     const socket = this.socket;
     if (!socket || socket.readyState !== WebSocket.OPEN)
       throw new Error('ScriptedChrome has no connected controller');
+    if (sessionId) {
+      if (method === 'Page.frameAttached') {
+        const { frameId, parentFrameId } = params as Protocol.Page.FrameAttachedEvent;
+        let parents = this.frameParents.get(sessionId);
+        if (!parents) this.frameParents.set(sessionId, (parents = new Map()));
+        parents.set(frameId, parentFrameId);
+      } else if (method === 'Page.frameDetached') {
+        const { frameId } = params as Protocol.Page.FrameDetachedEvent;
+        const parents = this.frameParents.get(sessionId);
+        if (parents) {
+          const remove = new Set<string>([frameId]);
+          let grew = true;
+          while (grew) {
+            grew = false;
+            for (const [child, parent] of parents) {
+              if (remove.has(parent) && !remove.has(child)) {
+                remove.add(child);
+                grew = true;
+              }
+            }
+          }
+          for (const id of remove) parents.delete(id);
+        }
+      } else if (method === 'Page.frameNavigated') {
+        const { frame } = params as Protocol.Page.FrameNavigatedEvent;
+        if (frame.parentId) {
+          let parents = this.frameParents.get(sessionId);
+          if (!parents) this.frameParents.set(sessionId, (parents = new Map()));
+          parents.set(frame.id, frame.parentId);
+        }
+      }
+    }
     socket.send(JSON.stringify({ method, params, sessionId }));
   }
 
   /**
    * Add a page to the fake's target model and notify an active discovery subscription. An
-   * `openerId` models a popup of that page.
+   * `openerId` or `openerFrameId` models a popup of that page or frame.
    */
-  addPage(
-    page: { url?: string; title?: string; browserContextId?: string; openerId?: string } = {},
-  ): string {
+  addPage(page: ScriptedPageOptions = {}): string {
     const targetId = `page-${++this.sequence}`;
     const info: Protocol.Target.TargetInfo = {
       targetId,
@@ -187,10 +279,111 @@ export class ScriptedChrome {
       canAccessOpener: false,
       browserContextId: page.browserContextId,
       ...(page.openerId ? { openerId: page.openerId } : {}),
+      ...(page.openerFrameId ? { openerFrameId: page.openerFrameId } : {}),
     };
     this.pages.set(targetId, info);
     if (this.discovering) this.emit('Target.targetCreated', { targetInfo: info });
     return targetId;
+  }
+
+  /**
+   * Commits a navigation on a modeled session: updates the page's target info (for main-frame
+   * navigations) and emits `Page.frameNavigated` + lifecycle events (or
+   * `Page.navigatedWithinDocument` when `sameDocument: true`).
+   */
+  commitNavigation(
+    sessionId: string,
+    url: string,
+    options: ScriptedNavigationOptions = {},
+  ): { frameId: string; loaderId: string } {
+    const targetId = this.sessions.get(sessionId);
+    if (!targetId) throw new Error(`Unknown scripted session ${sessionId}`);
+    const info = this.pages.get(targetId);
+    if (!info) throw new Error(`Unknown scripted target ${targetId}`);
+    const frameId = options.frameId ?? info.targetId;
+    const loaderId = options.loaderId ?? `loader-${++this.sequence}`;
+    if (frameId === info.targetId) {
+      info.url = url;
+      if (this.discovering) this.emit('Target.targetInfoChanged', { targetInfo: { ...info } });
+    }
+    if (options.sameDocument) {
+      this.emit(
+        'Page.navigatedWithinDocument',
+        { frameId, url, navigationType: 'other' },
+        sessionId,
+      );
+      return { frameId, loaderId };
+    }
+    const parentId =
+      options.parentId !== undefined
+        ? options.parentId || undefined
+        : frameId !== info.targetId
+          ? (this.frameParents.get(sessionId)?.get(frameId) ?? info.targetId)
+          : undefined;
+    this.emit(
+      'Page.frameNavigated',
+      {
+        type: options.type ?? 'Navigation',
+        frame: {
+          id: frameId,
+          ...(parentId ? { parentId } : {}),
+          loaderId,
+          url,
+          domainAndRegistry: '',
+          securityOrigin: frameSecurityOrigin(url),
+          mimeType: 'text/html',
+          secureContextType: url.startsWith('https:') ? 'Secure' : 'InsecureScheme',
+          crossOriginIsolatedContextType: 'NotIsolated',
+          gatedAPIFeatures: [],
+        },
+      },
+      sessionId,
+    );
+    for (const name of options.lifecycle ?? ['DOMContentLoaded', 'load']) {
+      this.emit('Page.lifecycleEvent', { frameId, loaderId, name, timestamp: 0 }, sessionId);
+    }
+    return { frameId, loaderId };
+  }
+
+  /**
+   * Installs a persistent `Page.navigate` handler that commits each navigation through
+   * `commitNavigation()`. Useful for testing `tab.goto()`, `newTab(url)`, `Tab.navigated`,
+   * `Browser.tabNavigated`, and `TabScope.navigated` without hand-wiring frame/lifecycle events.
+   */
+  handleNavigation(options: ScriptedNavigationHandlerOptions = {}): () => void {
+    return this.handle('Page.navigate', async (params, command) => {
+      const sessionId = command.sessionId;
+      const targetId = sessionId ? this.sessions.get(sessionId) : undefined;
+      if (!sessionId || !targetId) throw UNKNOWN_SESSION;
+      const decision = (await options.onNavigate?.(params, command)) ?? undefined;
+      const frameId = params.frameId ?? targetId;
+      const loaderId = `loader-${++this.sequence}`;
+      if (decision?.errorText || decision?.isDownload) {
+        return {
+          frameId,
+          loaderId,
+          ...(decision.errorText ? { errorText: decision.errorText } : {}),
+          ...(decision.isDownload ? { isDownload: decision.isDownload } : {}),
+        };
+      }
+      const targetUrl = decision?.url ?? params.url;
+      const sameDocument = decision?.sameDocument ?? false;
+      const lifecycle = decision?.lifecycle ?? options.lifecycle;
+      const delayMs = decision?.delayMs ?? options.delayMs;
+      const commit = () => {
+        if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return;
+        if (!this.sessions.has(sessionId)) return;
+        this.commitNavigation(sessionId, targetUrl, {
+          frameId,
+          loaderId,
+          sameDocument,
+          lifecycle,
+        });
+      };
+      if (delayMs !== undefined && delayMs > 0) setTimeout(commit, delayMs);
+      else setImmediate(commit);
+      return sameDocument ? { frameId } : { frameId, loaderId };
+    });
   }
 
   destroyTarget(targetId: string): void {
@@ -198,6 +391,7 @@ export class ScriptedChrome {
     for (const [sessionId, target] of this.sessions) {
       if (target !== targetId) continue;
       this.sessions.delete(sessionId);
+      this.frameParents.delete(sessionId);
       this.emit('Target.detachedFromTarget', { sessionId, targetId });
     }
     if (this.discovering) this.emit('Target.targetDestroyed', { targetId });
@@ -208,6 +402,7 @@ export class ScriptedChrome {
     const targetId = this.sessions.get(sessionId);
     if (!targetId) throw new ProtocolError('Target.detachFromTarget', -32000, 'Session not found');
     this.sessions.delete(sessionId);
+    this.frameParents.delete(sessionId);
     const info = this.pages.get(targetId);
     if (info) info.attached = [...this.sessions.values()].includes(targetId);
     this.emit('Target.detachedFromTarget', { sessionId, targetId });
@@ -301,7 +496,12 @@ export class ScriptedChrome {
           jsVersion: 'scripted',
         } satisfies Protocol.Browser.GetVersionResponse;
       case 'Target.getBrowserContexts':
-        return { browserContextIds: [...this.contexts] };
+        return {
+          browserContextIds: [...this.contexts],
+          ...(this.defaultBrowserContextId
+            ? { defaultBrowserContextId: this.defaultBrowserContextId }
+            : {}),
+        };
       case 'Target.setDiscoverTargets':
         this.discovering = p.discover === true;
         return {};
@@ -330,7 +530,12 @@ export class ScriptedChrome {
         return {};
       case 'Page.getFrameTree': {
         const info = this.pages.get(targetId!);
-        if (!info) throw new Error('Page.getFrameTree requires a page session');
+        if (!info)
+          throw new ProtocolError(
+            command.method,
+            -32602,
+            'Page.getFrameTree requires a page session',
+          );
         return {
           frameTree: {
             frame: {
@@ -338,9 +543,9 @@ export class ScriptedChrome {
               loaderId: `loader-${info.targetId}`,
               url: info.url,
               domainAndRegistry: '',
-              securityOrigin: '://',
+              securityOrigin: frameSecurityOrigin(info.url),
               mimeType: 'text/html',
-              secureContextType: 'InsecureScheme',
+              secureContextType: info.url.startsWith('https:') ? 'Secure' : 'InsecureScheme',
               crossOriginIsolatedContextType: 'NotIsolated',
               gatedAPIFeatures: [],
             },
@@ -358,9 +563,13 @@ export class ScriptedChrome {
             browserContextId: p.browserContextId as string | undefined,
           }),
         };
-      case 'Target.closeTarget':
-        this.destroyTarget(String(p.targetId));
+      case 'Target.closeTarget': {
+        const id = String(p.targetId);
+        if (!this.pages.has(id))
+          throw new ProtocolError(command.method, -32602, 'No target with given id found');
+        this.destroyTarget(id);
         return { success: true };
+      }
       case 'Target.createBrowserContext': {
         const browserContextId = `context-${++this.sequence}`;
         this.contexts.add(browserContextId);
@@ -368,7 +577,8 @@ export class ScriptedChrome {
       }
       case 'Target.disposeBrowserContext': {
         const id = String(p.browserContextId);
-        if (!this.contexts.delete(id)) throw new Error(`Unknown context ${id}`);
+        if (!this.contexts.delete(id))
+          throw new ProtocolError(command.method, -32602, `Unknown context ${id}`);
         for (const page of this.pages.values())
           if (page.browserContextId === id) this.destroyTarget(page.targetId);
         return {};

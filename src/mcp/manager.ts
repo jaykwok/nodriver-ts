@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { checkedInputPolicy } from '../input/behavior.ts';
-import { EventHub } from '../utils.ts';
+import { EventHub, positiveInt } from '../utils.ts';
 import { BrowserMcpSession, type BrowserMcpOptions } from './session.ts';
 import { BrowserPool } from './pool.ts';
 import { HandoffRegistry } from './handoff.ts';
+import { LEASE_NAME_RE, positiveMs, UUID_RE } from './auth.ts';
 
 export interface BrowserSessionManagerOptions extends BrowserMcpOptions {
   maxLeases?: number;
@@ -28,8 +29,6 @@ interface RecordLease extends BrowserLease {
   session: BrowserMcpSession;
   closing?: Promise<void>;
 }
-const LEASE_NAME = /^[A-Za-z0-9._-]{1,64}$/;
-const LEASE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export class LeaseError extends Error {
   override name = 'LeaseError';
   readonly code: 'invalid' | 'capacity' | 'unknown';
@@ -37,10 +36,6 @@ export class LeaseError extends Error {
     super(message);
     this.code = code;
   }
-}
-function positive(value: number, label: string): number {
-  if (!Number.isSafeInteger(value) || value < 1) throw new RangeError(`Invalid ${label}`);
-  return value;
 }
 /** Application lifetime state. Principal IDs must come from a trusted authenticator. */
 export class BrowserSessionManager {
@@ -63,16 +58,16 @@ export class BrowserSessionManager {
       : options;
     if (options.launch && options.connect) throw new TypeError('Choose launch or connect');
     this.limits = {
-      maxLeases: positive(options.maxLeases ?? 16, 'maxLeases'),
-      queueLimit: positive(options.queueLimit ?? 32, 'queueLimit'),
-      operationTimeout: positive(options.operationTimeout ?? 30000, 'operationTimeout'),
-      leaseIdleMs: positive(options.leaseIdleMs ?? 1_800_000, 'leaseIdleMs'),
-      browserIdleMs: positive(options.browserIdleMs ?? 30000, 'browserIdleMs'),
+      maxLeases: positiveInt(options.maxLeases ?? 16, 'maxLeases'),
+      queueLimit: positiveInt(options.queueLimit ?? 32, 'queueLimit'),
+      operationTimeout: positiveMs(options.operationTimeout ?? 30000, 'operationTimeout'),
+      leaseIdleMs: positiveMs(options.leaseIdleMs ?? 1_800_000, 'leaseIdleMs'),
+      browserIdleMs: positiveMs(options.browserIdleMs ?? 30000, 'browserIdleMs'),
     };
     this.pool = new BrowserPool(
       options,
-      positive(options.maxBrowsers ?? 2, 'maxBrowsers'),
-      positive(options.contextsPerBrowser ?? 4, 'contextsPerBrowser'),
+      positiveInt(options.maxBrowsers ?? 2, 'maxBrowsers'),
+      positiveInt(options.contextsPerBrowser ?? 4, 'contextsPerBrowser'),
       this.limits.queueLimit,
     );
     this.timer = setInterval(
@@ -83,7 +78,7 @@ export class BrowserSessionManager {
           .catch(() => {})
           .finally(() => (this.sweeping = undefined));
       },
-      positive(options.sweepIntervalMs ?? 1000, 'sweepIntervalMs'),
+      positiveMs(options.sweepIntervalMs ?? 1000, 'sweepIntervalMs'),
     );
     this.timer.unref();
   }
@@ -119,14 +114,8 @@ export class BrowserSessionManager {
    * created on first use and recreated after their lease expires; IDs are never created.
    */
   resolve(principal: string, idOrName: string, create = true): BrowserLease {
-    if (LEASE_ID.test(idOrName)) {
-      try {
-        return this.view(this.checked(principal, idOrName));
-      } catch {
-        throw new LeaseError('unknown', 'Unknown, unauthorized or expired browser lease');
-      }
-    }
-    if (!LEASE_NAME.test(idOrName)) throw new LeaseError('invalid', 'Invalid lease name');
+    if (UUID_RE.test(idOrName)) return this.view(this.checked(principal, idOrName));
+    if (!LEASE_NAME_RE.test(idOrName)) throw new LeaseError('invalid', 'Invalid lease name');
     const key = `${principal}\n${idOrName}`;
     const existing = this.names.get(key);
     if (existing)
@@ -156,7 +145,7 @@ export class BrowserSessionManager {
       this.stopping ||
       (!lease.active && Date.now() - lease.lastUsed >= this.limits.leaseIdleMs)
     )
-      throw new Error('Unknown, unauthorized or expired browser lease');
+      throw new LeaseError('unknown', 'Unknown, unauthorized or expired browser lease');
     return lease;
   }
   session(principal: string, id: string): BrowserMcpSession {

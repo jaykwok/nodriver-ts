@@ -1,8 +1,20 @@
 import type { Tab, Environment } from './tab.ts';
-import type { EnvironmentReport, NavigatorSnapshot } from './environment.ts';
-import type { WaitOptions } from '../utils.ts';
-import { StaleElementError, TimeoutError } from '../errors.ts';
-import { bounded, budget, timeoutValue } from '../utils.ts';
+import { stableJSON, type EnvironmentReport, type NavigatorSnapshot } from './environment.ts';
+import {
+  DisconnectedError,
+  SessionEndedError,
+  StaleElementError,
+  TimeoutError,
+} from '../errors.ts';
+import {
+  abortReason,
+  bounded,
+  budget,
+  httpOrigin,
+  timeoutValue,
+  withSignal,
+  type WaitOptions,
+} from '../utils.ts';
 /** Optional measurements for a diagnostic run; these do not apply environment overrides. */
 export interface DiagnoseEnvironmentOptions extends WaitOptions {
   /** Sample a new temporary Dedicated Worker per frame, not existing/Shared/Service Workers. */
@@ -75,15 +87,24 @@ function validateProbes(options: Omit<DiagnoseEnvironmentOptions, 'signal' | 'ti
     throw new RangeError('At most 16 font selectors');
   if (options.httpProbe) {
     const url = new URL(options.httpProbe);
-    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password)
+    if (!httpOrigin(options.httpProbe) || url.username || url.password)
       throw new TypeError('Use an explicit HTTP(S) probe without URL credentials');
   }
-  if (
-    options.stunServers &&
-    (options.stunServers.length > 4 ||
-      options.stunServers.some((s) => !/^stuns?:[a-z0-9.\-\[\]:]+$/i.test(s)))
-  )
-    throw new TypeError('Use at most four explicit STUN endpoints');
+  if (options.stunServers) {
+    if (options.stunServers.length > 4)
+      throw new RangeError('Use at most four explicit STUN endpoints');
+    if (options.stunServers.some((s) => !/^stuns?:[a-z0-9.\-\[\]:]+$/i.test(s)))
+      throw new TypeError('Invalid STUN endpoint; expected stun: or stuns: host[:port]');
+  }
+}
+function isFatalDiagnosticError(error: unknown, signal?: AbortSignal): boolean {
+  return (
+    !!signal?.aborted ||
+    error instanceof TimeoutError ||
+    error instanceof DisconnectedError ||
+    error instanceof SessionEndedError ||
+    error instanceof StaleElementError
+  );
 }
 /**
  * Collect evidence when investigating a configuration or comparing controlled browser runs.
@@ -107,8 +128,14 @@ export async function diagnoseEnvironment(
     generation = frame.generation;
   const wait = () => {
     const { signal, timeout = 0 } = step();
-    if (frame.generation !== generation || frame.detached)
-      throw new StaleElementError('Document changed during diagnostics');
+    if (frame.detached)
+      throw new StaleElementError('Frame detached during diagnostics', {
+        reason: 'frame-detached',
+      });
+    if (frame.generation !== generation)
+      throw new StaleElementError('Document changed during diagnostics', {
+        reason: 'context-gone',
+      });
     return { signal, timeout };
   };
   const frames: EnvironmentReport[] = [];
@@ -183,12 +210,14 @@ export async function diagnoseEnvironment(
         error: values.length ? undefined : 'No matching text nodes',
       };
     } catch (error) {
+      if (isFatalDiagnosticError(error, options.signal)) throw error;
       report.fonts = { status: 'unavailable', source: 'browser', error: String(error) };
     }
   }
   if (options.httpProbe) {
     const url = new URL(options.httpProbe);
     try {
+      const probeWait = wait();
       const value = await frame.evaluate(
         async ({ url, timeout }) => {
           const controller = new AbortController(),
@@ -214,8 +243,8 @@ export async function diagnoseEnvironment(
             clearTimeout(timer);
           }
         },
-        { url: url.href, timeout: Math.max(1, wait().timeout - 100) },
-        { ...wait(), world: 'isolated' },
+        { url: url.href, timeout: Math.max(1, probeWait.timeout - 100) },
+        { ...probeWait, world: 'isolated' },
       );
       report.http = {
         status: value.httpStatus >= 200 && value.httpStatus < 300 ? 'observed' : 'unavailable',
@@ -223,11 +252,13 @@ export async function diagnoseEnvironment(
         value,
       };
     } catch (error) {
+      if (isFatalDiagnosticError(error, options.signal)) throw error;
       report.http = { status: 'unavailable', source: 'browser', error: String(error) };
     }
   }
   if (options.stunServers) {
     try {
+      const probeWait = wait();
       const value = await frame.evaluate(
         ({ servers, timeout }) =>
           new Promise<{
@@ -275,8 +306,8 @@ export async function diagnoseEnvironment(
                 finish(false);
               });
           }),
-        { servers: options.stunServers, timeout: Math.max(1, wait().timeout - 100) },
-        { ...wait(), world: 'isolated' },
+        { servers: options.stunServers, timeout: Math.max(1, probeWait.timeout - 100) },
+        { ...probeWait, world: 'isolated' },
       );
       report.webrtc = {
         status: value.complete ? 'observed' : 'unavailable',
@@ -285,11 +316,13 @@ export async function diagnoseEnvironment(
         error: value.complete ? undefined : 'ICE gathering deadline reached; peer closed',
       };
     } catch (error) {
+      if (isFatalDiagnosticError(error, options.signal)) throw error;
       report.webrtc = { status: 'unavailable', source: 'browser', error: String(error) };
     }
   }
   if (options.geolocation) {
     try {
+      const probeWait = wait();
       const location = await frame.evaluate(
         async (timeout) => {
           const permission = await navigator.permissions.query({ name: 'geolocation' });
@@ -313,13 +346,14 @@ export async function diagnoseEnvironment(
             ),
           );
         },
-        Math.max(1, wait().timeout - 100),
-        { ...wait(), world: 'isolated' },
+        Math.max(1, probeWait.timeout - 100),
+        { ...probeWait, world: 'isolated' },
       );
       report.geolocation = location.value
         ? { status: 'observed', source: 'browser', value: location.value }
         : { status: 'unavailable', source: 'browser', error: location.error };
     } catch (error) {
+      if (isFatalDiagnosticError(error, options.signal)) throw error;
       report.geolocation = { status: 'unavailable', source: 'browser', error: String(error) };
     }
   }
@@ -385,14 +419,18 @@ function verifyEnvironment(
           status:
             actual === undefined
               ? 'unavailable'
-              : JSON.stringify(canonical(key, actual)) === JSON.stringify(canonical(key, expected))
+              : stableJSON(canonical(key, actual)) === stableJSON(canonical(key, expected))
                 ? 'match'
                 : 'mismatch',
         });
       }
     }
   if (requested.acceptLanguage) {
-    const actual: unknown = after.http.value?.headers?.['accept-language'];
+    const headers = after.http.value?.headers;
+    const headerEntry = headers
+      ? Object.entries(headers).find(([name]) => name.toLowerCase() === 'accept-language')
+      : undefined;
+    const actual: unknown = headerEntry?.[1];
     verification.push({
       field: 'acceptLanguage',
       scope: 'HTTP',
@@ -401,8 +439,8 @@ function verifyEnvironment(
         actual === undefined
           ? 'not-tested'
           : typeof actual === 'string' &&
-              JSON.stringify(languageTags(actual)) ===
-                JSON.stringify(languageTags(requested.acceptLanguage))
+              stableJSON(languageTags(actual)) ===
+                stableJSON(languageTags(requested.acceptLanguage))
             ? 'match'
             : 'mismatch',
       actual,
@@ -426,7 +464,7 @@ function verifyEnvironment(
             status:
               actual?.[field] === undefined
                 ? 'unavailable'
-                : JSON.stringify(actual[field]) === JSON.stringify(expected)
+                : stableJSON(actual[field]) === stableJSON(expected)
                   ? 'match'
                   : 'mismatch',
           });
@@ -468,14 +506,13 @@ export async function alignEnvironment(
     );
   validateProbes(options.inspect ?? {});
   const controller = new AbortController();
-  const signal = options.signal
-    ? AbortSignal.any([options.signal, controller.signal])
-    : controller.signal;
-  const deadline = performance.now() + timeoutValue(options.timeout ?? 10000);
-  const remaining = () => Math.max(1, deadline - performance.now());
+  const { signal } = withSignal({ signal: options.signal }, controller.signal);
+  const total = timeoutValue(options.timeout ?? 10000);
+  const deadline = performance.now() + total;
+  const remaining = () => Math.max(1, Math.ceil(deadline - performance.now()));
   const timer = setTimeout(
     () => controller.abort(new TimeoutError('Alignment deadline exceeded')),
-    remaining(),
+    total,
   );
   try {
     const before = await tab.diagnoseEnvironment({
@@ -486,21 +523,15 @@ export async function alignEnvironment(
     let resolved: Observation<GeoIPResult> = { status: 'not-requested', source: 'resolver' };
     const requested: Environment = structuredClone(options.environment ?? {});
     if (options.geoip) {
-      options.signal?.throwIfAborted();
-      const value = await new Promise<GeoIPResult>((resolve, reject) => {
-        const abort = () => reject(signal.reason);
-        signal.addEventListener('abort', abort, { once: true });
-        if (signal.aborted) {
-          signal.removeEventListener('abort', abort);
-          reject(signal.reason);
-          return;
-        }
-        Promise.resolve()
-          .then(() => resolver!(options.geoip!.address, { signal, timeout: remaining() }))
-          .then(resolve, reject)
-          .finally(() => signal.removeEventListener('abort', abort));
-      });
-      options.signal?.throwIfAborted();
+      if (options.signal?.aborted) throw abortReason(options.signal);
+      const value = await bounded(
+        Promise.resolve().then(() =>
+          resolver!(options.geoip!.address, { signal, timeout: remaining() }),
+        ),
+        { signal },
+        'GeoIP resolver',
+      );
+      if (options.signal?.aborted) throw abortReason(options.signal);
       resolved = { status: 'observed', source: 'resolver', value };
       for (const field of options.geoip.fields)
         if (field === 'timezone' && !requested.timezone && value.timezone)
@@ -508,7 +539,7 @@ export async function alignEnvironment(
         else if (field === 'geolocation' && !requested.geolocation && value.geolocation)
           requested.geolocation = value.geolocation;
     }
-    signal.throwIfAborted();
+    if (signal!.aborted) throw abortReason(signal!);
     let applicationError: string | undefined;
     try {
       // The deadline stops the baseline read and any override not yet sent; an override already
@@ -516,7 +547,7 @@ export async function alignEnvironment(
       const wait = { timeout: remaining(), signal };
       await bounded(tab.setEnvironment(requested, wait), wait, 'Environment application');
     } catch (error) {
-      options.signal?.throwIfAborted();
+      if (options.signal?.aborted) throw abortReason(options.signal);
       applicationError = String(error);
     }
     let after: EnvironmentDiagnostics | undefined;
@@ -530,7 +561,7 @@ export async function alignEnvironment(
         geolocation: !!requested.geolocation,
       });
     } catch (error) {
-      options.signal?.throwIfAborted();
+      if (options.signal?.aborted) throw abortReason(options.signal);
       verificationError = String(error);
     }
     return {

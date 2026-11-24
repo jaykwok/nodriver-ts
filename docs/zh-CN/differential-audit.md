@@ -2,7 +2,7 @@
 
 [English](../differential-audit.md)
 
-`npm run bench:audit` 将 JSON 写到 stdout、进度写到 stderr，需要 Node.js 24.22.0+ 和本机 Chrome。解读时序数据时请在空闲主机上运行；普通 CI 只验证功能并保存观测，不设时间阈值，也不使用检测网站评分。`AUDIT_REPEATS` 默认为 2。`AUDIT_TRANSPORTS`（默认 `websocket,pipe`）和 `AUDIT_VARIANTS`（从 `default-native`、`default-masked`、`explicit-environment`、`agent`、`occluded-flag`、`renderer-flag` 中以逗号分隔选择，默认全部）选择库的测试矩阵。`AUDIT_HEADFUL=1` 用于显式选择在空闲图形桌面上运行有界面测试：基准测试创建自己的窗口、标签页和临时 Profile，可能影响焦点。
+`npm run bench:audit` 将 JSON 写到 stdout、进度写到 stderr，需要 Node.js 24.22.0+ 和本机 Chrome。解读时序数据时请在空闲宿主上运行；普通 CI 只验证功能并保存观测，不设时间阈值，也不使用检测网站评分。`AUDIT_REPEATS` 默认为 2。`AUDIT_TRANSPORTS`（默认 `websocket,pipe`）和 `AUDIT_VARIANTS`（从 `default-native`、`default-masked`、`explicit-environment`、`agent`、`occluded-flag`、`renderer-flag` 中以逗号分隔选择，默认全部）选择库的测试矩阵。`AUDIT_HEADFUL=1` 用于显式选择在空闲图形桌面上运行有界面测试：基准测试创建自己的窗口、标签页和临时 Profile，可能影响焦点。
 
 ## 对照分组
 
@@ -22,7 +22,7 @@
 
 ## 共用探针与报告
 
-所有组运行完全相同的页面脚本，采集 navigator 字段、低/高熵 Client Hints、navigator/window/chrome 描述符、全局名称、有上限的变更/事件日志、显式的填表/点击/滚动结果、可见性/焦点/生命周期事件，以及 定时器/rAF 采样分布。预期的 DOM 变化与额外的变更、描述符/全局名称差异分开记录。每个阶段后重置采样窗口，`background-start` 把标签页切换的过渡期与之后的后台窗口分开。解读时序分布时，需一并考虑样本数量、rAF 可用性和宿主负载。
+所有组运行完全相同的页面脚本，采集 navigator 字段、低/高熵 Client Hints、navigator/window/chrome 描述符、全局名称、有上限的变更/事件日志、显式的填表/点击/滚动结果、可见性/焦点/生命周期事件，以及定时器/rAF 采样分布。预期的 DOM 变化与额外的变更、描述符/全局名称差异分开记录。每个阶段后重置采样窗口，`background-start` 把标签页切换的过渡期与之后的后台窗口分开。解读时序分布时，需一并考虑样本数量、rAF 可用性和宿主负载。
 
 同一脚本会创建 Dedicated 和 Shared Worker，注册、激活并 claim 一个独立作用域的 Service Worker，在保留该注册的情况下重载，最后注销它并关闭 Worker 资源。每个上下文报告自己的原生 navigator，并向同一个回环接收器发送请求。Worker 创建、注册、本地请求、MutationObserver、计时器、rAF 和 JSON 序列化都有开销，每个组都同样承担。不修补任何原生 getter，不向无关的 Worker 注入代码，Service Worker 也不拦截请求。
 
@@ -53,4 +53,4 @@ JSON schema version 2 包含 `validation.passed`、检查数、带 run/阶段/�
 
 用物理键盘/鼠标填表、点击和滚动，并用页面上的 Record 按钮重复采样。重载一次以进入已有 Service Worker 阶段，然后手动比较前台、后台和真正被遮挡的窗口，并把这些条件分开记录。使用物理键盘和鼠标时勾选物理输入选项，然后点击 Finish。采集器会注销自己的 Worker 并写入 `test-results/audit-manual.json`；之后关闭这个 Chrome，只删除它使用的可丢弃 Profile。该选项记录所选的输入方式；CDP 或脚本生成的样本应单独分组。
 
-在 Linux 上，回归工作流会运行缩减的原生/UA 掩码/显式环境对照，执行上述检查并将 JSON 保存为产物。Beta/Dev/Canary 工作流也执行相同检查，并运行 objectId 与生命周期套件。时序与物理输入样本在空闲主机上单独采集。
+在 Linux 上，回归工作流会运行缩减的原生/UA 掩码/显式环境对照，执行上述检查并将 JSON 保存为产物。Beta/Dev/Canary 工作流也执行相同检查，并运行 objectId 与生命周期套件。时序与物理输入样本在空闲宿主上单独采集。

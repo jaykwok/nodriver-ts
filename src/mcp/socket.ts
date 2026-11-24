@@ -1,4 +1,4 @@
-import { randomUUID, timingSafeEqual } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { chmod, lstat, mkdtemp, realpath, rmdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
@@ -18,6 +18,8 @@ import {
 } from '@modelcontextprotocol/server';
 import { BrowserSessionManager, type BrowserSessionManagerOptions } from './manager.ts';
 import { createBrowserMcpServer } from './server.ts';
+import { matchCredential, positiveMs, validateCredentials } from './auth.ts';
+import { positiveInt } from '../utils.ts';
 
 export interface BrowserMcpSocketOptions {
   tokens: Record<string, string>;
@@ -44,10 +46,6 @@ export interface BrowserMcpSocketClientOptions {
   /** Omit to create a lease. Keep the returned leaseId to reconnect. */
   leaseId?: string;
   handshakeTimeout?: number;
-}
-function positive(value: number, label: string) {
-  if (!Number.isSafeInteger(value) || value < 1) throw new RangeError(`Invalid ${label}`);
-  return value;
 }
 function localPath(path: string) {
   if (process.platform === 'win32') {
@@ -202,21 +200,20 @@ class SocketTransport implements Transport {
 export async function startBrowserMcpSocketServer(
   options: BrowserMcpSocketOptions,
 ): Promise<BrowserMcpSocketServer> {
-  const credentials = Object.entries(options.tokens).map(([token, principal]) => {
-    if (token.length < 32 || !principal || principal.length > 200)
-      throw new TypeError('Provision tokens of at least 32 characters and a principal');
-    return [Buffer.from(token), principal] as const;
-  });
-  if (!credentials.length) throw new TypeError('At least one local bearer credential is required');
+  const credentials = validateCredentials(options.tokens);
   if (options.manager && options.browser) throw new TypeError('Choose manager or browser options');
-  const connectionLimit = positive(options.maxConnections ?? 32, 'maxConnections');
-  const handshakeTimeout = positive(options.handshakeTimeout ?? 5000, 'handshakeTimeout');
-  const limits = {
-    messages: positive(options.maxMessageSize ?? 256 * 1024, 'maxMessageSize'),
-    output: positive(options.maxOutputBufferSize ?? 8 * 1024 * 1024, 'maxOutputBufferSize'),
-    requests: positive(options.maxRequestsPerConnection ?? 16, 'maxRequestsPerConnection'),
-    write: positive(options.writeTimeout ?? 60000, 'writeTimeout'),
-  };
+  const connectionLimit = positiveInt(options.maxConnections ?? 32, 'maxConnections');
+  const handshakeTimeout = positiveMs(options.handshakeTimeout ?? 5000, 'handshakeTimeout');
+  const messagesLimit = positiveInt(options.maxMessageSize ?? 256 * 1024, 'maxMessageSize');
+  const outputLimit = positiveInt(
+    options.maxOutputBufferSize ?? 8 * 1024 * 1024,
+    'maxOutputBufferSize',
+  );
+  const requestsLimit = positiveInt(
+    options.maxRequestsPerConnection ?? 16,
+    'maxRequestsPerConnection',
+  );
+  if (options.writeTimeout !== undefined) positiveMs(options.writeTimeout, 'writeTimeout');
   // Everything that can be refused outright is, before a temporary directory or manager exists.
   let path =
     options.path ??
@@ -227,8 +224,20 @@ export async function startBrowserMcpSocketServer(
   // As long as what mkdtemp will create.
   if (temporary) localPath(join(temporary, 'nodriver-mcp-000000', 'mcp.sock'));
   const manager = options.manager ?? new BrowserSessionManager(options.browser);
+  const limits = {
+    messages: messagesLimit,
+    output: outputLimit,
+    requests: requestsLimit,
+    write: positiveMs(
+      options.writeTimeout ?? Math.max(60000, manager.limits.operationTimeout + 10000),
+      'writeTimeout',
+    ),
+  };
   let directory: string | undefined;
-  const connections = new Map<Socket, { leaseId?: string; handle?: StdioServerHandle }>();
+  const connections = new Map<
+    Socket,
+    { leaseId?: string; handle?: StdioServerHandle; release?: () => void }
+  >();
   const cleanup = new Set<Promise<void>>();
   let closing: Promise<void> | undefined;
   const report = (error: unknown) => {
@@ -242,10 +251,12 @@ export async function startBrowserMcpSocketServer(
       socket.destroy();
       return;
     }
-    const record: { leaseId?: string; handle?: StdioServerHandle } = {};
+    const record: { leaseId?: string; handle?: StdioServerHandle; release?: () => void } = {};
     connections.set(socket, record);
     socket.once('close', () => {
       connections.delete(socket);
+      record.release?.();
+      record.release = undefined;
       if (record.handle) track(record.handle.close());
     });
     track(
@@ -261,16 +272,14 @@ export async function startBrowserMcpSocketServer(
               (typeof auth.leaseId !== 'string' || auth.leaseId.length > 200))
           )
             throw new Error('Socket authentication failed');
-          const bytes = Buffer.from(auth.token);
-          const principal = credentials.find(
-            ([key]) => key.length === bytes.length && timingSafeEqual(key, bytes),
-          )?.[1];
+          const principal = matchCredential(credentials, auth.token);
           if (!principal || closing || socket.destroyed)
             throw new Error('Socket authentication failed');
           const id = auth.leaseId as string | undefined;
           // A lease ID reconnects; a lease name is created on first use (see resolve()).
           record.leaseId =
             id !== undefined ? manager.resolve(principal, id).id : manager.create(principal).id;
+          record.release = manager.retain(principal, record.leaseId);
           socket.write(JSON.stringify({ type: 'nodriver-auth', leaseId: record.leaseId }) + '\n');
           const transport = new SocketTransport(socket, limits);
           record.handle = serveStdio(
@@ -283,6 +292,8 @@ export async function startBrowserMcpSocketServer(
             },
           );
         } catch (cause) {
+          record.release?.();
+          record.release = undefined;
           // Never reflect a credential or raw client input into diagnostics: no cause quotes them.
           report(new Error('Socket authentication failed or connection closed', { cause }));
           socket.destroy();
@@ -364,7 +375,7 @@ export class BrowserMcpSocketClientTransport implements Transport {
   constructor(options: BrowserMcpSocketClientOptions) {
     this.options = options;
     localPath(options.path);
-    this.handshakeTimeout = positive(options.handshakeTimeout ?? 5000, 'handshakeTimeout');
+    this.handshakeTimeout = positiveMs(options.handshakeTimeout ?? 5000, 'handshakeTimeout');
   }
   async start() {
     if (this.started || this.closed) throw new Error('Socket client already started or closed');

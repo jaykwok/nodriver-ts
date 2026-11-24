@@ -12,6 +12,32 @@ export class TimeoutError extends NodriverError {
 export class DisconnectedError extends NodriverError {
   override name = 'DisconnectedError';
 }
+export type EndReason =
+  'detach-requested' | 'detached' | 'target-destroyed' | 'target-crashed' | 'disconnected';
+/** Single-session termination reasons (excluding whole-connection disconnect). */
+export type SessionEndReason = Exclude<EndReason, 'disconnected'>;
+/**
+ * A single target or session ended while the browser CDP connection remained distinct from it.
+ * Connection-level disconnects throw `DisconnectedError` instead.
+ */
+export class SessionEndedError extends NodriverError {
+  override name = 'SessionEndedError';
+  readonly reason: SessionEndReason;
+  readonly targetId: string;
+  readonly sessionId?: string;
+  constructor(
+    reason: SessionEndReason,
+    targetId: string,
+    options?: ErrorOptions & { sessionId?: string; detail?: string },
+  ) {
+    const label = targetId || options?.sessionId || 'unknown';
+    const detail = options?.detail ? `: ${options.detail}` : '';
+    super(`Target session ended: ${reason} (${label})${detail}`, options);
+    this.reason = reason;
+    this.targetId = targetId;
+    this.sessionId = options?.sessionId;
+  }
+}
 /** A profile has a live controller/browser owner; connect to it or close it before launching. */
 export class ProfileInUseError extends NodriverError {
   override name = 'ProfileInUseError';
@@ -21,8 +47,18 @@ export class ProfileInUseError extends NodriverError {
     this.profile = profile;
   }
 }
+export type StaleElementReason =
+  'node-detached' | 'frame-detached' | 'context-gone' | 'world-mismatch' | 'disposed';
+export interface StaleElementErrorOptions extends ErrorOptions {
+  reason?: StaleElementReason;
+}
 export class StaleElementError extends NodriverError {
   override name = 'StaleElementError';
+  readonly reason?: StaleElementReason;
+  constructor(message?: string, options?: StaleElementErrorOptions) {
+    super(message, options);
+    this.reason = options?.reason;
+  }
 }
 export class UnsupportedError extends NodriverError {
   override name = 'UnsupportedError';

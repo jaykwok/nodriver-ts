@@ -1,6 +1,7 @@
 import type { Protocol } from 'devtools-protocol';
 import type { Frame } from '../page/frames.ts';
-import type { WaitOptions } from '../utils.ts';
+import { parseDOMSnapshot } from '../dom/snapshot.ts';
+import { budget, type WaitOptions } from '../utils.ts';
 
 export interface SnapshotOptions {
   frameId?: string;
@@ -150,18 +151,16 @@ export function layoutBoxes(
   scroll?: { x: number; y: number },
 ): Map<number, Box> {
   const boxes = new Map<number, Box>();
-  const document = capture.documents?.find((d) => capture.strings[d.frameId] === frameId);
+  const document = parseDOMSnapshot(capture).documentByFrameId(frameId);
   if (!document) return boxes;
-  const dx = origin.x - (scroll?.x ?? document.scrollOffsetX ?? 0);
-  const dy = origin.y - (scroll?.y ?? document.scrollOffsetY ?? 0);
-  const backend = document.nodes.backendNodeId ?? [];
-  const { nodeIndex, bounds } = document.layout;
-  for (let i = 0; i < nodeIndex.length; i++) {
-    const id = backend[nodeIndex[i]!];
-    const rect = bounds[i];
-    if (id === undefined || !rect || boxes.has(id)) continue;
-    const [x = 0, y = 0, width = 0, height = 0] = rect;
-    boxes.set(id, { x: x + dx, y: y + dy, width, height });
+  const dx = origin.x - (scroll?.x ?? document.scrollOffsetX);
+  const dy = origin.y - (scroll?.y ?? document.scrollOffsetY);
+  for (const node of document.nodes()) {
+    const id = node.backendNodeId;
+    if (id === undefined || boxes.has(id)) continue;
+    const rect = node.bounds;
+    if (!rect) continue;
+    boxes.set(id, { x: rect.x + dx, y: rect.y + dy, width: rect.width, height: rect.height });
   }
   return boxes;
 }
@@ -171,7 +170,10 @@ export function layoutBoxes(
  * same-process frames in the coordinates of the session's local root, so an iframe content box
  * is added for the frame itself and for each local root on the way to the main frame.
  */
-async function frameOrigin(frame: Frame, wait: WaitOptions): Promise<{ x: number; y: number }> {
+async function frameOrigin(
+  frame: Frame,
+  step: () => WaitOptions,
+): Promise<{ x: number; y: number }> {
   let x = 0,
     y = 0;
   for (
@@ -180,10 +182,10 @@ async function frameOrigin(frame: Frame, wait: WaitOptions): Promise<{ x: number
     current = parent, parent = parent.parent
   ) {
     if (current !== frame && current.session === parent.session) continue;
-    const { backendNodeId } = await parent.session.sendWith('DOM.getFrameOwner', wait, {
+    const { backendNodeId } = await parent.session.sendWith('DOM.getFrameOwner', step(), {
       frameId: current.id,
     });
-    const { model } = await parent.session.sendWith('DOM.getBoxModel', wait, { backendNodeId });
+    const { model } = await parent.session.sendWith('DOM.getBoxModel', step(), { backendNodeId });
     x += model.content[0] ?? 0;
     y += model.content[1] ?? 0;
   }
@@ -199,11 +201,12 @@ export async function frameGeometry(
   frame: Frame,
   wait: WaitOptions,
 ): Promise<{ boxes: Map<number, Box>; viewport: { width: number; height: number } | null }> {
+  const step = budget(wait, 'Frame geometry');
   const main = frame.tab.mainFrame;
   const [capture, metrics, origin] = await Promise.all([
-    frame.session.sendWith('DOMSnapshot.captureSnapshot', wait, { computedStyles: [] }),
-    main.session.sendWith('Page.getLayoutMetrics', wait),
-    frameOrigin(frame, wait),
+    frame.session.sendWith('DOMSnapshot.captureSnapshot', step(), { computedStyles: [] }),
+    main.session.sendWith('Page.getLayoutMetrics', step()),
+    frameOrigin(frame, step),
   ]);
   const visual = metrics.cssVisualViewport ?? metrics.cssLayoutViewport;
   const viewport = visual ? { width: visual.clientWidth, height: visual.clientHeight } : null;

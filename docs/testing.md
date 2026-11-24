@@ -65,7 +65,21 @@ assert.equal(await tab.evaluate('answer', undefined, { world: 'isolated' }), 42)
 
 ## Targets, events, and failures
 
-`start()` defaults to one `about:blank` page. Pass `{ pages: [] }` for none, or `{ pages: [{ url: 'https://fixture.test/', title: 'Fixture' }] }` for initial metadata. `browser.newTab()` (without navigation) and `browser.newContext()` work with built-in replies; navigation, screenshots, input and other application operations require scripts. As in Chrome, a command for an unknown session is answered at browser level with `Session with given id not found.` (-32001), and an attach to an unknown target with `No target with given id found` (-32602).
+`start()` defaults to one `about:blank` page. Pass `{ pages: [] }` for none, `{ defaultBrowserContextId }` to model a non-empty default context ID, or `{ pages: [{ url: 'https://fixture.test/', title: 'Fixture', openerId?, openerFrameId? }] }` for initial metadata. `browser.newTab()` (without navigation) and `browser.newContext()` work with built-in replies; screenshots, input and other application operations require scripts. As in Chrome, a command for an unknown session is answered at browser level with `Session with given id not found.` (-32001), and attaching to or closing an unknown target returns `No target with given id found` (-32602).
+
+For navigation tests, `commitNavigation(sessionId, url, options?)` updates the modeled page URL (for main-frame navigations) and emits `Target.targetInfoChanged`, `Page.frameNavigated` (preserving `parentId` from `Page.frameAttached` or `options.parentId` on subframes, or emitting `Page.navigatedWithinDocument` with `sameDocument: true`) and lifecycle events (default `['DOMContentLoaded', 'load']`, configurable via `lifecycle`). `handleNavigation(options?)` installs a persistent `Page.navigate` handler that commits navigations automatically (with an optional `onNavigate(params, command)` hook for redirects, `sameDocument`, or `errorText`):
+
+```ts
+const off = chrome.handleNavigation();
+await tab.goto('https://fixture.test/dashboard');
+assert.equal(tab.url, 'https://fixture.test/dashboard');
+
+// Push a server-initiated navigation on the same session:
+const nav = tab.waitForNavigation({ waitUntil: 'load' });
+chrome.commitNavigation(tab.cdp.id!, 'https://fixture.test/next');
+await nav;
+off();
+```
 
 ```ts
 const ready = browser.waitForTab();

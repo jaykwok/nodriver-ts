@@ -1,20 +1,41 @@
 import type { Protocol } from 'devtools-protocol';
 import { randomUUID } from 'node:crypto';
-import type { Session, CdpEvent } from '../protocol/connection.ts';
-import { EvaluationError, ProtocolError, StaleElementError, DisconnectedError } from '../errors.ts';
-import { bounded, budget, EventHub, poll, type WaitOptions } from '../utils.ts';
+import {
+  ON_LATE_REPLY,
+  type Session,
+  type CdpEvent,
+  type LedgerOptions,
+} from '../protocol/connection.ts';
+import { StaleElementError } from '../errors.ts';
+import { isContextGone, isFrameGone } from '../protocol/errors.ts';
+import {
+  bounded,
+  budget,
+  EventHub,
+  httpOrigin,
+  MAX_TIMEOUT,
+  poll,
+  type WaitOptions,
+} from '../utils.ts';
 import { query, type Selector, type QueryOptions } from '../dom/query.ts';
 import type { Element } from '../dom/element.ts';
 import { Locator } from '../dom/locator.ts';
 import type { Tab } from './tab.ts';
 import { frameFetch, type FetchOptions, type FetchResponse } from './fetch.ts';
-import { isContextGone, resolveMainContext } from './execution-context.ts';
+import { resolveMainContext } from './execution-context.ts';
+import {
+  decodeRemoteValue,
+  encodeCallArgument,
+  releaseRemoteObjects,
+  throwEvaluationException,
+} from './runtime.ts';
 import {
   inspectEnvironment,
   type InspectEnvironmentOptions,
   type EnvironmentReport,
 } from './environment.ts';
 export type World = 'main' | 'isolated';
+export type LoadState = 'interactive' | 'complete' | 'domcontentloaded' | 'load';
 export type EvaluationInput<A> = A extends JSHandle<infer Value> ? Value : A;
 export interface EvaluateOptions extends WaitOptions {
   world?: World;
@@ -28,41 +49,24 @@ export function argument(value: unknown): Protocol.Runtime.CallArgument {
       ? { objectId: value.object.objectId }
       : argument(valueOf(value.object));
   }
-  if (typeof value === 'bigint') return { unserializableValue: `${value}n` };
-  if (typeof value === 'number' && (!Number.isFinite(value) || Object.is(value, -0)))
-    return { unserializableValue: Object.is(value, -0) ? '-0' : String(value) };
-  return { value };
+  return encodeCallArgument(value);
 }
 export function valueOf(object: Protocol.Runtime.RemoteObject): unknown {
-  const value = object.unserializableValue;
-  if (value) {
-    if (/^-?\d+n$/.test(value)) return BigInt(value.slice(0, -1));
-    if (value === 'NaN') return NaN;
-    if (value === 'Infinity') return Infinity;
-    if (value === '-Infinity') return -Infinity;
-    if (value === '-0') return -0;
-  }
-  return object.value;
+  return decodeRemoteValue(object);
 }
 /**
  * Throws the page exception of an evaluation as an EvaluationError. With `session`, the exception
- * object is released; otherwise it must belong to an object group that the caller releases.
+ * object (and any returned handle) is released; otherwise it must belong to an object group that
+ * the caller releases.
  */
 export function checkException(
-  result: { exceptionDetails?: Protocol.Runtime.ExceptionDetails },
+  result: {
+    result?: Protocol.Runtime.RemoteObject;
+    exceptionDetails?: Protocol.Runtime.ExceptionDetails;
+  },
   session?: Session,
 ): void {
-  const details = result.exceptionDetails;
-  if (!details) return;
-  const exception = details.exception;
-  if (exception?.objectId && session && !session.closed)
-    void session.send('Runtime.releaseObject', { objectId: exception.objectId }).catch(() => {});
-  throw new EvaluationError(
-    exception?.description ??
-      (exception && 'value' in exception
-        ? `${details.text} ${String(exception.value)}`
-        : details.text),
-  );
+  throwEvaluationException(result, session);
 }
 export class JSHandle<T = unknown> {
   private disposed = false;
@@ -77,14 +81,20 @@ export class JSHandle<T = unknown> {
     this.session = frame.session;
   }
   assertValid(): void {
+    if (this.disposed)
+      throw new StaleElementError('JavaScript handle was disposed', { reason: 'disposed' });
+    if (this.frame.detached)
+      throw new StaleElementError('JavaScript handle belongs to a detached frame', {
+        reason: 'frame-detached',
+      });
     if (
-      this.disposed ||
       this.session.closed ||
-      this.frame.detached ||
       this.generation !== this.frame.generation ||
       this.session !== this.frame.session
     )
-      throw new StaleElementError('JavaScript handle belongs to an expired document');
+      throw new StaleElementError('JavaScript handle belongs to an expired document', {
+        reason: 'context-gone',
+      });
   }
   async jsonValue(): Promise<T> {
     this.assertValid();
@@ -104,16 +114,14 @@ export class JSHandle<T = unknown> {
     this.disposed = true;
     if (this.object.objectId && !this.session.closed)
       await this.session
-        .send('Runtime.releaseObject', { objectId: this.object.objectId })
+        .sendWith('Runtime.releaseObject', { timeout: 1000 }, { objectId: this.object.objectId })
         .catch(() => {});
   }
   async [Symbol.asyncDispose](): Promise<void> {
     await this.dispose();
   }
 }
-function isFrameGone(error: unknown): boolean {
-  return error instanceof ProtocolError && /No frame (?:for|with) given id/i.test(error.message);
-}
+const LOAD_STATES = new Set<LoadState>(['interactive', 'complete', 'domcontentloaded', 'load']);
 export class Frame {
   generation = 0;
   detached = false;
@@ -153,9 +161,10 @@ export class Frame {
    * so it runs on the connection deadline; each caller stops waiting at its own timeout/signal.
    */
   async context(world: World, options: WaitOptions = {}): Promise<number> {
-    if (this.session.closed)
-      throw this.session.closeReason ?? new DisconnectedError('Session closed');
-    if (this.detached) throw new StaleElementError('Frame is detached');
+    if (world !== 'main' && world !== 'isolated') throw new TypeError('Invalid execution world');
+    if (this.session.closed) throw this.session.closedError();
+    if (this.detached)
+      throw new StaleElementError('Frame is detached', { reason: 'frame-detached' });
     return bounded(this.sharedContext(world), options, `${world} world lookup`);
   }
   private sharedContext(world: World): Promise<number> {
@@ -197,7 +206,10 @@ export class Frame {
           },
           (error: unknown) => {
             if (isFrameGone(error))
-              throw new StaleElementError('Frame is detached', { cause: error });
+              throw new StaleElementError('Frame is detached', {
+                cause: error,
+                reason: 'frame-detached',
+              });
             throw error;
           },
         );
@@ -209,13 +221,15 @@ export class Frame {
     return this.isolated.promise;
   }
   private assertDocument(generation: number, session: Session): void {
-    if (
-      this.detached ||
-      session.closed ||
-      generation !== this.generation ||
-      session !== this.session
-    )
-      throw new StaleElementError('Frame changed while resolving execution context');
+    if (session.closed) throw session.closedError();
+    if (this.detached)
+      throw new StaleElementError('Frame detached while resolving execution context', {
+        reason: 'frame-detached',
+      });
+    if (generation !== this.generation || session !== this.session)
+      throw new StaleElementError('Frame changed while resolving execution context', {
+        reason: 'context-gone',
+      });
   }
   private async execute<T, A>(
     fn: string | ((arg: EvaluationInput<A>) => T | Promise<T>),
@@ -223,11 +237,19 @@ export class Frame {
     options: EvaluateOptions,
     handle: boolean,
   ): Promise<Protocol.Runtime.RemoteObject> {
+    if (options.world !== undefined && options.world !== 'main' && options.world !== 'isolated')
+      throw new TypeError('Invalid execution world');
     if (options.executionTimeout !== undefined) {
       if (typeof fn !== 'string')
         throw new TypeError('executionTimeout is supported only for string expressions');
-      if (!Number.isFinite(options.executionTimeout) || options.executionTimeout <= 0)
-        throw new RangeError('executionTimeout must be a positive finite number');
+      if (
+        !Number.isFinite(options.executionTimeout) ||
+        options.executionTimeout <= 0 ||
+        options.executionTimeout > MAX_TIMEOUT
+      )
+        throw new RangeError(
+          `executionTimeout must be a positive finite number up to ${MAX_TIMEOUT} ms`,
+        );
     }
     const generation = this.generation;
     const session = this.session;
@@ -236,18 +258,26 @@ export class Frame {
     this.assertDocument(generation, session);
     if (arg instanceof JSHandle && (arg.session !== session || arg.frame !== this))
       throw new TypeError('Handle arguments must belong to this frame');
+    const onLateReply = (reply: unknown) => {
+      const value = reply as Protocol.Runtime.EvaluateResponse | undefined;
+      releaseRemoteObjects(session, [
+        value?.result?.objectId,
+        value?.exceptionDetails?.exception?.objectId,
+      ]);
+    };
+    const sendOptions = (): LedgerOptions => ({ ...step(), [ON_LATE_REPLY]: onLateReply });
     let result: Protocol.Runtime.EvaluateResponse;
     try {
       result =
         typeof fn === 'string'
-          ? await session.sendWith('Runtime.evaluate', step(), {
+          ? await session.sendWith('Runtime.evaluate', sendOptions(), {
               expression: fn,
               contextId,
               awaitPromise: true,
               returnByValue: !handle,
               timeout: options.executionTimeout,
             })
-          : await session.sendWith('Runtime.callFunctionOn', step(), {
+          : await session.sendWith('Runtime.callFunctionOn', sendOptions(), {
               functionDeclaration: `function(arg){return (${fn.toString()})(arg)}`,
               executionContextId: contextId,
               arguments: [argument(arg)],
@@ -261,17 +291,16 @@ export class Frame {
       throw error;
     }
     checkException(result, session);
-    if (
-      this.detached ||
-      session.closed ||
-      generation !== this.generation ||
-      session !== this.session
-    ) {
-      if (result.result.objectId)
-        await session
-          .send('Runtime.releaseObject', { objectId: result.result.objectId })
-          .catch(() => {});
-      throw new StaleElementError('Frame navigated during evaluation; script was not replayed');
+    if (session.closed) throw session.closedError();
+    if (this.detached || generation !== this.generation || session !== this.session) {
+      releaseRemoteObjects(session, [result.result.objectId]);
+      if (this.detached)
+        throw new StaleElementError('Frame detached during evaluation; script was not replayed', {
+          reason: 'frame-detached',
+        });
+      throw new StaleElementError('Frame navigated during evaluation; script was not replayed', {
+        reason: 'context-gone',
+      });
     }
     return result.result;
   }
@@ -350,6 +379,36 @@ export class Frame {
       'page function',
     );
   }
+  /**
+   * Waits until the current document reaches the requested `document.readyState`:
+   * `'interactive'` / `'domcontentloaded'` accepts `'interactive'` or `'complete'`, while
+   * `'complete'` / `'load'` waits for `'complete'`. Unlike `Tab.waitForNavigation()`, resolves
+   * immediately if the current document has already reached that state.
+   */
+  async waitForLoadState(state: LoadState = 'load', options: WaitOptions = {}): Promise<void> {
+    if (!LOAD_STATES.has(state)) throw new TypeError(`Invalid load state: ${String(state)}`);
+    const requireComplete = state === 'complete' || state === 'load';
+    await poll(
+      async (step) => {
+        try {
+          const ready = await this.evaluate(
+            (needComplete) => {
+              const s = document.readyState;
+              return needComplete ? s === 'complete' : s === 'interactive' || s === 'complete';
+            },
+            requireComplete,
+            { world: 'isolated', ...step },
+          );
+          return ready ? true : undefined;
+        } catch (e) {
+          if (this.pending(e)) return undefined;
+          throw e;
+        }
+      },
+      options,
+      `load state "${state}"`,
+    );
+  }
   async content(): Promise<string> {
     return this.evaluate('document.documentElement.outerHTML', undefined, { world: 'isolated' });
   }
@@ -358,6 +417,7 @@ export class Frame {
     kind: 'local' | 'session' = 'local',
     origin?: string,
   ): Promise<Record<string, string>> {
+    const expected = origin === undefined ? undefined : (httpOrigin(origin) ?? origin);
     return this.evaluate(
       ({ kind, origin }) => {
         if (origin !== undefined && location.origin !== origin)
@@ -370,7 +430,7 @@ export class Frame {
           }),
         );
       },
-      { kind, origin },
+      { kind, origin: expected },
       { world: 'isolated' },
     );
   }
@@ -384,6 +444,7 @@ export class Frame {
     clear = false,
     origin?: string,
   ): Promise<void> {
+    const expected = origin === undefined ? undefined : (httpOrigin(origin) ?? origin);
     await this.evaluate(
       ({ values, kind, clear, origin }) => {
         if (origin !== undefined && location.origin !== origin)
@@ -392,7 +453,7 @@ export class Frame {
         if (clear) s.clear();
         for (const [key, value] of Object.entries(values)) s.setItem(key, value);
       },
-      { values, kind, clear, origin },
+      { values, kind, clear, origin: expected },
       { world: 'isolated' },
     );
   }
@@ -401,7 +462,7 @@ export class FrameManager {
   readonly frames = new Map<string, Frame>();
   readonly sessions = new Set<Session>();
   private sessionFrames = new Map<Session, string>();
-  readonly changes = new EventHub<{ frame: Frame; sameDocument: boolean; restored?: boolean }>();
+  readonly changes: EventHub<{ frame: Frame; sameDocument: boolean; restored?: boolean }>;
   readonly setup = new Map<string, Promise<void>>();
   readonly worldName = randomUUID();
   private disposed = false;
@@ -412,16 +473,24 @@ export class FrameManager {
   constructor(tab: Tab, session: Session) {
     this.tab = tab;
     this.session = session;
+    this.changes = new EventHub((error) => this.tab.reportError(error));
     this.track(session);
   }
   /** Adds a page or OOPIF session and routes only its events to this manager. */
   track(session: Session): void {
     this.sessions.add(session);
     if (this.subscriptions.has(session) || session.closed) return;
-    this.subscriptions.set(
-      session,
-      session.onAny((e) => this.event(session, e)),
-    );
+    const offEvents = session.onAny((e) => this.event(session, e));
+    const offCrash = session.crashed.on(() => {
+      if (this.disposed || !this.sessions.has(session)) return;
+      // An out-of-process frame can crash on its own; the page stays usable.
+      if (session === this.session) this.tab.crashed = true;
+      for (const f of this.frames.values()) if (f.session === session) f.invalidate();
+    });
+    this.subscriptions.set(session, () => {
+      offEvents();
+      offCrash();
+    });
   }
   private untrack(session: Session): void {
     this.sessions.delete(session);
@@ -462,6 +531,10 @@ export class FrameManager {
     this.tab.noteOrigin(frame.url);
     if (session === this.session && !parent) this.mainFrame = frame;
     for (const child of tree.childFrames ?? []) this.mergeTree(child, session, tree.frame.id);
+  }
+  /** @internal Retires all descendant frames of `frame` (e.g. after `Tab.setContent()`). */
+  retireChildren(frame: Frame): void {
+    for (const child of frame.children) this.retire(child);
   }
   private retire(frame: Frame): void {
     for (const child of frame.children) this.retire(child);
@@ -610,10 +683,6 @@ export class FrameManager {
           this.retire(f);
         }
       }
-    } else if (event.method === 'Inspector.targetCrashed') {
-      // An out-of-process frame can crash on its own; the page stays usable.
-      if (session === this.session) this.tab.crashed = true;
-      for (const f of this.frames.values()) if (f.session === session) f.invalidate();
     }
   }
   dispose(): void {

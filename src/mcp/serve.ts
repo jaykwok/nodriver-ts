@@ -21,7 +21,10 @@ export async function serveFetch(options: FetchServerOptions): Promise<FetchServ
   let port = 0;
   const server = createServer((req, res) => {
     void handle(req, res).catch(() => {
-      if (!res.headersSent && !res.destroyed) res.writeHead(500).end();
+      if (!res.headersSent && !res.destroyed)
+        res
+          .writeHead(500, { 'content-type': 'application/json' })
+          .end(JSON.stringify({ error: 'Internal server error' }));
       else res.destroy();
     });
   });
@@ -35,7 +38,9 @@ export async function serveFetch(options: FetchServerOptions): Promise<FetchServ
   async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const host = req.headers.host;
     if (!host) {
-      res.writeHead(400).end('Host header required');
+      res
+        .writeHead(400, { 'content-type': 'application/json' })
+        .end(JSON.stringify({ error: 'Host header required' }));
       return;
     }
     const controller = new AbortController();

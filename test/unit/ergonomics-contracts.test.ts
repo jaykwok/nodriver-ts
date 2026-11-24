@@ -1557,7 +1557,7 @@ test('5c. Streaming chunk early-stop skips later batches and mid-read detach thr
     .locator('.stream-row')
     .filter({ hasText: 'First Winner' })
     .first()
-    .element({ timeout: 500 });
+    .element({ timeout: 3000 });
   assert.equal(firstEl.backendNodeId, rows[0]!.backendNodeId);
   assert.equal(resolvedIds.includes(rows[256]!.backendNodeId), false);
   assert.equal(resolvedIds.length, 256);

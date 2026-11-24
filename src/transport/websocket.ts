@@ -2,17 +2,25 @@ import WebSocket from 'ws';
 import type { RawData } from 'ws';
 import type { Transport } from './transport.ts';
 import { DisconnectedError, TimeoutError } from '../errors.ts';
-import { abortReason, CONNECT_TIMEOUT, timeoutValue, type WaitOptions } from '../utils.ts';
+import {
+  abortReason,
+  CONNECT_TIMEOUT,
+  positiveInt,
+  timeoutValue,
+  type WaitOptions,
+} from '../utils.ts';
 export class WebSocketTransport implements Transport {
   onmessage?: (message: string) => void;
   onclose?: (reason: Error) => void;
+  private closed = false;
   private closing?: Promise<void>;
   private readonly socket: WebSocket;
   private constructor(socket: WebSocket) {
     this.socket = socket;
     socket.on('message', (data: RawData, binary: boolean) => {
+      if (this.closed) return;
       if (binary) {
-        this.onclose?.(new DisconnectedError('Expected a CDP text WebSocket message'));
+        this.fail(new DisconnectedError('Expected a CDP text WebSocket message'));
         socket.terminate();
         return;
       }
@@ -24,24 +32,34 @@ export class WebSocketTransport implements Transport {
       this.onmessage?.(bytes.toString('utf8'));
     });
     socket.on('close', (code, reason) =>
-      this.onclose?.(new DisconnectedError(`WebSocket closed (${code}): ${reason.toString()}`)),
+      this.fail(new DisconnectedError(`WebSocket closed (${code}): ${reason.toString()}`)),
     );
     socket.on('error', (error) => {
-      this.onclose?.(
+      this.fail(
         new DisconnectedError(`WebSocket transport error: ${error.message}`, { cause: error }),
       );
       socket.terminate();
     });
   }
+  private fail(reason: Error): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.onclose?.(reason);
+  }
   static async connect(
     url: string,
     options: WaitOptions & { maxMessageBytes?: number } = {},
   ): Promise<WebSocketTransport> {
-    if (!/^wss?:\/\//.test(url)) throw new TypeError('Expected a ws:// or wss:// browser endpoint');
+    let parsed: URL;
+    try {
+      parsed = new URL(url);
+    } catch {
+      throw new TypeError('Expected a ws:// or wss:// browser endpoint');
+    }
+    if (parsed.protocol !== 'ws:' && parsed.protocol !== 'wss:')
+      throw new TypeError('Expected a ws:// or wss:// browser endpoint');
     timeoutValue(options.timeout ?? CONNECT_TIMEOUT);
-    const maxPayload = options.maxMessageBytes ?? 256 * 1024 * 1024;
-    if (!Number.isSafeInteger(maxPayload) || maxPayload < 1)
-      throw new RangeError('maxMessageBytes must be a positive integer');
+    const maxPayload = positiveInt(options.maxMessageBytes ?? 256 * 1024 * 1024, 'maxMessageBytes');
     if (options.signal?.aborted) throw abortReason(options.signal);
     return new Promise((resolve, reject) => {
       const socket = new WebSocket(url, { perMessageDeflate: false, maxPayload });
@@ -86,11 +104,19 @@ export class WebSocketTransport implements Transport {
     });
   }
   send(message: string): Promise<void> {
-    if (this.socket.readyState !== WebSocket.OPEN)
+    if (this.closed || this.socket.readyState !== WebSocket.OPEN)
       return Promise.reject(new DisconnectedError('WebSocket is closed'));
     return new Promise((resolve, reject) =>
       this.socket.send(message, { binary: false, compress: false }, (error) =>
-        error ? reject(error) : resolve(),
+        error
+          ? reject(
+              error instanceof DisconnectedError
+                ? error
+                : new DisconnectedError(`WebSocket send failed: ${error.message}`, {
+                    cause: error,
+                  }),
+            )
+          : resolve(),
       ),
     );
   }

@@ -444,7 +444,6 @@ test('callback keyDelay runs through action.pace and counts in InputReport.plann
   assert.deepEqual(calls, [
     ['a', ' ', 0],
     [' ', 'b', 1],
-    ['b', '', 2],
   ]);
   assert.equal(report.plannedMs, 55);
   // Per-call override via KeyboardTypeOptions.keyDelay
@@ -453,19 +452,16 @@ test('callback keyDelay runs through action.pace and counts in InputReport.plann
     await keyboard.type('xy', {
       keyDelay: (prev, next, index) => {
         overrideCalls.push([prev, next, index]);
-        return next === '' ? 0 : 25;
+        return 25;
       },
     });
   });
-  assert.deepEqual(overrideCalls, [
-    ['x', 'y', 0],
-    ['y', '', 1],
-  ]);
+  assert.deepEqual(overrideCalls, [['x', 'y', 0]]);
   assert.equal(overridden.plannedMs, 25);
   // Invalid callback return value fails cleanly as InputActionError.
   const bad = await scope
     .run(async ({ keyboard }) => {
-      await keyboard.type('a', { keyDelay: () => -5 });
+      await keyboard.type('ab', { keyDelay: () => -5 });
     })
     .catch((e: unknown) => e);
   assert.ok(bad instanceof InputActionError);
@@ -565,10 +561,7 @@ test('callback keyDelay disables digraph rollover so every pair uses the callbac
   // Force random < 0.15 which would normally trigger rollover on "th".
   keyboard.behavior.random = () => 0.05;
   const report = await keyboard.type('th');
-  assert.deepEqual(calls, [
-    ['t', 'h', 0],
-    ['h', '', 1],
-  ]);
+  assert.deepEqual(calls, [['t', 'h', 0]]);
   assert.equal(report.plannedMs, 12);
   assert.deepEqual(
     keyEvents(t.chrome).map((e) => `${e.type}:${e.key}`),

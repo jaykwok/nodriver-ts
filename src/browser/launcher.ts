@@ -30,15 +30,19 @@ import {
   type ProxyEnvironmentOptions,
 } from '../optional/native-environment.ts';
 import { updateProfileSettings, type ProfileSettings } from './profile.ts';
-import { DisconnectedError, NodriverError, ProfileInUseError } from '../errors.ts';
 import {
-  abortReason,
+  DisconnectedError,
+  NodriverError,
+  ProfileInUseError,
+  UnsupportedError,
+} from '../errors.ts';
+import {
   bounded,
+  budget,
   CONNECT_TIMEOUT,
   delay,
   poll,
   removeTree,
-  timeoutValue,
   type WaitOptions,
 } from '../utils.ts';
 /** What `prepareProfile` is called with besides the profile directory. */
@@ -57,9 +61,16 @@ export interface FindExecutableOptions {
   executablePath?: string;
   /**
    * Ordered browser channel preference when `executablePath` is omitted.
-   * When set explicitly, channel preference takes precedence over `CHROME_PATH`.
+   * When set explicitly, channel preference takes precedence over `CHROME_PATH` unless
+   * `respectEnv: true` is passed.
    */
   prefer?: readonly BrowserChannel[];
+  /**
+   * When `true`, `CHROME_PATH` takes precedence over `prefer` (resolution order:
+   * `executablePath > CHROME_PATH > prefer > auto-detect`). Defaults to `false` so channel
+   * pinning is preserved unless explicitly relaxed.
+   */
+  respectEnv?: boolean;
 }
 export interface LaunchOptions extends WaitOptions, ConnectionOptions {
   executablePath?: string;
@@ -68,6 +79,11 @@ export interface LaunchOptions extends WaitOptions, ConnectionOptions {
    * omitted. Useful with persistent `userDataDir` profiles to avoid switching browser engines.
    */
   channel?: BrowserChannel | readonly BrowserChannel[];
+  /**
+   * Forwarded to `findExecutable({ respectEnv })`. When `true`, `CHROME_PATH` takes precedence
+   * over `channel` when `executablePath` is omitted. Defaults to `false`.
+   */
+  respectEnv?: boolean;
   /** False by default. Set true when running without a graphical desktop. */
   headless?: boolean;
   /** False by default. True preserves Chromium's native automation flag. */
@@ -157,13 +173,24 @@ async function executableOnPath(names: string[]): Promise<string | undefined> {
   for (const dir of (process.env.PATH ?? '').split(delimiter).filter(Boolean))
     for (const name of names)
       for (const ext of extensions) {
-        const candidate = join(dir, name + ext);
+        const candidate = resolve(dir, name + ext);
         try {
           await access(candidate);
           return candidate;
         } catch {}
       }
   return undefined;
+}
+function flagName(arg: string): string {
+  const eq = arg.indexOf('=');
+  return eq < 0 ? arg : arg.slice(0, eq);
+}
+function parseActivePort(contents: string): { port: string; path: string } | undefined {
+  const [port, path] = contents.trim().split(/\r?\n/);
+  if (!port || !/^\d+$/.test(port) || !path?.startsWith('/devtools/browser/')) return undefined;
+  const numeric = Number(port);
+  if (!Number.isSafeInteger(numeric) || numeric < 1 || numeric > 65535) return undefined;
+  return { port, path };
 }
 /**
  * The group has no live member. macOS reports EPERM rather than ESRCH when only zombies remain
@@ -214,12 +241,15 @@ function unwatchSignals(owner: BrowserProcess): void {
     signalListeners.delete(signal);
   }
 }
-const BROWSER_CHANNELS = new Set<BrowserChannel>(['chrome', 'edge', 'chromium']);
 const DEFAULT_BROWSER_CHANNELS: readonly BrowserChannel[] = ['chrome', 'chromium', 'edge'];
+const BROWSER_CHANNELS = new Set<BrowserChannel>(DEFAULT_BROWSER_CHANNELS);
 
-function normalizeChannels(prefer: readonly BrowserChannel[]): BrowserChannel[] {
+function normalizeChannels(
+  prefer: readonly BrowserChannel[],
+  optionName = 'prefer',
+): BrowserChannel[] {
   if (!Array.isArray(prefer) || prefer.length === 0)
-    throw new TypeError('prefer must be a non-empty array of browser channels');
+    throw new TypeError(`${optionName} must be a non-empty array of browser channels`);
   const seen = new Set<BrowserChannel>();
   const result: BrowserChannel[] = [];
   for (const channel of prefer) {
@@ -343,15 +373,19 @@ export async function findExecutable(options?: string | FindExecutableOptions): 
   const explicit = typeof options === 'string' ? options : options?.executablePath;
   const prefer =
     typeof options === 'object' && options?.prefer !== undefined
-      ? normalizeChannels(options.prefer)
+      ? normalizeChannels(options.prefer, 'prefer')
       : undefined;
-  if (explicit) {
+  const respectEnv = typeof options === 'object' ? options?.respectEnv === true : false;
+  if (explicit !== undefined) {
+    if (typeof explicit !== 'string' || !explicit.trim())
+      throw new TypeError('executablePath must be a non-empty string');
     await access(explicit);
     return resolve(explicit);
   }
-  if (!prefer && process.env.CHROME_PATH) {
-    await access(process.env.CHROME_PATH);
-    return resolve(process.env.CHROME_PATH);
+  const envPath = process.env.CHROME_PATH;
+  if ((!prefer || respectEnv) && envPath) {
+    await access(envPath);
+    return resolve(envPath);
   }
   if (prefer) {
     for (const channel of prefer) {
@@ -362,7 +396,9 @@ export async function findExecutable(options?: string | FindExecutableOptions): 
       if (onPath) return onPath;
     }
     throw new NodriverError(
-      `Browser executable not found for channel(s): ${prefer.join(', ')}; set executablePath or CHROME_PATH`,
+      respectEnv
+        ? `Browser executable not found for channel(s): ${prefer.join(', ')}; set executablePath or CHROME_PATH`
+        : `Browser executable not found for channel(s): ${prefer.join(', ')}; set executablePath, pass respectEnv: true to allow CHROME_PATH, or omit channel/prefer`,
     );
   }
   // Preserve legacy default priority: all stable installs across Chrome, Chromium and Edge
@@ -372,11 +408,9 @@ export async function findExecutable(options?: string | FindExecutableOptions): 
   if (stable) return stable;
   const preview = await firstExisting(allCandidates.flatMap(({ previewPaths }) => previewPaths));
   if (preview) return preview;
-  const found = await executableOnPath(
-    process.platform === 'win32'
-      ? ['chrome', 'msedge']
-      : ['google-chrome', 'google-chrome-stable', 'chromium', 'chromium-browser', 'microsoft-edge'],
-  );
+  const found = await executableOnPath([
+    ...new Set(allCandidates.flatMap(({ pathNames }) => pathNames)),
+  ]);
   if (found) return found;
   throw new NodriverError('Chrome not found; set executablePath or CHROME_PATH');
 }
@@ -486,8 +520,10 @@ export class BrowserProcess {
     endpoint?: string;
     nativeEnvironment?: NativeEnvironment;
   }> {
-    timeoutValue(options.timeout ?? CONNECT_TIMEOUT);
-    if (options.signal?.aborted) throw abortReason(options.signal);
+    const step = budget(
+      { timeout: options.timeout ?? CONNECT_TIMEOUT, signal: options.signal },
+      'Chrome launch',
+    );
     if (options.nativeEnvironment && options.autoAlignEnv)
       throw new TypeError('Choose nativeEnvironment or autoAlignEnv');
     const native = !!(options.nativeEnvironment || options.autoAlignEnv);
@@ -500,7 +536,7 @@ export class BrowserProcess {
       if (
         options.maskHeadless ||
         options.lang ||
-        options.args?.some((a) => /^--(?:lang|accept-lang)(?:=|$)/.test(a)) ||
+        options.args?.some((a) => ['--lang', '--accept-lang'].includes(flagName(a))) ||
         ['TZ', 'LANG', 'LANGUAGE', 'LC_ALL', 'LC_MESSAGES'].some(
           (k) => options.env?.[k] !== undefined,
         )
@@ -526,7 +562,7 @@ export class BrowserProcess {
     if (options.supervised && (!options.detached || options.transport === 'pipe'))
       throw new TypeError('supervised requires detached: true and WebSocket transport');
     if (options.supervised && !['win32', 'darwin', 'linux'].includes(process.platform))
-      throw new TypeError('supervised supports Windows, macOS and Linux');
+      throw new UnsupportedError('supervised supports Windows, macOS and Linux');
     if (options.detached && options.transport === 'pipe')
       throw new TypeError(
         'detached requires WebSocket transport; Chrome exits when CDP pipes close',
@@ -541,12 +577,14 @@ export class BrowserProcess {
     const prefer =
       options.channel === undefined
         ? undefined
-        : Array.isArray(options.channel)
-          ? options.channel
-          : [options.channel];
+        : normalizeChannels(
+            Array.isArray(options.channel) ? options.channel : [options.channel],
+            'channel',
+          );
     const executable = await findExecutable({
       executablePath: options.executablePath,
       ...(prefer !== undefined ? { prefer } : {}),
+      ...(options.respectEnv !== undefined ? { respectEnv: options.respectEnv } : {}),
     });
     if (
       options.webRtcIPHandlingPolicy &&
@@ -560,10 +598,14 @@ export class BrowserProcess {
       throw new TypeError('Invalid WebRTC IP handling policy');
     if (
       options.webRtcIPHandlingPolicy &&
-      options.args?.some((a) => a.startsWith('--force-webrtc-ip-handling-policy'))
+      options.args?.some((a) => flagName(a) === '--force-webrtc-ip-handling-policy')
     )
       throw new TypeError('Use one WebRTC policy source');
-    if (options.args?.some((a) => /^--(remote-debugging-|user-data-dir(?:=|$))/.test(a))) {
+    if (
+      options.args?.some(
+        (a) => a.startsWith('--remote-debugging-') || flagName(a) === '--user-data-dir',
+      )
+    ) {
       throw new TypeError(
         'Use transport/userDataDir options instead of overriding lifecycle flags',
       );
@@ -602,8 +644,8 @@ export class BrowserProcess {
       startup.enter('environment-configuration');
       const environment = options.nativeEnvironment
         ? nativeEnvironment(options.nativeEnvironment)
-        : await resolveProxyEnvironment(options.proxyServer!, options.autoAlignEnv!, options);
-      await checkNativeHost(environment, options);
+        : await resolveProxyEnvironment(options.proxyServer!, options.autoAlignEnv!, step());
+      await checkNativeHost(environment, step());
       options = {
         ...options,
         nativeEnvironment: environment,
@@ -639,15 +681,16 @@ export class BrowserProcess {
       if (options.nativeEnvironment && !empty)
         throw new TypeError('Native environment requires a new or empty profile');
       if (options.prepareProfile) {
-        const timeout = timeoutValue(options.timeout ?? CONNECT_TIMEOUT);
+        const wait = step();
+        const timeout = wait.timeout!;
         const signal = AbortSignal.any(
-          [AbortSignal.timeout(timeout), options.signal].filter((s): s is AbortSignal => !!s),
+          [AbortSignal.timeout(timeout), wait.signal].filter((s): s is AbortSignal => !!s),
         );
         await bounded(
           Promise.resolve().then(() =>
             options.prepareProfile!(profile, { timeout, signal, temporary, empty }),
           ),
-          { timeout, signal: options.signal },
+          wait,
           'Profile preparation',
         );
       }
@@ -666,7 +709,7 @@ export class BrowserProcess {
       if (options.headless === true) args.push('--headless=new');
       if (options.preset === 'agent')
         for (const flag of AGENT_ARGS)
-          if (!extraArgs.some((a) => a.split('=')[0] === flag.split('=')[0])) args.push(flag);
+          if (!extraArgs.some((a) => flagName(a) === flagName(flag))) args.push(flag);
       if (options.userAgent) args.push(`--user-agent=${options.userAgent}`);
       if (options.lang) args.push(`--lang=${options.lang}`);
       if (options.windowSize)
@@ -695,7 +738,7 @@ export class BrowserProcess {
             executable,
             args,
             options.env ? { ...process.env, ...options.env } : process.env,
-            options,
+            step(),
             virtualDisplay,
           )
         : undefined;
@@ -720,7 +763,7 @@ export class BrowserProcess {
         display,
       );
       startup.process = () => processHandle!.diagnostics;
-      if (guardian) await guardian.waitReady(options);
+      if (guardian) await guardian.waitReady(step());
       else
         await new Promise<void>((resolve, reject) => {
           const spawned = () => {
@@ -748,22 +791,25 @@ export class BrowserProcess {
               `Chrome exited (${owner.diagnostics.exitCode}) before CDP was ready`,
             );
           try {
-            const [port, path] = (await readFile(join(profile, 'DevToolsActivePort'), 'utf8'))
-              .trim()
-              .split(/\r?\n/);
-            if (port && /^\d+$/.test(port) && path?.startsWith('/devtools/browser/'))
-              return `ws://127.0.0.1:${port}${path}`;
+            const parsed = parseActivePort(
+              await readFile(join(profile, 'DevToolsActivePort'), 'utf8'),
+            );
+            if (parsed) return `ws://127.0.0.1:${parsed.port}${parsed.path}`;
           } catch (e) {
-            if (!['ENOENT', 'EBUSY', 'EACCES'].includes((e as NodeJS.ErrnoException).code ?? ''))
+            if (
+              !['ENOENT', 'EBUSY', 'EACCES', 'EPERM'].includes(
+                (e as NodeJS.ErrnoException).code ?? '',
+              )
+            )
               throw e;
           }
           return undefined;
         },
-        { timeout: options.timeout ?? CONNECT_TIMEOUT, signal: options.signal },
+        step(),
         'Chrome CDP endpoint',
       );
       startup.enter('websocket-connect');
-      const transport = await WebSocketTransport.connect(endpoint, options);
+      const transport = await WebSocketTransport.connect(endpoint, step());
       return { process: owner, transport, endpoint, nativeEnvironment: options.nativeEnvironment };
     } catch (e) {
       await processHandle?.captureDiagnostics();
@@ -940,7 +986,12 @@ async function removeStaleActivePort(profile: string): Promise<void> {
     if ((e as NodeJS.ErrnoException).code === 'ENOENT') return;
     throw e;
   }
-  const [port, browserPath = ''] = contents.trim().split(/\r?\n/);
+  const parsed = parseActivePort(contents);
+  if (!parsed) {
+    await rm(path, { force: true });
+    return;
+  }
+  const { port, path: browserPath } = parsed;
   const live = await fetch(`http://127.0.0.1:${Number(port)}/json/version`, {
     signal: AbortSignal.timeout(1000),
   })

@@ -25,6 +25,7 @@ export interface ByteBudget {
 }
 
 const BLOCKED = 'nodriver-indexeddb-blocked';
+const BUDGET_EXCEEDED = 'Storage state exceeds maxBytes';
 
 /**
  * JSON form of a structured-clone value: strings, booleans, null and finite numbers as they are,
@@ -290,12 +291,18 @@ export async function exportIndexedDB(
   budget: ByteBudget,
 ): Promise<IndexedDBDatabase[]> {
   const argument = JSON.stringify({ origin, left: budget.left });
-  const { databases, left } = await frame.evaluate<{
-    databases: IndexedDBDatabase[];
-    left: number;
-  }>(`(${readDatabases})(${encodeValue}, ${argument})`, undefined, { world: 'isolated' });
-  budget.left = left;
-  return databases;
+  try {
+    const { databases, left } = await frame.evaluate<{
+      databases: IndexedDBDatabase[];
+      left: number;
+    }>(`(${readDatabases})(${encodeValue}, ${argument})`, undefined, { world: 'isolated' });
+    budget.left = left;
+    return databases;
+  } catch (error) {
+    if (error instanceof Error && error.message.includes(BUDGET_EXCEEDED))
+      throw new RangeError(BUDGET_EXCEEDED, { cause: error });
+    throw error;
+  }
 }
 
 /** Replaces the listed databases of the frame's origin; see blockedDatabase() for a refusal. */
@@ -312,5 +319,10 @@ export async function importIndexedDB(
 /** The database named by a failure of importIndexedDB() that another connection blocked. */
 export function blockedDatabase(error: unknown): string | undefined {
   const text = error instanceof Error ? error.message : String(error);
-  return new RegExp(`${BLOCKED}:(.*)`).exec(text)?.[1];
+  const marker = `${BLOCKED}:`;
+  const index = text.indexOf(marker);
+  if (index < 0) return undefined;
+  const rest = text.slice(index + marker.length);
+  const newline = rest.search(/[\r\n]/);
+  return newline < 0 ? rest : rest.slice(0, newline);
 }

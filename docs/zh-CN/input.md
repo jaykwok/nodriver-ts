@@ -58,17 +58,17 @@ human 输入在 Node 侧规划，页面中不运行任何代码来产生它。
 - **落点**：在元素位于视口内的部分中，于 `targetInset` 范围内按截断高斯分布采样，横向居中、纵向略偏上。
 - **按压**：部分按压在 `pressDelay` 过半时产生 1 px 的按住移动。元素点击会先对该位置做命中检查，检查不通过则跳过；跨进程 frame 内从不发生。释放使用最终位置。
 - **滚动**：`wheelProfile: 'trackpad'`（默认）发送先加速再衰减的滚轮事件，每 18 px 距离一个，间隔约 8 ms；`'wheel'` 发送等量的滚轮事件，每 100 px 一个，间隔 45 ms。两者都发送 1–120 个事件，每个间隔再加上 `pause`，并保持有符号、含小数的滚动总量。显式的 `scrollSteps` 指定事件数。设置 `wheelNotch`（目标平台滚轮一档的像素数）后，`'wheel'` 改为每档发送一个事件，每个事件只沿一个轴滚动，间隔 45 ms，滚动距离取整为整档：一档 100 px 时，`wheel(0, 250)` 滚动三档。instant 模式发送一个携带精确距离的事件。human 模式下把元素滚入视口时，最多用滚轮滚动 3 秒，其余由 Chrome 完成。
-- **打字**：间隔服从对数正态分布，限制在 `keyDelay` 范围内，并按 QWERTY 键距和双手交替加权。`keyDelay` 也接受 `(previous, next, index) => ms` 回调（可在 `InputPolicy` 或 `KeyboardTypeOptions` 中设置），其返回值经由动作的节拍时钟执行并计入 `plannedMs`（并关闭重叠键入，确保每一对字符都触发回调）。小写 `th`、`he`、`in`、`er` 可能重叠按住，规划时长 5–12 ms；修饰键、重复键、非 ASCII 片段、带 `onSegment` 回调或函数式 `keyDelay` 时不重叠。取消时两个键都会释放。
+- **打字**：间隔服从对数正态分布，限制在 `keyDelay` 范围内，并按 QWERTY 键距和双手交替加权；最后一段之后不再追加 `keyDelay` 停顿。`keyDelay` 也接受 `(previous, next, index) => ms` 回调（可在 `InputPolicy` 或 `KeyboardTypeOptions` 中设置），其返回值经由动作的节拍时钟执行并计入 `plannedMs`（并关闭重叠键入，确保每一对字符都触发回调）。小写 `th`、`he`、`in`、`er` 可能重叠按住，规划时长 5–12 ms；修饰键、重复键、非 ASCII 片段、带 `onSegment` 回调或函数式 `keyDelay` 时不重叠。取消时两个键都会释放。
 
 ## 文本与按键
 
-- **`fill()`**：整段替换，使用焦点、选区和一次 `Input.insertText`。
-- **`type()`**：在当前选区按字素（Intl.Segmenter）逐个提交，也接受字符串片段数组；不会拆开 emoji 代理对、ZWJ 序列或组合字符。`type(text, { replace: true })` 先像 `fill()` 一样选中全部内容，再逐字输入覆盖它；文本为空时用 Backspace 删除原内容。单次最多 100000 个 UTF-16 单元。
+- **`fill()`**：整段替换，使用焦点、选区和一次 `Input.insertText`；目标不可编辑、只读或被禁用时以 `ActionabilityError` 拒绝。
+- **`type()`**：在当前选区按字素（Intl.Segmenter）逐个提交，也接受字符串片段数组；不会拆开 emoji 代理对、ZWJ 序列或组合字符。`type(text, { replace: true })` 先像 `fill()` 一样选中全部内容，再逐字输入覆盖它；文本为空时用 Backspace 删除原内容。单次最多 100000 个 UTF-16 单元。在 `Element` 上调用时，目标不可编辑、只读或被禁用会以 `ActionabilityError` 拒绝。
 - **按键事件**：`typing: 'keys'`，或 human 模式下的默认 `auto`，会把可输入的 US 布局字符（字母、数字、常用符号、空格）逐个作为按键发送，大写字母与上档符号自动按住 Shift。产生字符的按键先发送 `rawKeyDown`，再发送 `char`，因此与物理按键一样，keydown 处理函数阻止默认行为时不会输入该字符；按住 Control、Alt 或 Meta 时只发送 `rawKeyDown`。keyUp 与 keydown 的 `key`、`code`、键码和位置一致。用 `keyboard.down('Shift')` 按住 Shift 期间，不需要 Shift 的字符改用 `insertText` 输入，以免被按住的 Shift 变成上档字符。中日韩文字、emoji、换行和制表符使用 `insertText`；`typing: 'insertText'` 则全部使用 `insertText`。`characterKey(ch)` 与 `requiresShift(ch)` 复用 `type()` 内部的同一份映射表。
 - **`press()`**：支持命名键（Enter、Tab、Escape、方向键、Home/End、PageUp/PageDown、F1–F12、Space 等）、修饰键组合与 US 布局字符，例如 `Shift+Tab`、`Control++`；按住 Shift 时发送上档字符。`keyDefinition()`、`characterKey()`、`requiresShift()` 与 `parseChord()` 已导出。
 - **左右键与数字键盘**：`Shift`、`Control`、`Alt`、`Meta` 指左侧按键；`ShiftLeft`、`ShiftRight`、`ControlLeft`、`ControlRight`、`AltLeft`、`AltRight`、`MetaLeft`、`MetaRight` 指定左右。`Numpad0`–`Numpad9`、`NumpadAdd`、`NumpadSubtract`、`NumpadMultiply`、`NumpadDivide`、`NumpadDecimal` 和 `NumpadEnter` 按 Num Lock 开启时的方式输入。这些按键的 keydown、keypress 和 keyup 事件都把 `KeyboardEvent.location` 设为 1（左）、2（右）或 3（数字键盘），`keyDefinition()` 返回相同的 `location`。按键按物理键记录按住状态：`up('ControlLeft')` 会释放用 `down('Control')` 按下的键，`pressedKeys` 按按下时使用的名称列出按键。
 - **macOS 编辑快捷键**：浏览器运行在 macOS 上时，按键事件附带 AppKit 编辑命令（CDP `commands`），因此 `Meta+A` 全选、`Meta+Z` 撤销、`Alt+ArrowLeft` 按词移动、`Control+A` 移到段首等都与 Mac 键盘一致。启动的浏览器按宿主平台判断，`userAgent` 启动选项不影响结果；连接的浏览器按 `Browser.getVersion` 报告的 UA 判断。
-- **`select()`**：通过 DOM 修改选项并派发合成的 input/change 事件，不改写 isTrusted；需要指针或按键交互时由调用者显式执行。
+- **`select()`**：通过 DOM 修改选项并派发合成的 input/change 事件（遇到非 `<select>` 或禁用控件时以 `ActionabilityError` 拒绝），不改写 isTrusted；需要指针或按键交互时由调用方显式执行。
 
 `keyboard.type()`、`element.type()` 和 `locator.type()` 接受同步或异步的完成回调 `onSegment(segment, index, context)`。字符串输入按完整字素回调，数组输入按数组项回调；每段得到 Chrome 确认且其字符键已释放后调用一次。`index` 从零开始，只属于本次 `type()`；`completedSegments` 在回调前递增。输入会等待回调结束再发送下一段，并关闭相邻字符的重叠按键，确保读回发生在段边界。页面事件处理函数可能阻止或转换输入，可在回调中读取实际值。第三个参数 `context`（`KeyboardSegmentContext`）提供 `context.next`（最后一段为 `undefined`）与 `await context.pace(ms?)`，可在 `onSegment` 内执行本段与下一段之间的计划停顿——例如先读回快判，再调用 `await context.pace()`，停顿结束后紧接着在下一次按键发出前复核页面与焦点：`context.pace()` 经由 `action.pace()` 计时（以前一次输入发出时刻为基准自动抵扣 `onSegment` 前半段读回已消耗的耗时，而非额外叠加 sleep，并计入 `plannedMs`；同一段内二次无参调用为 no-op，末段无参调用立即 0 ms 返回，显式传入负值/`NaN`/`Infinity` 抛 `RangeError`，调用后 `type()` 不再重复执行回调后的自动停顿）。返回 `false`（或 Promise 解析为 `false`，无论在 `context.pace()` 之前还是之后）表示本段完成后正常提前终止：立即释放本次 `type()` 内部持有的 Shift，跳过剩余段与未消费的停顿，并以 `status: 'completed'` 正常返回。回调耗时计入动作期限，并受取消信号约束；抛错、Promise 拒绝、超时或取消会以 `InputActionError` 停止后续输入并释放托管按键，不重放已完成的文本。中断的段不会调用完成回调，包括清理阶段才得到确认的段。取消会停止等待回调，但无法强制终止其中已运行的任意用户代码。`KeyboardTypeOptions` 与 `KeyboardSegmentContext` 已导出，元素和 Locator 的 `TypeOptions` 在其基础上增加 `replace`。
 
@@ -92,7 +92,7 @@ await field.type(['A', 'B', 'C'], {
 
 点击先把元素滚动到视口内，检查其可见、启用且未被遮挡，并间隔 32 ms 两次取点，确认位置稳定。轨迹结束后会再次检查目标坐标和父 frame 的命中测试。位置改变或目标被遮挡时拒绝按下，绝不自动重新定位或重放点击。
 
-`setChecked(checked)` 是一个完整的输入动作：超时、取消信号和 `guard` 覆盖读取状态、点击，以及最多 1 s 的等待目标状态。它点击 checkbox 或 radio 本身；当点击控件中心无法命中控件时（例如原生控件隐藏在带样式的 label 之后），改为点击控件的第一个已渲染的 `<label>`。返回 `{ changed, clicked }`，其中 `clicked` 为 `'control'` 或 `'label'`。radio 无法通过点击取消选中，因此对已选中的 radio 调用 `setChecked(false)` 会在发出任何输入前被拒绝；`setChecked(true)` 可以选中未选中的 radio。被禁用的控件（包括位于被禁用的 `<fieldset>` 内的控件）会在同一期限内等待其变为可用；控件被禁用期间，既不点击控件本身，也不点击它的 label。点击后未达到目标状态时报告错误，不会重复点击。普通 `click()` 不会改为点击其他元素。
+`setChecked(checked)` 是一个完整的输入动作：完整的 `timeout`、取消信号和 `guard` 覆盖读取状态、点击，以及最多 1 s 的等待目标状态。它点击 checkbox 或 radio 本身；当点击控件中心无法命中控件时（例如原生控件隐藏在带样式的 label 之后），改为点击控件的第一个已渲染的 `<label>`。返回 `{ changed, clicked }`，其中 `clicked` 为 `'control'` 或 `'label'`。radio 无法通过点击取消选中，因此对已选中的 radio 调用 `setChecked(false)` 会在发出任何输入前以 `ActionabilityError` 被拒绝；`setChecked(true)` 可以选中未选中的 radio。被禁用的控件（包括位于被禁用的 `<fieldset>` 内或带 `aria-disabled="true"` 的控件）会在同一期限内等待其变为可用；控件被禁用期间，既不点击控件本身，也不点击它的 label。点击后未达到目标状态时报告错误，不会重复点击。普通 `click()` 不会改为点击其他元素。
 
 鼠标按钮按下期间（包括按住按钮移动时），指针压力为 0.5。human 模式下，首个指针位置在视口 15–85% 范围内随机。在 OOPIF 内悬停时会确认事件确实已投递；只有指针已停在同一坐标时，才额外发送一次探测移动，偏移 0.25 px 或指针网格的一格，该探测本身也会产生可观察的事件。
 
@@ -141,7 +141,7 @@ Tab 输入、独立构造的 `new Mouse(session)` / `new Keyboard(session)` 和�
 
 调用方已停止等待的命令，仍可通过清理结果和连接生命周期观察到。
 
-`cleanupTimeout` 默认 5000 ms，独立于输入超时时间和已中止的取消信号，限定释放资源和排空迟到响应的总时间。下一个托管输入会等到清理完成；清理失败后，后续托管输入会被拒绝，其 cause 为 `InputBlockedError`。输入动作保留原命令结果，从不重发命令。清理只等待该动作自己的迟到响应：它的输入命令、元素准备命令和回调中在任意连接上发出的原始命令（包括调用方已停止等待的命令），以及该动作的附加操作迟到返回时库为其发送的分离命令。其他待响应命令（例如另一个标签页的求值）既不会延迟清理，也不会使其失败。
+`cleanupTimeout` 默认 5000 ms，独立于输入超时时间和已中止的取消信号，限定释放资源和排空迟到响应的总时间。下一个托管输入会等到清理完成；清理失败后，后续托管输入会被拒绝，其 cause 为 `InputBlockedError`（只读元素/指针探针句柄的尽力释放失败不会封锁整条连接；按住的按键、鼠标按钮与 composition 清理失败仍会封锁）。输入动作保留原命令结果，从不重发命令。清理只等待该动作自己的迟到响应：它的输入命令、元素准备命令和回调中在任意连接上发出的原始命令（包括调用方已停止等待的命令），以及该动作的附加操作迟到返回时库为其发送的分离命令。其他待响应命令（例如另一个标签页的求值）既不会延迟清理，也不会使其失败。
 
 动作用到的页面上打开了 JavaScript 对话框时，清理预算暂停计时，因为在对话框关闭前，Chrome 会扣住该页面正在处理的输入的响应。对话框关闭后预算重新计时，`trace` 记录 `dialogWait`。页面关闭时，其输入状态随之结束：该页面不再回复的请求、因其 session 结束而失败的步骤都不算清理失败，`trace` 记录 `pageClosed`。已关闭页面上的其他失败仍会报告，但不封锁任何输入。
 
@@ -149,7 +149,7 @@ Tab 输入、独立构造的 `new Mouse(session)` / `new Keyboard(session)` 和�
 
 如果无法根据 target 元数据和附加实例层级确定页面归属，composition 清理失败仍会封锁整条连接。存在页面封锁时，归属不明的 session 上的托管输入也会被拒绝，以免通过新的原始 frame 附加实例绕过封锁。按键或按钮未释放、其他释放失败、排空超时和断连同样封锁整条连接：请恢复目标状态并建立新连接后再继续。直接发送的原始 CDP 输入既不经过托管按住状态的跟踪，也不受这些封锁限制。
 
-如需在不关闭 target 的情况下解除页面级 composition 封锁，先等待失败动作的 `error.cleanup`，检查并恢复页面（包括其子 frame），再调用 `await browser.inputScope(session).recoverComposition()` 或 `createInputScope(session).recoverComposition()`。这一调用表示你确认页面已就绪：它不发送 CDP 命令，不取消 composition，也不验证 DOM。如果可能还有残留的 composition，请先用原始 CDP 取消并验证最终文档。只在焦点编辑器的选区为折叠状态（只有光标）时发送空的 `Input.imeSetComposition`，因为没有 composition 时，Chrome 会改为删除选中的文字。恢复使用同一输入队列，清除该页面所有 附加实例/frame 上的封锁时返回 `true`，没有封锁时返回 `false`；其他页面的封锁和原动作的失败报告保持不变。归属不明或已关闭的 session、连接级封锁、该页面上仍按住的托管按键/按钮，以及比调用时已有的失败更新的失败，都会使恢复被拒绝；其他页面上的按住状态和待响应命令不影响恢复。在清理结束前发起的调用，无法确认清理随后才记录的失败。
+如需在不关闭 target 的情况下解除页面级 composition 封锁，先等待失败动作的 `error.cleanup`，检查并恢复页面（包括其子 frame），再调用 `await browser.inputScope(session).recoverComposition()` 或 `createInputScope(session).recoverComposition()`。这一调用表示你确认页面已就绪：它不发送 CDP 命令，不取消 composition，也不验证 DOM。如果可能还有残留的 composition，请先用原始 CDP 取消并验证最终文档。只在焦点编辑器的选区为折叠状态（只有光标）时发送空的 `Input.imeSetComposition`，因为没有 composition 时，Chrome 会改为删除选中的文字。恢复使用同一输入队列，清除该页面所有附加实例/frame 上的封锁时返回 `true`，没有封锁时返回 `false`；其他页面的封锁和原动作的失败报告保持不变。归属不明或已关闭的 session、连接级封锁、该页面上仍按住的托管按键/按钮，以及比调用时已有的失败更新的失败，都会使恢复被拒绝；其他页面上的按住状态和待响应命令不影响恢复。在清理结束前发起的调用，无法确认清理随后才记录的失败。
 
 ```ts
 import { InputActionError } from 'nodriver-ts';
@@ -188,13 +188,13 @@ await tab.keyboard.compose(
 
 更新使用 `Input.imeSetComposition`，提交使用 `Input.insertText`。回调返回时如果尚未提交或取消，清理阶段会取消该 composition。重复调用 `cancel()` 没有副作用；第二次提交会被拒绝，即使第一次提交的结果不确定。
 
-每次更新和提交前，控制器都会穿过开放和 closed shadow root 以及可访问的 iframe 祖先，确认最初的元素仍有焦点，并在文档改变时停止。默认情况下，取消也要求原编辑器仍保有焦点。如果 composition 进行中焦点离开编辑器或文档改变，清理不发送取消，报告 `failed`，并按上文所述封锁后续托管输入，范围是该 composition 所属的顶层页面或整条连接。Chrome 可能在失焦时把文本提交到原编辑器；如果焦点在 `compositionstart` 期间移动，也可能把进行中的 composition 转到新编辑器。composition 还可能在编辑器保有或重新获得焦点时自行结束，例如焦点离开后又回来；控制器在其探针世界中用监听器观察这种情况，跨域 frame 中的焦点除外。没有 composition 时，空更新会删除选中的文字，因此这时只在选区为折叠状态时发送取消；选区为范围时不发送取消，清理报告 `failed`。
+每次更新和提交前，控制器都会穿过 open 和 closed shadow root 以及可访问的 iframe 祖先，确认最初的元素仍有焦点，并在文档改变时停止。默认情况下，取消也要求原编辑器仍保有焦点。如果 composition 进行中焦点离开编辑器或文档改变，清理不发送取消，报告 `failed`，并按上文所述封锁后续托管输入，范围是该 composition 所属的顶层页面或整条连接。Chrome 可能在失焦时把文本提交到原编辑器；如果焦点在 `compositionstart` 期间移动，也可能把进行中的 composition 转到新编辑器。composition 还可能在编辑器保有或重新获得焦点时自行结束，例如焦点离开后又回来；控制器在其探针世界中用监听器观察这种情况，跨域 frame 中的焦点除外。没有 composition 时，空更新会删除选中的文字，因此这时只在选区为折叠状态时发送取消；选区为范围时不发送取消，清理报告 `failed`。
 
 向 `keyboard.compose()` 或作用域的 `run()` 传入 `{ forceCancel: true }` 后，显式 `cancel()` 和自动清理会向该 session 的当前焦点发送空的 `Input.imeSetComposition`，即使焦点或文档已经改变。这样可以取消跟随焦点转到另一个编辑器的 composition，也可能取消该编辑器自身的 composition。焦点离开原编辑器后，只有当前焦点是探针能检查的编辑器且选区为折叠状态时才发送取消：没有 composition 时，Chrome 收到空更新会删除选中的文字；而被后续焦点移动打断的 composition，已经在原编辑器中结束。其他情况不发送取消，清理与不设 `forceCancel` 时一样失败，包括最后一次 `update()` 设置了范围选区，以及焦点位于跨域 frame 中。更新和提交仍要求原焦点和文档有效；提交失败的动作即使强制清理成功，也仍是中断的动作。取消得到确认且其余清理成功时，页面可以继续使用；取消失败或未得到确认时仍会封锁输入，且不会重试。如果第一次更新在发送前的焦点检查中就已失败，则不发送取消。
 
 焦点检查和 CDP 输入是两个独立操作，因此调用方应验证最终文档。库不启用 Runtime，也不修改浏览器方法。焦点探针运行在库通过 `Page.createIsolatedWorld` 创建的隔离世界中，并在文档存续期间复用，页面脚本不能替换其使用的 JavaScript 原语；焦点和 DOM 效果仍可观察。向 `compose()` 或 `run()` 传入 `executionContextId` 可改用你自己的上下文，请传入当前文档的 ID。控制器在第一次更新前解析一次该上下文的全局对象，之后都通过这个句柄探测，因此复用同一数字 ID 的新文档不会被探测。始终不启用 DOM 域：closed shadow root 通过 `DOM.describeNode` 和 `DOM.resolveNode` 检查，这两个命令不会启用该域。
 
-第一次 `update()` 会先确认焦点能接收文本，否则在发送任何 composition 命令前失败。能接收文本的焦点包括：既非只读也未禁用（包括被所在 fieldset 禁用）的文本类 `input`（`text`、`search`、`url`、`tel`、`email`、`password` 或 `number`）或 `textarea`，以及 contenteditable 内容（包括 `designMode` 文档）。失败时抛出 `InputActionError`，其 `cause` 为 `ActionabilityError`。控制器会沿焦点进入开放和 closed shadow root 以及同源 frame，并按编辑宿主检查 contenteditable 内容，因为 composition 开始时，Chrome 会把焦点从可聚焦的后代元素移到编辑宿主。跨域 frame 内的焦点无法从父 session 检查：其可编辑性未知，composition 照常进行，报告的 `trace` 记录 `compositionFocusUnknown`，且检测不到该 frame 内的焦点变化。如需完整检查，请通过该 frame 自己的 target session 执行 composition。超时、断连和文档变化仍会中止动作。
+第一次 `update()` 会先确认焦点能接收文本，否则在发送任何 composition 命令前失败。能接收文本的焦点包括：既非只读也未禁用（包括被所在 fieldset 禁用）的文本类 `input`（`text`、`search`、`url`、`tel`、`email`、`password` 或 `number`）或 `textarea`，以及 contenteditable 内容（包括 `designMode` 文档）。失败时抛出 `InputActionError`，其 `cause` 为 `ActionabilityError`。控制器会沿焦点进入 open 和 closed shadow root 以及同源 frame，并按编辑宿主检查 contenteditable 内容，因为 composition 开始时，Chrome 会把焦点从可聚焦的后代元素移到编辑宿主。跨域 frame 内的焦点无法从父 session 检查：其可编辑性未知，composition 照常进行，报告的 `trace` 记录 `compositionFocusUnknown`，且检测不到该 frame 内的焦点变化。如需完整检查，请通过该 frame 自己的 target session 执行 composition。超时、断连和文档变化仍会中止动作。
 
 ## 原始输入作用域
 
@@ -218,7 +218,7 @@ await scope.run(
   },
   { timeout: 1000, signal, cleanupTimeout: 5000 },
 );
-console.log(scope.position); // { x: 220, y: 100 }
+console.log(scope.position); // { x: 220, y: 100, placed: true }
 ```
 
 原始作用域和 `keyboard.compose()` 默认发送 `Page.enable`，使导航能够中断输入；它们从不改变 target 焦点。托管输入是库唯一会在原始 session 上启用域的地方。run 结束后，该域在调用方的 session 上保持启用，作用域自有的监听器则会移除。设置 `pageEvents: false`（`inputScope()`、`createInputScope()` 和 `compose()` 的选项）后不发送任何 `*.enable` 命令。此时只有该 session 已通过其他途径启用 Page 域，导航才会中断 run；否则 run 在到期、你的 `signal` 中止或 session 结束时停止，composition 仍会在每一步前检查焦点和文档。对话框事件同样只经由启用了 Page 域的 session 送达；没有这样的 session 时，清理无法等待对话框关闭。`browser.inputScope()` 与 Tab 输入用相同方式选择 macOS 编辑命令；`createInputScope()` 的 `mac` 默认为 false。在作用域内请使用 `input.composition`，不要嵌套 `keyboard.compose()`。

@@ -1,7 +1,7 @@
 import { Agent as HttpAgent, request as httpRequest } from 'node:http';
 import { Agent as HttpsAgent, request as httpsRequest } from 'node:https';
-import { abortReason, timeoutValue, type WaitOptions } from '../utils.ts';
-import { TimeoutError, UnsupportedError } from '../errors.ts';
+import { abortReason, bounded, timeoutValue, type WaitOptions } from '../utils.ts';
+import { NodriverError, TimeoutError, UnsupportedError } from '../errors.ts';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { access } from 'node:fs/promises';
@@ -50,6 +50,8 @@ export function nativeVariables(value: NativeEnvironment): NodeJS.ProcessEnv {
 }
 /** @internal Refuse missing host data instead of silently falling back to C/UTC. */
 export async function checkNativeHost(value: NativeEnvironment, wait: WaitOptions): Promise<void> {
+  const timeout = timeoutValue(wait.timeout ?? 10000);
+  if (wait.signal?.aborted) throw abortReason(wait.signal);
   try {
     await access(join('/usr/share/zoneinfo', value.timezone));
   } catch (error) {
@@ -58,7 +60,7 @@ export async function checkNativeHost(value: NativeEnvironment, wait: WaitOption
     });
   }
   let stdout: string;
-  const deadline = AbortSignal.timeout(Math.ceil(wait.timeout ?? 10000));
+  const deadline = AbortSignal.timeout(Math.ceil(timeout));
   try {
     ({ stdout } = await promisify(execFile)('locale', ['-a'], {
       signal: wait.signal ? AbortSignal.any([wait.signal, deadline]) : deadline,
@@ -114,55 +116,53 @@ export async function resolveProxyEnvironment(
     if (socket) sockets.add(socket);
     return socket;
   };
-  let timer: NodeJS.Timeout | undefined, abort: (() => void) | undefined;
   try {
-    return await new Promise<NativeEnvironment>((resolve, reject) => {
-      timer = setTimeout(() => reject(new TimeoutError('Environment probe timed out')), timeout);
-      abort = () => reject(abortReason(wait.signal!));
-      wait.signal?.addEventListener('abort', abort, { once: true });
-      const req = (secure ? httpsRequest : httpRequest)(
-        endpoint,
-        { agent, headers: { accept: 'application/json' } },
-        (response) => {
-          if (response.statusCode !== 200) {
-            response.resume();
-            reject(new Error(`Environment probe returned HTTP ${response.statusCode}`));
-            return;
-          }
-          const chunks: Buffer[] = [];
-          let bytes = 0;
-          response.on('data', (chunk: Buffer) => {
-            bytes += chunk.length;
-            if (bytes > 65536) reject(new RangeError('Environment probe exceeds 64 KiB'));
-            else chunks.push(chunk);
-          });
-          response.on('error', reject);
-          response.on('end', () => {
-            try {
-              const value: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-              if (
-                !value ||
-                typeof value !== 'object' ||
-                !('timezone' in value) ||
-                typeof value.timezone !== 'string'
-              )
-                throw new TypeError('Environment probe must return { timezone: string }');
-              // Validation is platform independent here; launch enforces Linux before probing.
-              resolve(
-                nativeEnvironment({ timezone: value.timezone, locale: options.locale }, 'linux'),
-              );
-            } catch (error) {
-              reject(error);
+    return await bounded(
+      new Promise<NativeEnvironment>((resolve, reject) => {
+        const req = (secure ? httpsRequest : httpRequest)(
+          endpoint,
+          { agent, headers: { accept: 'application/json' } },
+          (response) => {
+            if (response.statusCode !== 200) {
+              response.resume();
+              reject(new NodriverError(`Environment probe returned HTTP ${response.statusCode}`));
+              return;
             }
-          });
-        },
-      );
-      req.on('error', reject);
-      req.end();
-    });
+            const chunks: Buffer[] = [];
+            let bytes = 0;
+            response.on('data', (chunk: Buffer) => {
+              bytes += chunk.length;
+              if (bytes > 65536) reject(new RangeError('Environment probe exceeds 64 KiB'));
+              else chunks.push(chunk);
+            });
+            response.on('error', reject);
+            response.on('end', () => {
+              try {
+                const value: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+                if (
+                  !value ||
+                  typeof value !== 'object' ||
+                  !('timezone' in value) ||
+                  typeof value.timezone !== 'string'
+                )
+                  throw new TypeError('Environment probe must return { timezone: string }');
+                // Validation is platform independent here; launch enforces Linux before probing.
+                resolve(
+                  nativeEnvironment({ timezone: value.timezone, locale: options.locale }, 'linux'),
+                );
+              } catch (error) {
+                reject(error);
+              }
+            });
+          },
+        );
+        req.on('error', reject);
+        req.end();
+      }),
+      { timeout, signal: wait.signal },
+      'Environment probe',
+    );
   } finally {
-    clearTimeout(timer);
-    if (abort) wait.signal?.removeEventListener('abort', abort);
     agent.destroy();
     for (const socket of sockets) socket.destroy();
   }

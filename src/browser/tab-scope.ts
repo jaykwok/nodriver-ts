@@ -1,8 +1,17 @@
 import type { BrowserContext } from './context.ts';
-import type { Tab } from '../page/tab.ts';
+import type { Tab, TabNavigationEvent } from '../page/tab.ts';
 import { NodriverError, TimeoutError } from '../errors.ts';
+import { isTargetGone } from '../protocol/errors.ts';
 import type { NavigationOptions } from '../page/navigation.ts';
-import { bounded, budget, within } from '../utils.ts';
+import {
+  abortReason,
+  bounded,
+  budget,
+  EventHub,
+  timeoutValue,
+  within,
+  type WaitOptions,
+} from '../utils.ts';
 export interface TabScopeCloseResult {
   /**
    * IDs of the pages the scope closed: owned pages, popups included, and tabs that did not finish
@@ -26,6 +35,8 @@ type Role = 'owned' | 'borrowed' | 'kept';
  */
 export class TabScope {
   readonly context: BrowserContext;
+  /** Emits main-frame navigations of tabs currently owned or borrowed by this scope. */
+  readonly navigated: EventHub<TabNavigationEvent>;
   /**
    * Role of each page by target ID, so that a page attached again as a new Tab keeps it. A popup
    * gets its role when Chrome reports it: owned if its opener was owned or borrowed at that time.
@@ -44,13 +55,30 @@ export class TabScope {
   /** Pages whose close close() waits for, until finished; their failures go into its result. */
   private readonly awaited = new Set<string>();
   private readonly off: () => void;
+  private readonly offNavigated: () => void;
   private closing?: Promise<TabScopeCloseResult>;
   constructor(context: BrowserContext) {
     this.context = context;
+    this.navigated = new EventHub<TabNavigationEvent>((error) =>
+      context.browser.reportError(error),
+    );
     this.off = context.browser.cdp.on('Target.targetCreated', ({ targetInfo: info }) => {
-      const opener = info.openerId && this.roles.get(info.openerId);
-      if (info.type === 'page' && (opener === 'owned' || opener === 'borrowed'))
-        this.roles.set(info.targetId, 'owned');
+      if (info.type !== 'page') return;
+      const opener =
+        (info.openerId && this.roles.get(info.openerId)) ||
+        (info.openerFrameId
+          ? (() => {
+              const owner = this.context.tabs.find((t) =>
+                t.frames.some((f) => f.id === info.openerFrameId),
+              );
+              return owner ? this.roles.get(owner.id) : undefined;
+            })()
+          : undefined);
+      if (opener === 'owned' || opener === 'borrowed') this.roles.set(info.targetId, 'owned');
+    });
+    this.offNavigated = context.browser.tabNavigated.on((event) => {
+      const role = this.roles.get(event.tab.id);
+      if (role === 'owned' || role === 'borrowed') this.navigated.emit(event);
     });
   }
   /** Open pages the scope owns. */
@@ -122,7 +150,7 @@ export class TabScope {
    * it open, and popups it opens later are not owned; popups it opened before stay owned.
    */
   keep(tab: Tab): void {
-    this.roles.set(tab.id, 'kept');
+    this.claim(tab, 'kept');
   }
   private claim(tab: Tab, role: Role): void {
     if (this.closing) throw new NodriverError('Tab scope is closed');
@@ -158,7 +186,7 @@ export class TabScope {
         else await browser.cdp.send('Target.closeTarget', { targetId });
         this.closedIds.add(targetId);
       } catch (error) {
-        if (!this.open(targetId)) return;
+        if (!this.open(targetId) || isTargetGone(error)) return;
         // Unless close() waits for it, the caller has an error of its own or stopped waiting.
         if (this.finished || !this.awaited.has(targetId))
           browser.reportCloseFailure(targetId, error);
@@ -173,30 +201,51 @@ export class TabScope {
   /**
    * Waits for tabs still being created through the scope, then closes every owned page, including
    * popups that open meanwhile and popups that have not been attached yet. Resolves once all of
-   * them are closed; failures reject together as an AggregateError. One deadline, the connection's
-   * command timeout, covers the waiting and closing: a page not closed by then is reported as a
-   * TimeoutError and closes in the background, where a failure goes to browser.errors. Idempotent.
+   * them are closed; failures reject together as an AggregateError. One deadline (`options.timeout`
+   * or the connection's command timeout, plus optional `options.signal`) covers the waiting and
+   * closing: a page not closed by then is reported as a TimeoutError (or abort reason) and closes
+   * in the background, where a failure goes to browser.errors. Idempotent.
    * A failure to close a tab that did not finish opening through newTab() goes to browser.errors
    * too, unless close() is waiting for that close.
    */
-  close(): Promise<TabScopeCloseResult> {
-    return (this.closing ??= (async () => {
-      const browser = this.context.browser;
+  close(options: WaitOptions = {}): Promise<TabScopeCloseResult> {
+    if (this.closing) return this.closing;
+    const browser = this.context.browser;
+    const timeout = timeoutValue(options.timeout ?? browser.connection.timeout);
+    const signal = options.signal;
+    return (this.closing = (async () => {
       const errors: unknown[] = [];
       // Shared by every wait, so that all of them end at the same moment.
       let timer: ReturnType<typeof setTimeout> | undefined;
-      const deadline = new Promise<false>((resolve) => {
+      let aborted = false;
+      let onAbort: (() => void) | undefined;
+      const deadline = new Promise<'timeout' | 'abort'>((resolve) => {
+        if (signal?.aborted) {
+          aborted = true;
+          this.finished = true;
+          resolve('abort');
+          return;
+        }
+        onAbort = () => {
+          aborted = true;
+          this.finished = true;
+          resolve('abort');
+        };
+        signal?.addEventListener('abort', onAbort, { once: true });
         timer = setTimeout(() => {
           this.finished = true;
-          resolve(false);
-        }, browser.connection.timeout);
+          resolve('timeout');
+        }, timeout);
       });
-      /** Whether `task` is done by the deadline; throws its failure. */
-      const settles = (task: Promise<unknown>) => Promise.race([task.then(() => true), deadline]);
+      /** Resolves `'done'` if `task` finishes before the deadline/abort; otherwise `'timeout'`/`'abort'`. */
+      const settles = (task: Promise<unknown>) =>
+        Promise.race([task.then(() => 'done' as const), deadline]);
+      const stopError = (timeoutMessage: string) =>
+        aborted && signal ? abortReason(signal) : new TimeoutError(timeoutMessage);
       try {
         // Creations settle first, so that every tab they made is owned.
-        if (!(await settles(Promise.allSettled(this.pending))))
-          errors.push(new TimeoutError('Waiting for tabs the scope is opening timed out'));
+        if ((await settles(Promise.allSettled(this.pending))) !== 'done')
+          errors.push(stopError('Waiting for tabs the scope is opening timed out'));
         const tried = new Set<string>();
         for (;;) {
           const pages = [...this.roles].flatMap(([id, role]) =>
@@ -211,8 +260,8 @@ export class TabScope {
               this.awaited.add(id);
               // Started also past the deadline, so that the page still closes, in the background.
               try {
-                if (!(await settles(this.closePage(id))))
-                  errors.push(new TimeoutError(`Closing tab ${id} timed out`));
+                if ((await settles(this.closePage(id))) !== 'done')
+                  errors.push(stopError(`Closing tab ${id} timed out`));
               } catch (error) {
                 errors.push(error);
               }
@@ -221,8 +270,11 @@ export class TabScope {
         }
       } finally {
         clearTimeout(timer);
+        if (onAbort) signal?.removeEventListener('abort', onAbort);
         this.finished = true;
         this.off();
+        this.offNavigated();
+        this.navigated.clear();
       }
       if (errors.length) throw new AggregateError(errors, 'Some tabs of the scope did not close');
       const still = (role: Role) =>

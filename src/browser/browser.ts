@@ -1,16 +1,18 @@
 import type { Protocol } from 'devtools-protocol';
 import {
   Connection,
-  SessionEndedError,
   type ConnectionOptions,
+  type DrainOptions,
   type Session,
   type TargetSession,
 } from '../protocol/connection.ts';
+import { isTargetGone } from '../protocol/errors.ts';
 import { BrowserProcess, type LaunchOptions } from './launcher.ts';
+import { ReleaseUncertainError } from './guardian.ts';
 import { StartupTracker } from './startup.ts';
 import { BrowserContext, type ContextOptions } from './context.ts';
 import type { TabScope } from './tab-scope.ts';
-import { Tab, type Environment } from '../page/tab.ts';
+import { Tab, type Environment, type TabNavigationEvent } from '../page/tab.ts';
 import { Download } from './download.ts';
 import { ProxyForwarder } from '../optional/proxy.ts';
 import { verifyNativeEnvironment } from '../optional/native-verification.ts';
@@ -27,7 +29,7 @@ import {
   within,
   type WaitOptions,
 } from '../utils.ts';
-import { DisconnectedError, NodriverError, ProtocolError, TimeoutError } from '../errors.ts';
+import { DisconnectedError, NodriverError, TimeoutError } from '../errors.ts';
 import {
   checkedInputPolicy,
   cloneInputPolicy,
@@ -80,8 +82,10 @@ export class Browser {
   readonly cdp: Session;
   readonly contextMap = new Map<string, BrowserContext>();
   readonly targetInfo = new Map<string, Protocol.Target.TargetInfo>();
-  readonly tabCreated = new EventHub<Tab>();
-  readonly tabClosed = new EventHub<Tab>();
+  readonly tabCreated: EventHub<Tab>;
+  readonly tabClosed: EventHub<Tab>;
+  /** Emits whenever any attached tab commits a cross-document or same-document main-frame navigation. */
+  readonly tabNavigated: EventHub<TabNavigationEvent>;
   readonly errors = new EventHub<unknown>();
   readonly version: Protocol.Browser.GetVersionResponse;
   /** Tab last brought to front by this client; cleared when another page may have taken focus. */
@@ -90,7 +94,16 @@ export class Browser {
   baseEnvironment: Environment = {};
   private inputDefault?: InputPolicy;
   private tabMap = new Map<string, Tab>();
-  private attaching = new Map<string, Promise<Tab>>();
+  private attaching = new Map<
+    string,
+    {
+      readonly promise: Promise<Tab>;
+      readonly abort: AbortController;
+      ownedByBrowser: boolean;
+      waiters: number;
+      done: boolean;
+    }
+  >();
   private downloads = new Map<string, Download>();
   private closing?: Promise<void>;
   private closeStarted = false;
@@ -114,13 +127,20 @@ export class Browser {
     this.attachPolicy = attachPolicy;
     this.cdp = connection.root;
     this.version = version;
+    const report = (error: unknown) => this.reportError(error);
+    this.tabCreated = new EventHub<Tab>(report);
+    this.tabClosed = new EventHub<Tab>(report);
+    this.tabNavigated = new EventHub<TabNavigationEvent>(report);
     this.contextMap.set('', new BrowserContext(this));
     connection.disconnected.on(() => {
       this.disconnected = true;
       for (const tab of [...this.tabMap.values()]) tab.dispose();
       this.tabMap.clear();
+      this.targetInfo.clear();
+      this.downloads.clear();
       this.tabCreated.clear();
       this.tabClosed.clear();
+      this.tabNavigated.clear();
       // Chrome disposes a forwarded context with the connection that created it.
       for (const context of this.contexts) void context.proxy?.close().catch(() => {});
     });
@@ -203,6 +223,7 @@ export class Browser {
   }
   static async connect(options: ConnectOptions): Promise<Browser> {
     return initializeWithin(options, async (step, startup) => {
+      const inputPolicy = options.inputPolicy && checkedInputPolicy(options.inputPolicy);
       let endpoint = options.endpoint;
       if (/^https?:/.test(endpoint)) {
         startup.enter('endpoint-discovery');
@@ -214,9 +235,14 @@ export class Browser {
           .webSocketDebuggerUrl;
       }
       startup.enter('websocket-connect');
-      const inputPolicy = options.inputPolicy && checkedInputPolicy(options.inputPolicy);
       const transport = await WebSocketTransport.connect(endpoint, step());
-      const connection = new Connection(transport, options);
+      const connection = new Connection(transport, {
+        timeout: options.timeout,
+        onError: options.onError,
+        trace: options.trace,
+        observe: options.observe,
+        beforeSend: options.beforeSend,
+      });
       try {
         startup.enter('protocol-handshake');
         const version = await connection.root.sendWith('Browser.getVersion', step());
@@ -229,7 +255,7 @@ export class Browser {
         return browser;
       } catch (e) {
         startup.fail(e);
-        await connection.close();
+        await connection.close().catch(() => {});
         throw e;
       }
     });
@@ -314,7 +340,7 @@ export class Browser {
       if (e.targetInfo.type === 'page') this.frontTab = undefined;
       if (e.targetInfo.type === 'page' && this.shouldAttach(e.targetInfo))
         void this.attach(e.targetInfo, initializing ? step : undefined).catch((error) => {
-          if (!this.closed && !targetGone(error)) this.reportError(error);
+          if (!this.closed && !isTargetGone(error)) this.reportError(error);
         });
     });
     this.cdp.on('Target.targetInfoChanged', (e) => {
@@ -344,7 +370,11 @@ export class Browser {
       download?.progress(e.state);
       if (e.state !== 'inProgress') this.downloads.delete(e.guid);
     });
-    const { browserContextIds } = await this.cdp.sendWith('Target.getBrowserContexts', step());
+    const { browserContextIds, defaultBrowserContextId } = await this.cdp.sendWith(
+      'Target.getBrowserContexts',
+      step(),
+    );
+    if (defaultBrowserContextId) this.contextMap.set(defaultBrowserContextId, this.defaultContext);
     for (const id of browserContextIds) this.contextMap.set(id, new BrowserContext(this, id));
     await this.cdp.sendWith('Target.setDiscoverTargets', step(), { discover: true });
     const { targetInfos } = await this.cdp.sendWith('Target.getTargets', step());
@@ -358,7 +388,7 @@ export class Browser {
         .map((t) => this.attach(t, step)),
     );
     for (const result of attached)
-      if (result.status === 'rejected' && (this.closed || !targetGone(result.reason)))
+      if (result.status === 'rejected' && (this.closed || !isTargetGone(result.reason)))
         throw result.reason;
     initializing = false;
   }
@@ -379,13 +409,18 @@ export class Browser {
    * Explicitly adopts an existing page target, e.g. one listed by pageTargets. If its previous
    * session detached, returns a new initialized Tab; the old Tab remains closed.
    */
-  async attachTarget(targetId: string): Promise<Tab> {
+  async attachTarget(targetId: string, options: WaitOptions = {}): Promise<Tab> {
     this.requireHighLevel();
-    const info =
-      this.targetInfo.get(targetId) ??
-      (await this.cdp.send('Target.getTargetInfo', { targetId })).targetInfo;
+    const step = budget(options, 'Attaching a target');
+    let info = this.targetInfo.get(targetId);
+    if (!info) {
+      ({ targetInfo: info } = await this.cdp.sendWith('Target.getTargetInfo', step(), {
+        targetId,
+      }));
+      this.targetInfo.set(targetId, info);
+    }
     if (info.type !== 'page') throw new TypeError(`Target ${targetId} is not a page`);
-    return this.attach(info);
+    return this.attachForWaiter(info, step, 'Attaching a target');
   }
   /** @internal Removes a disposed tab from the live map before close listeners run. */
   removeTab(tab: Tab): void {
@@ -393,7 +428,7 @@ export class Browser {
   }
   /** @internal The attach of a page target still in progress, until its tab is initialized. */
   attachInProgress(targetId: string): Promise<Tab> | undefined {
-    return this.attaching.get(targetId);
+    return this.attaching.get(targetId)?.promise;
   }
   /** Attach one independent raw session, without enabling domains or configuring the page. */
   attachSession(targetId: string, options: WaitOptions = {}): Promise<TargetSession> {
@@ -405,58 +440,143 @@ export class Browser {
         "attach: 'none' forbids Tab creation; use attachSession() and raw CDP",
       );
   }
-  private attach(
+  /**
+   * Explicit caller wait on a shared page attach: each caller keeps its own deadline/signal, and
+   * the shared attach is cancelled (triggering late-session detach cleanup) only when the last
+   * waiter leaves without a browser-level owner.
+   */
+  private async attachForWaiter(
     info: Protocol.Target.TargetInfo,
-    step: () => WaitOptions = () => ({}),
+    step: () => WaitOptions,
+    label: string,
   ): Promise<Tab> {
+    const wait = step();
+    if (!this.attaching.has(info.targetId)) {
+      const ready = this.tabMap.get(info.targetId);
+      if (ready && !ready.closed) return ready;
+    }
+    const entry = this.startAttach(info, undefined, false);
+    entry.waiters++;
+    try {
+      return await bounded(
+        entry.promise,
+        { ...wait, timeout: wait.timeout ?? this.connection.timeout },
+        label,
+      );
+    } finally {
+      entry.waiters--;
+      if (!entry.done && !entry.ownedByBrowser && entry.waiters === 0) {
+        entry.abort.abort(new TimeoutError(`${label} cancelled: no remaining waiters`));
+      }
+    }
+  }
+  private attach(info: Protocol.Target.TargetInfo, step?: () => WaitOptions): Promise<Tab> {
+    if (!this.attaching.has(info.targetId)) {
+      const ready = this.tabMap.get(info.targetId);
+      if (ready && !ready.closed) return Promise.resolve(ready);
+    }
+    const entry = this.startAttach(info, step, true);
+    return entry.promise;
+  }
+  private startAttach(
+    info: Protocol.Target.TargetInfo,
+    browserStep: (() => WaitOptions) | undefined,
+    ownedByBrowser: boolean,
+  ): {
+    readonly promise: Promise<Tab>;
+    readonly abort: AbortController;
+    ownedByBrowser: boolean;
+    waiters: number;
+    done: boolean;
+  } {
     const existing = this.attaching.get(info.targetId);
-    if (existing) return existing;
+    if (existing) {
+      if (ownedByBrowser) existing.ownedByBrowser = true;
+      return existing;
+    }
     const ready = this.tabMap.get(info.targetId);
-    if (ready && !ready.closed) return Promise.resolve(ready);
     if (ready) {
       ready.dispose();
       this.tabMap.delete(info.targetId);
     }
-    const task = (async () => {
-      const { sessionId } = await this.cdp.sendWith('Target.attachToTarget', step(), {
-        targetId: info.targetId,
-        flatten: true,
-      });
-      const contextKey = info.browserContextId ?? '';
-      let context = this.contextMap.get(contextKey);
-      if (!context) {
-        // Chrome reports an internal ID even for the default context, although
-        // getBrowserContexts intentionally lists only non-default contexts.
-        const { browserContextIds } = await this.cdp.sendWith('Target.getBrowserContexts', step());
-        // Another attach can have added the context meanwhile.
-        context =
-          this.contextMap.get(contextKey) ??
-          (info.browserContextId && browserContextIds.includes(info.browserContextId)
-            ? new BrowserContext(this, info.browserContextId)
-            : this.defaultContext);
-        this.contextMap.set(contextKey, context);
+    const abort = new AbortController();
+    const entry = {
+      promise: undefined as unknown as Promise<Tab>,
+      abort,
+      ownedByBrowser,
+      waiters: 0,
+      done: false,
+    };
+    const sharedWait = (): WaitOptions => {
+      if (abort.signal.aborted) throw abortReason(abort.signal);
+      if (browserStep) {
+        const w = browserStep();
+        return {
+          ...w,
+          signal: w.signal ? AbortSignal.any([w.signal, abort.signal]) : abort.signal,
+        };
       }
-      const tab = new Tab(this, context, info.targetId, this.connection.session(sessionId));
-      this.tabMap.set(info.targetId, tab);
+      // Explicit waiter-owned attaches are bounded by each waiter's own deadline (which may be
+      // shorter OR longer than connection.timeout) and aborted when the last waiter exits.
+      return {
+        timeout: entry.ownedByBrowser ? this.connection.timeout : MAX_TIMEOUT,
+        signal: abort.signal,
+      };
+    };
+    const task = (async () => {
+      const session = await this.connection.attachPlainSession(info.targetId, sharedWait());
+      const sessionId = session.id!;
+      let tab: Tab | undefined;
       try {
-        const initializing = step();
-        await bounded(tab.initialize(), initializing, 'Tab initialization');
+        const contextKey = info.browserContextId ?? '';
+        let context = this.contextMap.get(contextKey);
+        if (!context) {
+          // Chrome reports an internal ID even for the default context, although
+          // getBrowserContexts intentionally lists only non-default contexts.
+          const { browserContextIds, defaultBrowserContextId } = await this.cdp.sendWith(
+            'Target.getBrowserContexts',
+            sharedWait(),
+          );
+          if (defaultBrowserContextId)
+            this.contextMap.set(defaultBrowserContextId, this.defaultContext);
+          // Another attach can have added the context meanwhile.
+          context =
+            this.contextMap.get(contextKey) ??
+            (info.browserContextId &&
+            info.browserContextId !== defaultBrowserContextId &&
+            browserContextIds.includes(info.browserContextId)
+              ? new BrowserContext(this, info.browserContextId)
+              : this.defaultContext);
+          this.contextMap.set(contextKey, context);
+        }
+        tab = new Tab(this, context, info.targetId, session);
+        this.tabMap.set(info.targetId, tab);
+        await bounded(tab.initialize(), sharedWait(), 'Tab initialization');
+        sharedWait();
+        if (!entry.ownedByBrowser && entry.waiters === 0) {
+          throw new TimeoutError('Attaching a target cancelled: no remaining waiters');
+        }
+        entry.done = true;
         if (!tab.closed) {
           tab.markReady();
           this.tabCreated.emit(tab);
         }
         return tab;
       } catch (e) {
-        tab.dispose();
+        tab?.dispose();
         this.tabMap.delete(info.targetId);
-        if (!this.closed)
-          void this.cdp.send('Target.detachFromTarget', { sessionId }).catch(() => {});
+        if (!this.closed) void this.connection.cleanupAttachment(sessionId);
         throw e;
       }
     })();
-    this.attaching.set(info.targetId, task);
-    void task.finally(() => this.attaching.delete(info.targetId)).catch(() => {});
-    return task;
+    (entry as { promise: Promise<Tab> }).promise = task;
+    this.attaching.set(info.targetId, entry);
+    void task
+      .finally(() => {
+        if (this.attaching.get(info.targetId) === entry) this.attaching.delete(info.targetId);
+      })
+      .catch(() => {});
+    return entry;
   }
   /**
    * Opens a tab and navigates it to `url`. `timeout` and `signal` cover creating the tab, attaching
@@ -499,7 +619,7 @@ export class Browser {
    * of its own or stopped waiting. A page that is gone needed no closing.
    */
   reportCloseFailure(targetId: string, error: unknown): void {
-    if (!this.closed && this.targetInfo.has(targetId) && !targetGone(error))
+    if (!this.closed && this.targetInfo.has(targetId) && !isTargetGone(error))
       this.reportError(error);
   }
   /**
@@ -519,6 +639,7 @@ export class Browser {
    */
   async createPage(context: BrowserContext): Promise<string> {
     this.requireHighLevel();
+    context.assertOpen();
     const { targetId } = await this.cdp.sendWith(
       'Target.createTarget',
       { timeout: MAX_TIMEOUT },
@@ -535,8 +656,7 @@ export class Browser {
   ): Promise<Tab> {
     const { targetInfo } = await this.cdp.sendWith('Target.getTargetInfo', step(), { targetId });
     this.targetInfo.set(targetId, targetInfo);
-    const wait = step();
-    const tab = await bounded(this.attach(targetInfo, step), wait, 'Opening a tab');
+    const tab = await this.attachForWaiter(targetInfo, step, 'Opening a tab');
     if (url !== 'about:blank') await tab.goto(url, { ...options, ...step() });
     return tab;
   }
@@ -617,7 +737,7 @@ export class Browser {
     });
   }
   /** Wait for wire replies and library attachment cleanup; see Connection.drain(). */
-  drain(options: WaitOptions = {}): Promise<void> {
+  drain(options: DrainOptions = {}): Promise<void> {
     return this.connection.drain(options);
   }
   /** Disconnect CDP without relinquishing process ownership. Pipe Chrome exits on disconnect. */
@@ -646,6 +766,8 @@ export class Browser {
           'release() cannot hand off a virtual display; launch with the env of your own XvfbSession',
         ),
       );
+    if (this.process?.diagnostics.exited)
+      return Promise.reject(new NodriverError('Chrome has exited; there is nothing to release'));
     if (this.contexts.some((context) => context.proxy))
       return Promise.reject(
         new NodriverError('release() cannot hand off an in-process proxy; close its context first'),
@@ -655,10 +777,17 @@ export class Browser {
   private async releaseInternal(): Promise<string> {
     try {
       await this.process?.release();
-    } finally {
-      await this.disconnect();
-      this.downloads.clear();
+    } catch (error) {
+      if (error instanceof ReleaseUncertainError) {
+        await this.disconnect();
+        this.downloads.clear();
+      } else {
+        this.releasing = undefined;
+      }
+      throw error;
     }
+    await this.disconnect();
+    this.downloads.clear();
     return this.endpoint!;
   }
   /** A failed close is not cached, so a later close() can retry the shutdown. */
@@ -692,14 +821,6 @@ export class Browser {
   }
 }
 
-/** The target closed before or while it was attached, as short-lived popups do. */
-function targetGone(error: unknown): boolean {
-  return (
-    error instanceof DisconnectedError ||
-    error instanceof SessionEndedError ||
-    (error instanceof ProtocolError && /no target with given id/i.test(error.message))
-  );
-}
 /** A single deadline covers discovery and initialization, not each command separately. */
 async function initializeWithin<T>(
   options: WaitOptions,

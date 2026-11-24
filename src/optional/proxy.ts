@@ -1,5 +1,17 @@
 import { Server } from 'proxy-chain';
-const PROTOCOLS = ['http:', 'https:', 'socks:', 'socks4:', 'socks4a:', 'socks5:', 'socks5h:'];
+export const PROXY_PROTOCOLS = [
+  'http:',
+  'https:',
+  'socks:',
+  'socks4:',
+  'socks4a:',
+  'socks5:',
+  'socks5h:',
+] as const;
+/** Whether a URL protocol is supported for browser or forwarder proxy configuration. */
+export function isProxyProtocol(protocol: string): boolean {
+  return (PROXY_PROTOCOLS as readonly string[]).includes(protocol);
+}
 /** Authenticated HTTP(S)/SOCKS upstreams are delegated to a maintained proxy implementation. */
 export class ProxyForwarder {
   private closing?: Promise<void>;
@@ -11,7 +23,7 @@ export class ProxyForwarder {
   }
   static async create(upstream: string): Promise<ProxyForwarder> {
     const parsed = new URL(upstream);
-    if (!PROTOCOLS.includes(parsed.protocol))
+    if (!isProxyProtocol(parsed.protocol))
       throw new TypeError('Unsupported upstream proxy protocol');
     const server = new Server({
       host: '127.0.0.1',

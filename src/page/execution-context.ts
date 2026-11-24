@@ -1,21 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import type { Session } from '../protocol/connection.ts';
-import { ProtocolError, UnsupportedError } from '../errors.ts';
+import { StaleElementError, UnsupportedError } from '../errors.ts';
+import { CONTEXT_GONE, isContextGone, isNodeGone } from '../protocol/errors.ts';
+import { releaseObjectGroup } from './runtime.ts';
 
-/** @internal Brand for synthetic context-loss errors such as cross-process contextId mismatch. */
-export const CONTEXT_GONE = Symbol('nodriver.contextGone');
-
-export function isContextGone(error: unknown): boolean {
-  if (error && typeof error === 'object' && CONTEXT_GONE in error) return true;
-  return (
-    error instanceof ProtocolError &&
-    error.code === -32000 &&
-    // Not "Could not find object with given id": a released handle does not mean a new document.
-    /Cannot find context with specified id|Execution context was destroyed|Inspected target navigated or closed/.test(
-      error.message,
-    )
-  );
-}
+export { CONTEXT_GONE, isContextGone };
 
 // V8 implementation detail, NOT a CDP guarantee. Check it against an official
 // isolated-world ID on every discovery, and fail closed on incompatible engines.
@@ -53,15 +42,39 @@ export async function resolveMainContext(
     const source = parseRemoteObjectId(isolated.result.objectId);
     if (source.context !== isolatedContext)
       throw new UnsupportedError('RemoteObjectId context does not match Page.createIsolatedWorld');
-    const { node } = await session.send('DOM.describeNode', {
-      objectId: isolated.result.objectId!,
-    });
+    const { node } = await session
+      .send('DOM.describeNode', {
+        objectId: isolated.result.objectId!,
+      })
+      .catch((error: unknown) => {
+        if (isNodeGone(error)) {
+          const stale = new StaleElementError('Document changed while resolving main context', {
+            cause: error,
+            reason: 'context-gone',
+          });
+          Object.defineProperty(stale, CONTEXT_GONE, { value: true });
+          throw stale;
+        }
+        throw error;
+      });
     // Chromium ResolveNode uses the node's owning frame MAIN world when the
     // executionContextId is omitted. Always use that frame's CDP session.
-    const { object } = await session.send('DOM.resolveNode', {
-      backendNodeId: node.backendNodeId,
-      objectGroup,
-    });
+    const { object } = await session
+      .send('DOM.resolveNode', {
+        backendNodeId: node.backendNodeId,
+        objectGroup,
+      })
+      .catch((error: unknown) => {
+        if (isNodeGone(error)) {
+          const stale = new StaleElementError('Document changed while resolving main context', {
+            cause: error,
+            reason: 'context-gone',
+          });
+          Object.defineProperty(stale, CONTEXT_GONE, { value: true });
+          throw stale;
+        }
+        throw error;
+      });
     const main = parseRemoteObjectId(object.objectId);
     if (main.isolate !== source.isolate || main.context === isolatedContext)
       throw new UnsupportedError('DOM.resolveNode did not resolve a distinct main-world context');
@@ -76,17 +89,26 @@ export async function resolveMainContext(
     });
     if (!probe.result.objectId)
       throw new UnsupportedError('Main-world document could not be verified');
-    const verified = await session.send('DOM.describeNode', {
-      objectId: probe.result.objectId,
-    });
+    const verified = await session
+      .send('DOM.describeNode', {
+        objectId: probe.result.objectId,
+      })
+      .catch((error: unknown) => {
+        if (isNodeGone(error)) {
+          const stale = new StaleElementError('Document changed while verifying main context', {
+            cause: error,
+            reason: 'context-gone',
+          });
+          Object.defineProperty(stale, CONTEXT_GONE, { value: true });
+          throw stale;
+        }
+        throw error;
+      });
     if (verified.node.backendNodeId !== node.backendNodeId)
       throw new UnsupportedError('Resolved execution context belongs to a different document');
     return main.context;
   } finally {
     // Cleanup must still run after caller cancellation; do not reuse its signal.
-    if (!session.closed)
-      await session
-        .sendWith('Runtime.releaseObjectGroup', { timeout: 1000 }, { objectGroup })
-        .catch(() => {});
+    await releaseObjectGroup(session, objectGroup);
   }
 }

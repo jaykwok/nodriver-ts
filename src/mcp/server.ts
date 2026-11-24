@@ -27,7 +27,8 @@ export {
 import { z } from 'zod';
 import { BrowserMcpSession, type WaitFor } from './session.ts';
 import { cloneInputPolicy, InputActionError } from '../input/behavior.ts';
-import { bounded, poll } from '../utils.ts';
+import { bounded, budget } from '../utils.ts';
+import { STATE_NAME_RE } from './auth.ts';
 import { evaluateScript, MAX_SCRIPT_LENGTH, MAX_ARGUMENT_LENGTH } from './evaluate.ts';
 import { BrowserSessionManager, type BrowserSessionManagerOptions } from './manager.ts';
 import { readState, writeState } from './state.ts';
@@ -138,6 +139,14 @@ function result(data: Record<string, unknown>, text?: string): CallToolResult {
     content: [{ type: 'text', text: text ?? JSON.stringify(data) }],
     structuredContent: data,
   };
+}
+function toolError(error: unknown): CallToolResult {
+  const data = {
+    error: error instanceof Error ? error.name : 'Error',
+    message: error instanceof Error ? error.message : String(error),
+    ...(error instanceof InputActionError ? { partialInput: error.report } : {}),
+  };
+  return { ...result(data), isError: true };
 }
 /** A step without a deadline of its own: stops waiting on the operation's signal and deadline. */
 function step<T>(signal: AbortSignal, label: string, work: () => Promise<T>): Promise<T> {
@@ -336,12 +345,7 @@ export function createBrowserMcpServer(
         await progress(2, 'Completed');
         return reply;
       } catch (error) {
-        const data = {
-          error: error instanceof Error ? error.name : 'Error',
-          message: error instanceof Error ? error.message : String(error),
-          ...(error instanceof InputActionError ? { partialInput: error.report } : {}),
-        };
-        return { ...result(data), isError: true };
+        return toolError(error);
       }
     };
     server.registerTool(name, { description, inputSchema: schema, annotations }, callback);
@@ -353,9 +357,11 @@ export function createBrowserMcpServer(
     signal: AbortSignal,
     task: () => Promise<Record<string, unknown> | void>,
   ): Promise<CallToolResult> {
+    const step = budget({ timeout: args.timeout, signal }, 'Browser action');
+    const actWait = step();
     const { result: extra, summary } = await session.act(
       tab,
-      { waitFor: args.waitFor, timeout: args.timeout, signal },
+      { waitFor: args.waitFor, timeout: actWait.timeout!, signal: actWait.signal! },
       task,
     );
     const data: Record<string, unknown> = { ...extra, ...summary };
@@ -364,7 +370,7 @@ export function createBrowserMcpServer(
       const snapshot = await session.snapshot(
         tab.id,
         { limit: 200, interactiveOnly: true },
-        { timeout: args.timeout, signal },
+        step(),
       );
       return result(
         { ...data, snapshot },
@@ -391,16 +397,12 @@ export function createBrowserMcpServer(
     { url: url.default('about:blank'), waitUntil, timeout },
     navigate,
     async (args, signal) => {
-      const tab = await session.newTab(signal);
-      try {
-        signal.throwIfAborted();
-        if (args.url !== 'about:blank')
-          await tab.goto(args.url, { timeout: args.timeout, signal, waitUntil: args.waitUntil });
-        return result(session.tabInfo(tab));
-      } catch (error) {
-        await tab.close().catch(() => {});
-        throw error;
-      }
+      const step = budget({ timeout: args.timeout, signal }, 'Opening a tab');
+      const tab = await session.newTab(signal, args.url, {
+        waitUntil: args.waitUntil,
+        ...step(),
+      });
+      return result(session.tabInfo(tab));
     },
   );
   tool(
@@ -511,7 +513,7 @@ export function createBrowserMcpServer(
       signal.throwIfAborted();
       return result({
         tabId: args.tabId,
-        elements: await Promise.all(elements.map((e) => session.describe(e))),
+        elements: await Promise.all(elements.map((e) => session.describe(e, { signal }))),
       });
     },
   );
@@ -558,13 +560,13 @@ export function createBrowserMcpServer(
     async (args, signal) => {
       const tab = session.tab(args.tabId);
       return action(tab, args, signal, async () => {
+        const waitStep = budget({ timeout: args.timeout, signal }, 'Clicking coordinates');
         await tab.withInput(async () => {
-          await tab.activate();
+          await bounded(tab.activate(), waitStep(), 'Activating tab');
           await tab.mouse.click(args.x, args.y, {
             button: args.button,
             clickCount: args.clickCount,
-            timeout: args.timeout,
-            signal,
+            ...waitStep(),
           });
         });
         return { clicked: { x: args.x, y: args.y } };
@@ -606,14 +608,14 @@ export function createBrowserMcpServer(
       const source = session.element(args.tabId, args.from);
       const tab = source.frame.tab;
       return action(tab, args, signal, async () => {
+        const waitStep = budget({ timeout: args.timeout, signal }, 'Dragging');
         await tab.withInput(async () => {
-          await tab.activate();
-          const wait = { timeout: args.timeout, signal };
-          const from = await source.clickablePoint(wait);
+          await bounded(tab.activate(), waitStep(), 'Activating tab');
+          const from = await source.clickablePoint(waitStep());
           const to = args.to
-            ? await session.element(args.tabId, args.to).clickablePoint(wait)
+            ? await session.element(args.tabId, args.to).clickablePoint(waitStep())
             : { x: args.toX!, y: args.toY! };
-          await tab.mouse.drag(from, to, args.steps, wait);
+          await tab.mouse.drag(from, to, args.steps, waitStep());
         });
         return { dragged: args.from };
       });
@@ -711,26 +713,25 @@ export function createBrowserMcpServer(
       if (args.ref && (args.deltaX || args.deltaY || args.x !== undefined || args.y !== undefined))
         throw new TypeError('Give either "ref" or wheel deltas and coordinates, not both');
       const tab = session.tab(args.tabId);
+      const waitStep = budget({ timeout: args.timeout, signal }, 'Scrolling');
       if (args.ref) {
         const element = session.element(args.tabId, args.ref);
         await tab.withInput(async () => {
-          await tab.activate();
-          await element.scrollIntoView({ timeout: args.timeout, signal });
+          await bounded(tab.activate(), waitStep(), 'Activating tab');
+          await element.scrollIntoView(waitStep());
         });
         return result({ scrolledTo: args.ref });
       }
       return tab.withInput(async () => {
-        await tab.activate();
+        await bounded(tab.activate(), waitStep(), 'Activating tab');
         if (args.x !== undefined || args.y !== undefined)
-          await tab.mouse.move(args.x ?? tab.mouse.position.x, args.y ?? tab.mouse.position.y, {
-            signal,
-            timeout: args.timeout,
-          });
+          await tab.mouse.move(
+            args.x ?? tab.mouse.position.x,
+            args.y ?? tab.mouse.position.y,
+            waitStep(),
+          );
         return result({
-          input: await tab.mouse.wheel(args.deltaX, args.deltaY, {
-            signal,
-            timeout: args.timeout,
-          }),
+          input: await tab.mouse.wheel(args.deltaX, args.deltaY, waitStep()),
         });
       });
     },
@@ -829,11 +830,10 @@ export function createBrowserMcpServer(
     async (args, signal) => {
       const tab = session.tab(args.tabId);
       return action(tab, args, signal, async () => {
+        const waitStep = budget({ timeout: args.timeout, signal }, 'Pressing key');
         await tab.withInput(async () => {
-          signal.throwIfAborted();
-          await tab.activate();
-          signal.throwIfAborted();
-          await tab.keyboard.press(args.key, { signal, timeout: args.timeout });
+          await bounded(tab.activate(), waitStep(), 'Activating tab');
+          await tab.keyboard.press(args.key, waitStep());
         });
         return { pressed: args.key };
       });
@@ -903,15 +903,11 @@ export function createBrowserMcpServer(
     { tabId, frameId, selector, visible: z.boolean().default(false), timeout },
     read,
     async (args, signal) => {
-      const element = await poll(
-        async (step) =>
-          session
-            .frame(args.tabId, args.frameId)
-            .query(args.selector, { ...step, ...(args.visible ? { visible: true } : {}) }),
-        { timeout: args.timeout, signal },
-        'MCP selector',
-      );
-      return result(await session.describe(element));
+      const waitStep = budget({ timeout: args.timeout, signal }, 'MCP selector');
+      const element = await session
+        .frame(args.tabId, args.frameId)
+        .waitForSelector(args.selector, { visible: args.visible, ...waitStep() });
+      return result(await session.describe(element, waitStep()));
     },
   );
   tool(
@@ -1021,7 +1017,7 @@ export function createBrowserMcpServer(
       'Save or load cookies and localStorage under a name in the host-configured state directory; names are private to the authenticated principal. Contents never enter the conversation. Covers first-party localStorage of every origin used by frames of the context, including closed tabs; a temporary tab reads and writes it on an empty intercepted page, so sites are not contacted. include adds sessionStorage of open tabs or IndexedDB when saving. Loading a state with sessionStorage needs tabId; that tab receives it and is left on about:blank. Loading IndexedDB replaces the saved databases and fails while a page of that origin is open.',
       {
         action: z.enum(['save', 'load']),
-        name: z.string().regex(/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$/),
+        name: z.string().regex(STATE_NAME_RE),
         tabId: tabId.optional().describe('Context of this tab; defaults to the session context'),
         include: z
           .array(z.enum(['sessionStorage', 'indexedDB']))
@@ -1138,13 +1134,6 @@ export function createBrowserMcpServer(
     context: Parameters<ToolCallback<typeof humanSchema>>[1],
     previous: string | undefined,
   ): Promise<CallToolResult | InputRequiredResult> {
-    const failed = (error: unknown): CallToolResult => ({
-      ...result({
-        error: error instanceof Error ? error.name : 'Error',
-        message: error instanceof Error ? error.message : String(error),
-      }),
-      isError: true,
-    });
     try {
       return await inLease(async () => {
         if (previous) {
@@ -1213,7 +1202,7 @@ export function createBrowserMcpServer(
         });
       });
     } catch (error) {
-      return failed(error);
+      return toolError(error);
     }
   }
   server.registerTool(
@@ -1279,13 +1268,7 @@ export function createBrowserMcpServer(
           }),
         );
       } catch (error) {
-        return {
-          ...result({
-            error: error instanceof Error ? error.name : 'Error',
-            message: String(error),
-          }),
-          isError: true,
-        };
+        return toolError(error);
       } finally {
         if (previous) session.forgetFrontTab();
       }

@@ -32,7 +32,7 @@ console.log(report.worker, report.differences);
 `Tab.inspectEnvironment()` 与 `Frame.inspectEnvironment()` 读取所选文档的真实环境：UA、UA-CH（可用时含高熵值）、platform、语言、hardwareConcurrency、deviceMemory（可用时）、webdriver、Intl locale 与时区、屏幕和视口/DPR。报告不包含字体、IP、WebRTC 或完整的设备指纹。
 
 - **执行世界**：默认使用隔离世界。`{ world: 'main' }` 可用于对照，但页面在主世界安装的钩子能观察或修改这次采样。
-- **Worker**：`worker: true` 创建临时 Blob dedicated Worker 读取同类字段，`differences` 逐字段比较文档与 Worker（忽略对象键顺序，保留数组顺序，不比较 Worker 中不存在的 webdriver）。无论成功、失败还是超时，Worker 都会被 terminate，Blob URL 也会被撤销。受 CSP 阻止时 `worker.status` 为 `unavailable`；绝不绕过 CSP。
+- **Worker**：`worker: true` 创建临时 Blob Dedicated Worker 读取同类字段，`differences` 逐字段比较文档与 Worker（忽略对象键顺序，保留数组顺序，不比较 Worker 中不存在的 webdriver）。无论成功、失败还是超时，Worker 都会被 terminate，Blob URL 也会被撤销。受 CSP 阻止时 `worker.status` 为 `unavailable`；绝不绕过 CSP。
 - **WebGL**：`webgl: true` 从一个从未插入 DOM 的临时 canvas 读取 vendor/renderer，随后释放上下文。WebGL 不可用时返回错误字段。
 - **UA-CH**：在没有 UA-CH 的非安全上下文中省略该字段。高熵值的错误保留在 `highEntropyError`。
 - **期限**：默认 5000 ms，可用 `timeout` 与 `signal` 调整。跨越导航、session 切换或文档失效时抛出 `StaleElementError`；执行上下文在采样中途消失时，以 Chrome 的错误作为 `cause`。不同文档的结果绝不合并，也不重试。取消只停止等待；已创建的 Worker 仍会在原期限内清理。
@@ -82,9 +82,9 @@ await tab.alignEnvironment(
 报告分别保存：当前观测、首次覆盖前的文档基线、请求的配置及其在各 session 上的应用结果、解析器的返回值，以及调用方提供的站点标签。首次覆盖前没有完整的 OS 原生值快照；来自外部 CDP 客户端、扩展或浏览器已有配置的值记为未知。
 
 - **应用方式**：时区、locale、视口、UA 与 UA-CH、Accept-Language 和地理位置都通过 CDP 设置，不修补全局 getter 或原型。配置作用于当前及之后附加的页面 session，不会追溯改变页面已有的脚本和网络连接。
-- **GeoIP**：只应用 `fields` 选中的 时区/地理位置字段，显式的 `environment` 优先。品牌、UA-CH、硬件、精确位置和语言绝不从 IP 推导。解析器会收到取消信号和剩余期限，由宿主负责取消其外部工作。
+- **GeoIP**：只应用 `fields` 选中的时区/地理位置字段，显式的 `environment` 优先。品牌、UA-CH、硬件、精确位置和语言绝不从 IP 推导。解析器会收到取消信号和剩余期限，由宿主负责取消其外部工作。
 - **单独设置 Accept-Language**：Chrome 保留自身的 UA 和 UA-CH，在非安全上下文的页面上也是如此；不生成其他品牌身份。
-- **核验**：每个 frame 的文档和新建的 dedicated Worker 分别核验；`expected` 与 `actual` 保留原始值。Worker 不支持的字段（如视口）记为 unavailable，真正不一致的记为 mismatch。视口只在主 frame 上核验，因为 iframe 的视口是它自己的布局框。locale 与时区按规范形式比较，因此 `fr-fr` 与 `fr-FR` 匹配，`Asia/Kolkata` 与 Chrome 报告的 `Asia/Calcutta` 匹配。Accept-Language 按有序的语言标签列表比较，忽略 `;q=` 权重；除非 `httpProbe` 在其 `headers` 中以 `accept-language` 回显该请求头，否则记为 not-tested。locale 在页面根 session 上设置，其他渲染进程和 Worker 可能保留原生的 Intl 设置。UA-CH 按配置的字段比较，不可用的高熵值记为 unavailable。地理位置绝不自动授权；只有权限已是 granted 时才读取位置用于核验，否则记为 unavailable。
+- **核验**：每个 frame 的文档和新建的 Dedicated Worker 分别核验；`expected` 与 `actual` 保留原始值。Worker 不支持的字段（如视口）记为 unavailable，真正不一致的记为 mismatch。视口只在主 frame 上核验，因为 iframe 的视口是它自己的布局框。locale 与时区按规范形式比较，因此 `fr-fr` 与 `fr-FR` 匹配，`Asia/Kolkata` 与 Chrome 报告的 `Asia/Calcutta` 匹配。Accept-Language 按有序的语言标签列表比较，忽略 `;q=` 权重；除非 `httpProbe` 在其 `headers` 中以 `accept-language` 回显该请求头，否则记为 not-tested。locale 在页面根 session 上设置，其他渲染进程和 Worker 可能保留原生的 Intl 设置。UA-CH 按配置的字段比较，不可用的高熵值记为 unavailable。地理位置绝不自动授权；只有权限已是 granted 时才读取位置用于核验，否则记为 unavailable。
 - **期限与部分失败**：整个调用共用一个期限，默认 10000 ms，可用 `timeout` 与 `signal` 调整，到期时抛出 `TimeoutError`。`inspect` 选项在应用任何配置前校验。覆盖不会原子回滚：应用失败或到期时仍未完成，会记入 `applicationError`，到期后不再发送覆盖，session 记录和实际报告都会保留。如果应用后的采样失败或超时，`after` 为 undefined，`verificationError` 保存原因，所有请求的字段记为 not-tested；从此时起，只有调用方的 `signal` 会让调用拒绝。
 
 `setEnvironment()` 是不带核验的显式覆盖接口。多次调用依次执行。调用的 `timeout` 与 `signal` 覆盖等待之前的调用、首次读取原生值和每一次覆盖：到期或中止后不再发送覆盖，已发送的覆盖保持生效。在这样的调用期间或之后附加的跨域 iframe session 使用调用前的配置。`environmentState().requested` 是此后附加的 session 将使用的配置，页面当前的实际值通过 `inspectEnvironment()` 读取。UA、Client Hints、时区等覆盖的作用范围随 Worker 类型而异。有界面和 headless 模式默认都保留原生值。显式启用的 `maskHeadless: true` 会改变页面 UA/UA-CH 与 Dedicated Worker，但可能与 Shared/Service Worker 及其请求不一致；见[浏览器对照基准](differential-audit.md)和[浏览器行为](automation-audit.md)。

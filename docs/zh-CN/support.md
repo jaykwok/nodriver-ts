@@ -5,10 +5,10 @@
 ## 运行环境
 
 - **运行时**：包、开发工具与测试统一要求 Node.js ≥ 24.22.0。测试使用 `node:test` 与 `expect`，直接运行 TypeScript 源码。包管理使用 npm。
-- **浏览器**：本机 Chrome、Chromium 或 Edge。Windows、macOS、Linux 的常见安装位置与 `PATH` 自动探测，也可用 `CHROME_PATH` 或 `executablePath` 指定。
+- **浏览器**：本机 Chrome、Chromium 或 Edge。Windows、macOS、Linux 的常见安装位置与 `PATH` 自动探测，也可用 `CHROME_PATH` 或 `executablePath` 指定（配合 `channel` / `prefer` 时，传入 `respectEnv: true` 可让 `CHROME_PATH` 优先于渠道偏好）。
 - **协议**：CDP 类型固定为 devtools-protocol 0.0.1718299；默认 MCP 2026-07-28，可显式启用 [2025 协议兼容](agent-compatibility.md)。
-- **Linux**：以普通用户运行，安装 Chrome 所需共享库（如 libnspr4、libnss3）。框架不添加 `--no-sandbox`，也不关闭站点隔离。WSL 的有界面模式需要 WSLg 或其他显示服务；没有显示器的机器上，可以用 `virtualDisplay: true` 让有界面的 Chrome 运行在专属的 Xvfb 服务器上（见[虚拟显示](api.md#虚拟显示)）。
-- **macOS**：Chrome 运行在 macOS 上时，按键事件附带 Chrome 的编辑命令，`Meta+A`、`Meta+C/X/V/Z`、`Shift+Meta+Z` 及 Alt/Meta 组合的方向键与删除键与物理键盘行为一致；跨平台脚本的全选应按平台使用 `Meta+A` 或 `Control+A`。GitHub 托管的 macOS 虚拟机无法解析 mDNS（`.local`）主机候选，本地 WebRTC 会停在 ICE `new`；平台矩阵在该环境中以 `--disable-features=WebRtcHideLocalIpsWithMdns` 启动 WebRTC 测试的浏览器，本项目不会自动添加此参数。
+- **Linux**：以普通用户运行，安装 Chrome 所需共享库（如 libnspr4、libnss3）。本库不添加 `--no-sandbox`，也不关闭站点隔离。WSL 的有界面模式需要 WSLg 或其他显示服务；没有显示器的机器上，可以用 `virtualDisplay: true` 让有界面的 Chrome 运行在专属的 Xvfb 服务器上（见[虚拟显示](api.md#虚拟显示)）。
+- **macOS**：Chrome 运行在 macOS 上时，按键事件附带 Chrome 的编辑命令，`Meta+A`、`Meta+C/X/V/Z`、`Shift+Meta+Z` 及 Alt/Meta 组合的方向键与删除键与物理键盘行为一致；跨平台脚本的全选应按平台使用 `Meta+A` 或 `Control+A`。GitHub 托管的 macOS 虚拟机无法解析 mDNS（`.local`）host 候选，本地 WebRTC 会停在 ICE `new`；平台矩阵在该环境中以 `--disable-features=WebRtcHideLocalIpsWithMdns` 启动 WebRTC 测试的浏览器，本项目不会自动添加此参数。
 - **WebSocket**：使用固定版本 npm `ws` 8.22.0 的 JS 协议解析器，关闭 per-message compression。通过标准 Node ESM 入口导入。
 
 ## 平台
@@ -35,14 +35,14 @@
 | 页面     | 新建/关闭、弹出页、历史、重定向、hash/SPA、DOMContentLoaded/load/commit/networkidle、BFCache（含嵌套 frame）、渲染进程崩溃与 reload、窗口、内容、资源、PDF                                                                                         |
 | frame    | 同进程 iframe、OOPIF、嵌套 OOPIF、递归附加、进程内外切换、所属 session/上下文、句柄按文档代次失效                                                                                                                                                  |
 | DOM      | CSS、XPath、最小文本、open/closed shadow root、元素作用域；DOM 辅助与 `Element.evaluate` 在隔离世界运行，`Tab`/`Frame.evaluate` 默认在主世界运行                                                                                                   |
-| 输入     | 滚动、稳定/可见/启用/命中检查、遮挡与父 iframe 命中、变换后的 quad、悬停投递确认；中文/emoji、焦点与选择区、物理按键、文件输入、select/checkbox、指针拖动；可选 human 策略                                                                         |
+| 输入     | 滚动、稳定/可见/启用/命中检查、遮挡与父 iframe 命中、变换后的 quad、悬停投递确认；中文/emoji、焦点与选区、物理按键、文件输入、select/checkbox、指针拖动；可选 human 策略                                                                           |
 | 求值     | Promise、exceptionDetails、顶层特殊数值/BigInt/undefined、JSHandle、对象释放、导航与崩溃失效、不重放副作用                                                                                                                                         |
 | 状态     | Cookie 保存与恢复、local/sessionStorage、Cookie + localStorage 快照（含 iframe 与已关闭标签页的源）、按需导出的 sessionStorage 与 IndexedDB、已保存状态的 AES-256-GCM 加密、权限、20 个 BrowserContext 隔离与订阅回收                              |
 | 文件     | PNG/JPEG/WebP、全页与元素截图、PDF、GUID 命名下载及完成/取消、saveAs、上传                                                                                                                                                                         |
 | 网络     | Fetch 拦截/替换/失败、认证、响应与响应体、请求头/缓存/离线；覆盖页面及递归 OOPIF session                                                                                                                                                           |
 | 代理     | Chrome 直接代理、每个上下文独立代理、经 proxy-chain 转发的认证 HTTP(S)/SOCKS 上游                                                                                                                                                                  |
 | 环境     | 显式视口/DPR、时区、locale、UA 与 Client Hints、地理位置；结构化诊断与显式对齐，见 [环境](environment.md)；Linux 上的进程时区与语言，见 [原生启动环境](native-environment.md)                                                                      |
-| MCP      | stdio、本地 HTTP、socket、InMemory 共用 26 个默认工具与 3 个目录受限的可选文件工具；租约、受控浏览器池、状态资源与订阅、进度、取消、人工确认和 HTTP 上的远程人工接管，见 [MCP](mcp.md)                                                             |
+| MCP      | stdio、本地 HTTP、socket、InMemory 共用 26 个默认工具、3 个目录受限的可选文件工具以及 HTTP 可选工具 `browser_handoff_wait`；租约、受控浏览器池、状态资源与订阅、进度、取消、人工接管和 HTTP 上的远程人工接管，见 [MCP](mcp.md)                     |
 
 ## 限制
 
@@ -53,7 +53,7 @@
 - **几何与截图**：覆盖嵌套、边框、滚动、scale/rotate、DPR 和父层遮挡；复杂 CSS 透视、pinch zoom、极端裁剪没有跨平台矩阵。元素截图适用于轴对齐元素。
 - **句柄**：JSHandle/Element 在文档失效后抛错，不自动重新定位。取消用户脚本只停止等待，不回滚已执行的 JS；用户脚本死循环会占用渲染进程，需要协议执行期限或关闭页面。
 - **注入时机**：已经开始运行的页面和弹出页可能在初始化完成前执行脚本。新 OOPIF 的暂停初始化有看门狗，超时后恢复页面并报告初始化错误。
-- **文件**：上传与下载路径位于浏览器主机；连接远程 CDP 时需要共享文件系统或调用者自行传输。
+- **文件**：上传与下载路径位于浏览器宿主；连接远程 CDP 时需要共享文件系统或调用方自行传输。
 - **输入**：指针拖动不等于完整的 HTML5 DataTransfer 或跨应用拖放；`insertText` 不模拟 OS IME 候选窗或真实剪贴板。human 策略是可复现的程序化模型，不等同于物理输入。
 - **网络**：Fetch 路由不覆盖浏览器自身流量和独立的 Service Worker target。HTTPS 代理证书、IPv6 与复杂 DNS 出口组合由 proxy-chain 处理，本项目没有覆盖全部组合。
 - **范围外**：不内置 OpenCV、视频编码、验证码或挑战自动处理、屏幕布局探测；可通过类型化 CDP、页面脚本或外部适配器扩展。

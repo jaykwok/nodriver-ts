@@ -65,7 +65,21 @@ assert.equal(await tab.evaluate('answer', undefined, { world: 'isolated' }), 42)
 
 ## Target、事件与故障
 
-`start()` 默认有一个 `about:blank` 页面。传 `{ pages: [] }` 表示没有页面，或用 `{ pages: [{ url: 'https://fixture.test/', title: 'Fixture' }] }` 设置初始元数据。`browser.newTab()`（不导航）和 `browser.newContext()` 使用内置回复即可工作；导航、截图、输入及其他应用操作需要编写回复。与 Chrome 一样，发往未知 session 的命令在浏览器级以 `Session with given id not found.`（-32001）回复，附加未知 target 以 `No target with given id found`（-32602）回复。
+`start()` 默认有一个 `about:blank` 页面。传 `{ pages: [] }` 表示没有页面，用 `{ defaultBrowserContextId }` 模拟非空默认上下文 ID，或用 `{ pages: [{ url: 'https://fixture.test/', title: 'Fixture', openerId?, openerFrameId? }] }` 设置初始元数据。`browser.newTab()`（不导航）和 `browser.newContext()` 使用内置回复即可工作；截图、输入及其他应用操作需要编写回复。与 Chrome 一样，发往未知 session 的命令在浏览器级以 `Session with given id not found.`（-32001）回复，附加或关闭未知 target 以 `No target with given id found`（-32602）回复。
+
+导航测试可使用 `commitNavigation(sessionId, url, options?)` 与 `handleNavigation(options?)`：`commitNavigation()` 在主帧导航时更新模拟页面的 URL 并发射 `Target.targetInfoChanged`，随后发射 `Page.frameNavigated`（子帧自动保留来自 `Page.frameAttached` 或 `options.parentId` 的 `parentId`；设置 `sameDocument: true` 时改为 `Page.navigatedWithinDocument`）及生命周期事件（默认 `['DOMContentLoaded', 'load']`，可通过 `lifecycle` 定制）；`handleNavigation()` 注册一个持久的 `Page.navigate` 处理函数并自动提交导航（支持可选 `onNavigate(params, command)` 回调自定义重定向、`sameDocument` 或 `errorText`）：
+
+```ts
+const off = chrome.handleNavigation();
+await tab.goto('https://fixture.test/dashboard');
+assert.equal(tab.url, 'https://fixture.test/dashboard');
+
+// 在同一 session 上主动推送一次导航：
+const nav = tab.waitForNavigation({ waitUntil: 'load' });
+chrome.commitNavigation(tab.cdp.id!, 'https://fixture.test/next');
+await nav;
+off();
+```
 
 ```ts
 const ready = browser.waitForTab();
@@ -90,7 +104,7 @@ await destroyed;
 
 `chrome.disconnect()` 突然终止客户端 socket，拒绝真实的挂起请求和事件等待。fixture 保留页面和上下文，之后仍可再次 `connect()`。同一时间只允许一个控制端连接；重连前请等待 `browser.close()` 完成。`chrome.connect(options)` 等同于 `Browser.connect({ endpoint: chrome.endpoint, ...options })`。
 
-## 构造 `InputReport` 测试夹具
+## 构造 `InputReport` fixture
 
 当单元测试需要构造完整的 `InputReport`（例如构造 `InputActionError`）时，可从 **`nodriver-ts/testing`** 导入 `createInputReport(overrides?)`。它会补齐全部默认计数与嵌套 `sent` 字段，合并部分 `sent` 覆盖，并复制可变数组与对象，避免后续 `InputReport` 新增遥测字段时导致下游测试类型中断。
 

@@ -1,10 +1,11 @@
-import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { readRequestBody } from '@modelcontextprotocol/server';
 import { z } from 'zod';
 import type { Tab } from '../page/tab.ts';
 import { PresentationLease, type PresentationScreencastOptions } from '../page/presentation.ts';
 import type { EventParams } from '../protocol/connection.ts';
 import { abortReason, delay } from '../utils.ts';
+import { digestSecret, isJsonContentType, jsonError, matchesDigest, positiveMs } from './auth.ts';
 
 export interface RemoteHandoffAudit {
   event: 'started' | 'connected' | 'ended';
@@ -100,11 +101,6 @@ const InputEvent = z.discriminatedUnion('kind', [
 export type HandoffInput = z.output<typeof InputEvent>;
 type FrameMetadata = EventParams<'Page.screencastFrame'>['metadata'];
 
-const digest = (value: string) => createHash('sha256').update(value).digest();
-function matches(expected: Buffer | undefined, value: string | undefined | null): boolean {
-  if (!expected || !value) return false;
-  return timingSafeEqual(expected, digest(value));
-}
 /** `*` spans any characters. Literal parts are found left to right, never by backtracking. */
 function urlMatches(pattern: string, url: string): boolean {
   const parts = pattern.split('*');
@@ -209,6 +205,7 @@ export class RemoteHandoff {
   readonly expiresAt: number;
   readonly ended: Promise<void>;
   private readonly init: RemoteHandoffInit;
+  private readonly screencastFormat: 'jpeg' | 'png';
   private tokenHash?: Buffer;
   private readonly tokenExpires: number;
   private sessionHash?: Buffer;
@@ -229,18 +226,22 @@ export class RemoteHandoff {
   private ending?: Promise<void>;
   endedAt?: number;
   constructor(init: RemoteHandoffInit, token: string) {
+    const maxDuration = positiveMs(init.options.maxDuration ?? MAX_DURATION, 'maxDuration');
+    const tokenTtl = positiveMs(init.options.tokenTtl ?? TOKEN_TTL, 'tokenTtl');
+    const resumeTimeout =
+      init.resume !== undefined
+        ? positiveMs(init.resume.timeout, 'resumeCondition.timeout')
+        : Infinity;
     this.init = init;
+    this.screencastFormat = init.options.screencast?.format === 'png' ? 'png' : 'jpeg';
     this.tab = init.tab;
     this.principal = init.principal;
     this.leaseId = init.leaseId;
-    this.tokenHash = digest(token);
+    this.tokenHash = digestSecret(token);
     const now = Date.now();
-    const duration = Math.min(
-      init.options.maxDuration ?? MAX_DURATION,
-      init.resume?.timeout ?? Infinity,
-    );
+    const duration = Math.min(maxDuration, resumeTimeout);
     this.expiresAt = now + duration;
-    this.tokenExpires = now + Math.min(init.options.tokenTtl ?? TOKEN_TTL, duration);
+    this.tokenExpires = now + Math.min(tokenTtl, duration);
     this.ended = new Promise((resolve) => (this.markEnded = resolve));
     const expiry = setTimeout(() => void this.end('expired'), duration);
     // A link nobody opened can no longer be used; the lease's tools need not wait any longer.
@@ -282,7 +283,7 @@ export class RemoteHandoff {
       if (url !== undefined && !urlMatches(url, this.tab.url)) return;
       if (selector !== undefined) {
         const found = await this.tab.mainFrame.evaluate(
-          `!!document.querySelector(${JSON.stringify(selector)})`,
+          `((sel)=>{const q=(root)=>{if(root.querySelector(sel))return true;for(const el of root.querySelectorAll('*'))if(el.shadowRoot&&q(el.shadowRoot))return true;return false};return q(document)})(${JSON.stringify(selector)})`,
           undefined,
           { world: 'isolated', timeout: 2000 },
         );
@@ -311,18 +312,18 @@ export class RemoteHandoff {
   }
   /** The first valid use of the token returns the viewer's session secret; a token works once. */
   exchange(token: string): string | undefined {
-    if (!this.active || Date.now() > this.tokenExpires || !matches(this.tokenHash, token))
+    if (!this.active || Date.now() > this.tokenExpires || !matchesDigest(this.tokenHash, token))
       return undefined;
     this.tokenHash = undefined;
     const secret = randomBytes(32).toString('base64url');
-    this.sessionHash = digest(secret);
+    this.sessionHash = digestSecret(secret);
     this.connected = true;
     this.audit('connected');
     this.init.changed('handoff-connected');
     return secret;
   }
   authorized(secret: string | undefined): boolean {
-    return this.active && matches(this.sessionHash, secret);
+    return this.active && matchesDigest(this.sessionHash, secret);
   }
   /** Replaces any earlier stream: there is one viewer at a time. Requests open in turn. */
   frames(signal: AbortSignal): Promise<Response> {
@@ -350,7 +351,7 @@ export class RemoteHandoff {
       startTimeout: 5000,
       deliver: (frame) => {
         this.metadata = frame.metadata;
-        return channel.push('frame', { data: frame.data });
+        return channel.push('frame', { data: frame.data, format: this.screencastFormat });
       },
     });
     this.channel = channel;
@@ -507,8 +508,7 @@ function html(body: string): Response {
     },
   );
 }
-const refused = (status: number, message: string) =>
-  Response.json({ error: message }, { status, headers: SECURITY_HEADERS });
+const refused = (status: number, message: string) => jsonError(status, message, SECURITY_HEADERS);
 function cookieOf(request: Request): string | undefined {
   for (const part of (request.headers.get('cookie') ?? '').split(';')) {
     const at = part.indexOf('=');
@@ -577,8 +577,7 @@ export async function handoffResponse(
     return new Response(null, { status: 204, headers: SECURITY_HEADERS });
   }
   if (asset !== 'input') return unknown();
-  if (request.headers.get('content-type')?.split(';')[0]?.trim() !== 'application/json')
-    return refused(415, 'Use application/json');
+  if (!isJsonContentType(request)) return refused(415, 'Use application/json');
   const read = await readRequestBody(request, MAX_INPUT_BYTES);
   if (read.tooLarge) return refused(413, 'Input too large');
   let body: unknown;
@@ -641,8 +640,8 @@ const finish = (text) => {
 };
 const source = new EventSource(base + '/frames');
 source.addEventListener('frame', (message) => {
-  const { data } = JSON.parse(message.data);
-  screen_.src = 'data:image/jpeg;base64,' + data;
+  const { data, format } = JSON.parse(message.data);
+  screen_.src = 'data:image/' + (format === 'png' ? 'png' : 'jpeg') + ';base64,' + data;
   status_.textContent = 'Connected';
 });
 source.addEventListener('ended', (message) => {

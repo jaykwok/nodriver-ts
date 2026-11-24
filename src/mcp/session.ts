@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { realpath } from 'node:fs/promises';
+import { lstat, realpath } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { Protocol } from 'devtools-protocol';
 import { Browser, type ConnectOptions } from '../browser/browser.ts';
@@ -7,14 +7,17 @@ import type { BrowserContext } from '../browser/context.ts';
 import type { LaunchOptions } from '../browser/launcher.ts';
 import type { Tab } from '../page/tab.ts';
 import type { Frame } from '../page/frames.ts';
+import type { NavigationOptions } from '../page/navigation.ts';
 import { Element } from '../dom/element.ts';
+import { isElementVisible } from '../dom/predicates.ts';
 import {
   DisconnectedError,
   HandoffActiveError,
   StaleElementError,
   TimeoutError,
 } from '../errors.ts';
-import { abortReason, delay, EventHub, type WaitOptions } from '../utils.ts';
+import { abortReason, delay, EventHub, normalizeText, type WaitOptions } from '../utils.ts';
+import { defaultMcpLaunchOptions } from './auth.ts';
 import { OperationQueue } from './queue.ts';
 import type { BrowserAllocation } from './pool.ts';
 import { cloneInputPolicy, type InputPolicy } from '../input/behavior.ts';
@@ -229,7 +232,7 @@ export class BrowserMcpSession {
           this.allocation = allocation;
           return allocation.browser;
         })
-      : Browser.launch({ ...this.options.launch, signal: combined });
+      : Browser.launch({ ...defaultMcpLaunchOptions(this.options.launch), signal: combined });
     this.opening = opening;
     try {
       const browser = await opening;
@@ -312,12 +315,19 @@ export class BrowserMcpSession {
     await context.setDownloadDirectory(this.options.downloadDir);
     this.downloadContexts.add(context);
   }
-  async newTab(signal: AbortSignal): Promise<Tab> {
+  async newTab(
+    signal: AbortSignal,
+    url = 'about:blank',
+    options: NavigationOptions = {},
+  ): Promise<Tab> {
     const browser = await this.getBrowser(signal);
     signal.throwIfAborted();
     const context = this.allocation?.context ?? browser.defaultContext;
     await this.prepareContext(context);
-    const tab = await context.newTab();
+    const tab =
+      url === 'about:blank'
+        ? await context.newTab('about:blank', { signal, ...options })
+        : await context.newTab(url, { signal, ...options });
     if (this.options.inputPolicy) tab.setInputPolicy(this.options.inputPolicy);
     return tab;
   }
@@ -429,23 +439,37 @@ export class BrowserMcpSession {
     }
   }
   /** Role, accessible name and a short visible-text excerpt for find/wait results. */
-  async describe(element: Element) {
+  async describe(element: Element, wait: WaitOptions = {}) {
     const [dom, ax] = await Promise.all([
-      element.evaluate((el) => {
-        const r = el.getBoundingClientRect(),
-          s = getComputedStyle(el);
-        const password = el instanceof HTMLInputElement && el.type === 'password';
-        return {
-          tag: el.tagName.toLowerCase(),
-          text: password
-            ? ''
-            : (el.innerText ?? el.textContent ?? '').replace(/\s+/g, ' ').trim().slice(0, 160),
-          visible: r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none',
-          inViewport: r.bottom > 0 && r.right > 0 && r.top < innerHeight && r.left < innerWidth,
-        };
-      }),
+      element.evaluate(
+        `(el) => {
+          const isVisible = ${isElementVisible.toString()};
+          const normalize = ${normalizeText.toString()};
+          const r = el.getBoundingClientRect();
+          const password = el instanceof HTMLInputElement && el.type === 'password';
+          return {
+            tag: el.tagName.toLowerCase(),
+            text: password ? '' : normalize(el.innerText ?? el.textContent ?? '').slice(0, 160),
+            visible: isVisible(el),
+            inViewport:
+              r.width > 0 &&
+              r.height > 0 &&
+              r.bottom > 0 &&
+              r.right > 0 &&
+              r.top < innerHeight &&
+              r.left < innerWidth,
+          };
+        }` as unknown as (el: HTMLElement) => {
+          tag: string;
+          text: string;
+          visible: boolean;
+          inViewport: boolean;
+        },
+        undefined,
+        wait,
+      ),
       element.session
-        .send('Accessibility.getPartialAXTree', {
+        .sendWith('Accessibility.getPartialAXTree', wait, {
           backendNodeId: element.backendNodeId,
           fetchRelatives: false,
         })
@@ -480,7 +504,9 @@ export class BrowserMcpSession {
       }),
     ]);
     if (frame.detached || frame.session !== session || frame.generation !== generation)
-      throw new StaleElementError('Frame changed while taking snapshot');
+      throw new StaleElementError('Frame changed while taking snapshot', {
+        reason: frame.detached ? 'frame-detached' : 'context-gone',
+      });
     const { selected, capped, rootFound } = selectNodes(nodes, {
       root: rootElement?.backendNodeId,
       interactiveOnly: options.interactiveOnly,
@@ -537,7 +563,9 @@ export class BrowserMcpSession {
       }),
     );
     if (frame.detached || frame.session !== session || frame.generation !== generation)
-      throw new StaleElementError('Frame changed while taking snapshot');
+      throw new StaleElementError('Frame changed while taking snapshot', {
+        reason: frame.detached ? 'frame-detached' : 'context-gone',
+      });
     const next = offset + page.length;
     return {
       ...this.tabInfo(frame.tab),
@@ -582,6 +610,7 @@ export class BrowserMcpSession {
     };
     let started = false,
       stopped = false,
+      crashed = tab.crashed === true,
       dialogOpened!: () => void;
     const dialog = new Promise<undefined>((resolve) => {
       dialogOpened = () => resolve(undefined);
@@ -590,6 +619,13 @@ export class BrowserMcpSession {
     const end = performance.now() + options.timeout;
     const offs = [
       tab.session.on('Page.javascriptDialogOpening', () => dialogOpened()),
+      tab.session.crashed
+        ? tab.session.crashed.on(() => {
+            crashed = true;
+          })
+        : tab.session.on('Inspector.targetCrashed', () => {
+            crashed = true;
+          }),
       tab.session.on('Page.frameStartedLoading', (e) => {
         if (e.frameId === tab.mainFrame.id) {
           started = true;
@@ -616,7 +652,7 @@ export class BrowserMcpSession {
       if (options.waitFor !== 'none') {
         const begin = performance.now();
         const grace = options.waitFor === 'auto' ? Math.min(begin + 250, end) : end;
-        while (!tab.closed && !this.dialogs.has(tab.id)) {
+        while (!tab.closed && !crashed && !tab.crashed && !this.dialogs.has(tab.id)) {
           if (options.signal.aborted) {
             const cause = abortReason(options.signal);
             throw new TimeoutError(
@@ -705,6 +741,11 @@ export class BrowserMcpSession {
           throw new Error(`Cannot read upload file: ${file}`, { cause });
         });
         if (outside(real)) throw new TypeError(`File is outside the upload directory: ${file}`);
+        const info = await lstat(real).catch((cause: unknown) => {
+          throw new Error(`Cannot read upload file: ${file}`, { cause });
+        });
+        if (!info.isFile() || info.nlink !== 1)
+          throw new TypeError(`Upload file must be a regular file without hard links: ${file}`);
         return real;
       }),
     );

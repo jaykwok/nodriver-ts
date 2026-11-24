@@ -12,12 +12,20 @@ import {
   type LedgerOptions,
 } from '../protocol/connection.ts';
 import { argument, checkException, valueOf, type Frame, type World } from '../page/frames.ts';
-import { ActionabilityError, ProtocolError, StaleElementError } from '../errors.ts';
-import { bounded, budget, delay, poll, type WaitOptions } from '../utils.ts';
+import {
+  formatExceptionDetails,
+  releaseObjectGroup,
+  releaseRemoteObjects,
+} from '../page/runtime.ts';
+import { isNodeGone, isNoLayoutObject } from '../protocol/errors.ts';
+import { ActionabilityError, StaleElementError } from '../errors.ts';
+import { abortReason, bounded, budget, delay, narrower, poll, type WaitOptions } from '../utils.ts';
+import { isElementEnabled, isElementVisible, isInComposedTree } from './predicates.ts';
 import { query, type QueryOptions, type Selector } from './query.ts';
 import type { InputCheckpoint, InputOptions, InputReport } from '../input/behavior.ts';
 import type { KeyboardTypeOptions } from '../input/input.ts';
 import { targetCoordinate } from '../input/human.ts';
+export { isElementVisible, isElementEnabled };
 type Point = { x: number; y: number };
 export interface ElementEvaluateOptions extends WaitOptions {
   /** Isolated by default; main exposes page-owned properties on the DOM wrapper. */
@@ -37,39 +45,21 @@ let objectGroupId = 0;
 const operation = new AsyncLocalStorage<() => WaitOptions>();
 /** How long human-mode scrolling wheels toward an element before Chrome finishes. */
 const WHEEL_INTO_VIEW = 3000;
-const NO_LAYOUT_OBJECT = /Node does not have a layout object/i;
-const NODE_GONE = /No node (?:with given id )?found|Could not find node/i;
-function isNoLayoutObject(error: unknown): boolean {
-  return error instanceof ProtocolError && NO_LAYOUT_OBJECT.test(error.message);
-}
 function isNoLayoutActionability(error: unknown): boolean {
   return error instanceof ActionabilityError && isNoLayoutObject(error.cause);
 }
-function isNodeGone(error: unknown): boolean {
-  return error instanceof ProtocolError && NODE_GONE.test(error.message);
-}
-/**
- * @internal Single-source-of-truth browser-side visibility predicate shared by `Element.isVisible()`
- * and batched `Locator` visibility checks.
- */
-export function isElementVisible(el: HTMLElement): boolean {
-  const style = getComputedStyle(el);
-  if (style.display === 'none' || style.visibility === 'hidden') return false;
-  if (typeof el.checkVisibility === 'function' && !el.checkVisibility({ visibilityProperty: true }))
-    return false;
-  const rect = el.getBoundingClientRect();
-  return rect.width > 0 && rect.height > 0;
-}
 /** @internal Per-element outcome from `batchEvaluateIsolated()`. */
 export type BatchProbeResult<T> = { ok: true; value: T } | { ok: false; stale: true };
-/**
- * @internal Streams per-chunk isolated-world evaluations across `elements` of the same frame so
- * callers that already satisfied their target index (`first()` / `nth()`) or found a visible item
- * stop before resolving later chunks.
- */
-export async function* batchEvaluateIsolatedChunks<T, A = undefined>(
+/** @internal Filter-probe fields returned per element by `batchProbeFilterChunks()`. */
+export interface ElementFilterProbe {
+  text?: string;
+  visible?: boolean;
+  enabled?: boolean;
+}
+const PROBE_FILTER_DECLARATION = `function(spec,...els){const isVisible=(${isElementVisible.toString()});const isEnabled=(${isElementEnabled.toString()});return els.map(el=>{if(!el||!el.isConnected)return{ok:false,stale:true};const value={};if(spec.text)value.text=el.textContent??'';if(spec.visible)value.visible=isVisible(el);if(spec.enabled)value.enabled=isEnabled(el);return{ok:true,value}})}`;
+async function* batchEvaluateDeclarationChunks<T, A>(
   elements: readonly Element[],
-  fn: (element: HTMLElement, arg: A) => T,
+  functionDeclaration: string,
   arg: A,
   options: WaitOptions = {},
   chunkSize = 256,
@@ -123,7 +113,7 @@ export async function* batchEvaluateIsolatedChunks<T, A = undefined>(
         const call = await session.sendWith('Runtime.callFunctionOn', step(), {
           executionContextId: context,
           objectGroup: group,
-          functionDeclaration: `function(arg, ...els){const fn=(${fn.toString()});return els.map(el=>!el||!el.isConnected?{ok:false,stale:true}:{ok:true,value:fn(el,arg)})}`,
+          functionDeclaration,
           arguments: [argument(arg), ...objectIds.map((objectId) => ({ objectId }))],
           returnByValue: true,
         });
@@ -134,12 +124,52 @@ export async function* batchEvaluateIsolatedChunks<T, A = undefined>(
           chunkResults[validIndices[j]!] = values[j] ?? { ok: false, stale: true };
       }
     } finally {
-      void session
-        .sendWith('Runtime.releaseObjectGroup', { timeout: 1000 }, { objectGroup: group })
-        .catch(() => {});
+      void releaseObjectGroup(session, group);
     }
     yield { offset, results: chunkResults };
   }
+}
+/**
+ * @internal Streams per-chunk isolated-world filter probes (`text`, `visible`, `enabled`) using
+ * the single-source-of-truth predicates in `predicates.ts`.
+ */
+export function batchProbeFilterChunks(
+  elements: readonly Element[],
+  spec: { text: boolean; visible: boolean; enabled: boolean },
+  options: WaitOptions = {},
+  chunkSize = 256,
+): AsyncGenerator<
+  { offset: number; results: Array<BatchProbeResult<ElementFilterProbe>> },
+  void,
+  void
+> {
+  return batchEvaluateDeclarationChunks<ElementFilterProbe, typeof spec>(
+    elements,
+    PROBE_FILTER_DECLARATION,
+    spec,
+    options,
+    chunkSize,
+  );
+}
+/**
+ * @internal Streams per-chunk isolated-world evaluations across `elements` of the same frame so
+ * callers that already satisfied their target index (`first()` / `nth()`) or found a visible item
+ * stop before resolving later chunks.
+ */
+export function batchEvaluateIsolatedChunks<T, A = undefined>(
+  elements: readonly Element[],
+  fn: (element: HTMLElement, arg: A) => T,
+  arg: A,
+  options: WaitOptions = {},
+  chunkSize = 256,
+): AsyncGenerator<{ offset: number; results: Array<BatchProbeResult<T>> }, void, void> {
+  return batchEvaluateDeclarationChunks<T, A>(
+    elements,
+    `function(arg, ...els){const fn=(${fn.toString()});return els.map(el=>!el||!el.isConnected?{ok:false,stale:true}:{ok:true,value:fn(el,arg)})}`,
+    arg,
+    options,
+    chunkSize,
+  );
 }
 /**
  * @internal Evaluates `fn(element, arg)` across elements of the same frame in one isolated-world
@@ -156,17 +186,6 @@ export async function batchEvaluateIsolated<T, A = undefined>(
   for await (const chunk of batchEvaluateIsolatedChunks(elements, fn, arg, options))
     results.push(...chunk.results);
   return results;
-}
-/** The earlier deadline and both signals: a nested budget can only shorten the outer one. */
-function narrower(outer: WaitOptions, inner: WaitOptions): WaitOptions {
-  const timeouts = [outer.timeout, inner.timeout].filter((t): t is number => t !== undefined);
-  const signals = [outer.signal, inner.signal].filter((s): s is AbortSignal => !!s);
-  return {
-    ...(timeouts.length ? { timeout: Math.min(...timeouts) } : {}),
-    ...(signals.length
-      ? { signal: signals.length > 1 ? AbortSignal.any(signals) : signals[0] }
-      : {}),
-  };
 }
 /** Maps viewport coordinates through a perspective transformed iframe content quad. */
 export function project(point: Point, width: number, height: number, q: number[]): Point {
@@ -189,6 +208,8 @@ export function project(point: Point, width: number, height: number, q: number[]
     dy2 = y3 - y2,
     dy3 = y0 - y1 + y2 - y3;
   const det = dx1 * dy2 - dx2 * dy1;
+  if (!Number.isFinite(det) || Math.abs(det) < 1e-12)
+    throw new ActionabilityError('Degenerate frame transform');
   const g = Math.abs(dx3) + Math.abs(dy3) < 1e-8 ? 0 : (dx3 * dy2 - dx2 * dy3) / det;
   const h = Math.abs(dx3) + Math.abs(dy3) < 1e-8 ? 0 : (dx1 * dy3 - dx3 * dy1) / det;
   const u = point.x / width,
@@ -266,13 +287,18 @@ export class Element {
     this.session = session;
   }
   assertValid(): void {
+    if (this.frame.detached)
+      throw new StaleElementError('Element belongs to a detached frame', {
+        reason: 'frame-detached',
+      });
     if (
-      this.frame.detached ||
       this.session.closed ||
       this.frame.generation !== this.generation ||
       this.frame.session !== this.session
     )
-      throw new StaleElementError('Element belongs to an expired document/session');
+      throw new StaleElementError('Element belongs to an expired document/session', {
+        reason: 'context-gone',
+      });
   }
   private send<M extends Command>(
     session: Session,
@@ -288,11 +314,8 @@ export class Element {
   }
   private async releaseGroup(objectGroup: string): Promise<void> {
     const action = this.frame.tab.inputBehavior.current;
-    if (action) await action.releaseObjects(this.session, { objectGroup });
-    else
-      await this.session
-        .sendWith('Runtime.releaseObjectGroup', { timeout: 1000 }, { objectGroup })
-        .catch(() => {});
+    if (action) await action.releaseReadObjects(this.session, { objectGroup });
+    else await releaseObjectGroup(this.session, objectGroup);
   }
   /**
    * The remaining budget of the current input action and operation. Nested input calls take this,
@@ -350,10 +373,14 @@ export class Element {
         }));
       } catch (error) {
         if (isNodeGone(error))
-          throw new StaleElementError('Node no longer exists', { cause: error });
+          throw new StaleElementError('Node no longer exists', {
+            cause: error,
+            reason: 'node-detached',
+          });
         throw error;
       }
-      if (!object.objectId) throw new StaleElementError('Node no longer exists');
+      if (!object.objectId)
+        throw new StaleElementError('Node no longer exists', { reason: 'node-detached' });
       this.assertValid();
       const connected = await this.send(this.session, 'Runtime.callFunctionOn', {
         objectId: object.objectId,
@@ -361,7 +388,9 @@ export class Element {
         returnByValue: true,
       });
       if (connected.result.value !== true)
-        throw new StaleElementError('Element was removed from its document');
+        throw new StaleElementError('Element was removed from its document', {
+          reason: 'node-detached',
+        });
       const wait = this.step();
       return await bounded(fn(object.objectId, group), wait, 'Element callback');
     } finally {
@@ -384,20 +413,9 @@ export class Element {
         awaitPromise: true,
       });
       if (result.exceptionDetails) {
-        const desc =
-          result.exceptionDetails.exception?.description ??
-          (result.exceptionDetails.exception && 'value' in result.exceptionDetails.exception
-            ? String(result.exceptionDetails.exception.value)
-            : result.exceptionDetails.text);
+        const desc = formatExceptionDetails(result.exceptionDetails);
         if (desc.includes(detachedSentinel)) {
-          if (result.exceptionDetails.exception?.objectId)
-            void this.session
-              .sendWith(
-                'Runtime.releaseObject',
-                { timeout: 1000 },
-                { objectId: result.exceptionDetails.exception.objectId },
-              )
-              .catch(() => {});
+          releaseRemoteObjects(this.session, [result.exceptionDetails.exception?.objectId]);
           throw new StaleElementError('Element was removed from its document');
         }
       }
@@ -442,11 +460,7 @@ export class Element {
    * ancestor `<fieldset disabled>`, and `aria-disabled="true"`).
    */
   async isEnabled(options: WaitOptions = {}): Promise<boolean> {
-    return this.read('isEnabled', options, () =>
-      this.evaluateIsolated(
-        (el) => !el.matches(':disabled') && el.getAttribute('aria-disabled') !== 'true',
-      ),
-    );
+    return this.read('isEnabled', options, () => this.evaluateIsolated(isElementEnabled));
   }
   /**
    * Read-only checked probe for native checkboxes/radios and ARIA checkable elements
@@ -477,13 +491,18 @@ export class Element {
   }
   async describe(): Promise<Protocol.DOM.Node> {
     this.assertValid();
-    return (
-      await this.send(this.session, 'DOM.describeNode', {
-        backendNodeId: this.backendNodeId,
-        depth: 1,
-        pierce: true,
-      })
-    ).node;
+    try {
+      return (
+        await this.send(this.session, 'DOM.describeNode', {
+          backendNodeId: this.backendNodeId,
+          depth: 1,
+          pierce: true,
+        })
+      ).node;
+    } catch (error) {
+      if (isNodeGone(error)) throw new StaleElementError('Node no longer exists', { cause: error });
+      throw error;
+    }
   }
   async queryAll(selector: Selector, options?: QueryOptions): Promise<Element[]> {
     this.assertValid();
@@ -500,18 +519,27 @@ export class Element {
    */
   async setChecked(checked: boolean, options: InputOptions = {}): Promise<SetCheckedResult> {
     return this.input('setChecked', options, async () => {
-      const read = () =>
-        this.evaluateIsolated((el) => {
+      const read = async () => {
+        const result = await this.evaluateIsolated((el) => {
+          // setChecked requires checkbox or radio
           if (!(el instanceof HTMLInputElement) || !['checkbox', 'radio'].includes(el.type))
-            throw new Error('setChecked requires checkbox or radio');
+            return { ok: false as const };
           return {
+            ok: true as const,
             checked: el.checked,
             radio: el.type === 'radio',
-            rendered: el.checkVisibility(),
-            // Includes a control inside a disabled fieldset.
-            disabled: el.matches(':disabled'),
+            rendered:
+              typeof el.checkVisibility === 'function'
+                ? el.checkVisibility({ visibilityProperty: true })
+                : true,
+            // Includes a control inside a disabled fieldset and aria-disabled="true".
+            disabled: el.matches(':disabled') || el.getAttribute('aria-disabled') === 'true',
           };
         });
+        if (!result.ok)
+          throw new ActionabilityError('setChecked() requires a checkbox or radio input');
+        return result;
+      };
       let state = await read();
       if (state.checked === checked) return { changed: false };
       if (state.radio && !checked)
@@ -529,50 +557,46 @@ export class Element {
           'enabled control',
         );
       if (state.checked === checked) return { changed: false };
-      if (state.rendered) await this.scrollIntoView({ signal: options.signal });
+      if (state.rendered) await this.scrollIntoView(this.step());
       const label = await this.labelToClick();
+      const clickBudget = this.step();
       if (label)
         // The control can become disabled while the pointer moves; its label would still act.
-        await label.clickElement({ signal: options.signal }, async () => {
+        await label.clickElement(clickBudget, async () => {
           if ((await read()).disabled)
             throw new ActionabilityError(
               'Control became disabled during pointer movement; click not dispatched',
             );
         });
-      else await this.click({ signal: options.signal });
-      const settled = performance.now() + 1000;
-      while ((await this.evaluateIsolated((el) => (el as HTMLInputElement).checked)) !== checked) {
-        if (performance.now() >= settled)
+      else await this.click(clickBudget);
+      try {
+        await poll(
+          async () =>
+            (await this.evaluateIsolated((el) => (el as HTMLInputElement).checked)) === checked
+              ? true
+              : undefined,
+          narrower(this.step(), { timeout: 1000 }),
+          'requested checked state',
+        );
+      } catch (error) {
+        if (error instanceof ActionabilityError) throw error;
+        if (error instanceof Error && error.name === 'TimeoutError' && !this.step().signal?.aborted)
           throw new ActionabilityError(
             'Input did not reach requested checked state; the click was not repeated',
+            { cause: error },
           );
-        await delay(50, this.step().signal);
+        throw error;
       }
       return { changed: true, clicked: label ? 'label' : 'control' };
     });
   }
   /** The first rendered label of a control that a click at its center would not reach. */
   private labelToClick(): Promise<Element | undefined> {
-    const pick = (el: HTMLInputElement) => {
-      const box = (target: HTMLElement) => {
-        if (!target.checkVisibility({ visibilityProperty: true })) return undefined;
-        const r = target.getBoundingClientRect();
-        return r.width >= 1 && r.height >= 1 ? r : undefined;
-      };
-      const r = box(el);
-      if (r) {
-        const x = r.left + r.width / 2,
-          y = r.top + r.height / 2;
-        const hit = (el.getRootNode() as Document | ShadowRoot).elementFromPoint(x, y);
-        for (let n: Node | null = hit; n; n = n.parentNode ?? (n as ShadowRoot).host)
-          if (n === el) return null;
-      }
-      return Array.from(el.labels ?? []).find((label) => box(label)) ?? null;
-    };
+    const declaration = `function(){const isVisible=(${isElementVisible.toString()});const inside=(${isInComposedTree.toString()});const box=target=>isVisible(target)?target.getBoundingClientRect():undefined;const el=this;const r=box(el);if(r){const x=r.left+r.width/2,y=r.top+r.height/2;const hit=el.getRootNode().elementFromPoint(x,y);if(inside(hit,el))return null;}return Array.from(el.labels??[]).find(label=>box(label))??null;}`;
     return this.withIsolatedObject(async (objectId, objectGroup) => {
       const result = await this.send(this.session, 'Runtime.callFunctionOn', {
         objectId,
-        functionDeclaration: `function(){return (${pick.toString()})(this)}`,
+        functionDeclaration: declaration,
         objectGroup,
       });
       checkException(result);
@@ -593,7 +617,7 @@ export class Element {
   ): Promise<Buffer> {
     this.assertValid();
     await this.scrollNodeIntoView();
-    const point = await this.localPoint();
+    const point = await this.localPoint(0.5, 0.5, { requireEnabled: false, requireHit: false });
     if (!point) throw new ActionabilityError('Element is not visible');
     const rect = await this.evaluateIsolated((el) => {
       const r = el.getBoundingClientRect();
@@ -615,25 +639,44 @@ export class Element {
   }
   async focus(): Promise<void> {
     this.assertValid();
-    await this.send(this.session, 'DOM.focus', { backendNodeId: this.backendNodeId });
+    try {
+      await this.send(this.session, 'DOM.focus', { backendNodeId: this.backendNodeId });
+    } catch (error) {
+      if (isNodeGone(error)) throw new StaleElementError('Node no longer exists', { cause: error });
+      throw error;
+    }
   }
   async upload(files: string[]): Promise<void> {
     this.assertValid();
     const paths = files.map((p) => resolve(p));
     for (const path of paths) await access(path);
-    await this.send(this.session, 'DOM.setFileInputFiles', {
-      backendNodeId: this.backendNodeId,
-      files: paths,
-    });
+    try {
+      await this.send(this.session, 'DOM.setFileInputFiles', {
+        backendNodeId: this.backendNodeId,
+        files: paths,
+      });
+    } catch (error) {
+      if (isNodeGone(error)) throw new StaleElementError('Node no longer exists', { cause: error });
+      throw error;
+    }
   }
   private async localPoint(
     u = 0.5,
     v = 0.5,
+    {
+      requireEnabled = true,
+      requireHit = true,
+    }: { requireEnabled?: boolean; requireHit?: boolean } = {},
   ): Promise<(Point & { targetWidth: number; layers: AncestorLayer[] }) | undefined> {
     this.assertValid();
     const state = await this.evaluateIsolated(
-      (el, { u, v }) => {
+      (el, { u, v, requireEnabled, requireHit }) => {
         const style = getComputedStyle(el);
+        const visible =
+          style.display !== 'none' &&
+          style.visibility !== 'hidden' &&
+          (typeof el.checkVisibility !== 'function' ||
+            el.checkVisibility({ visibilityProperty: true }));
         const rect = el.getBoundingClientRect();
         const x =
           Math.max(0, rect.left) + (Math.min(innerWidth, rect.right) - Math.max(0, rect.left)) * u;
@@ -641,10 +684,15 @@ export class Element {
           Math.max(0, rect.top) + (Math.min(innerHeight, rect.bottom) - Math.max(0, rect.top)) * v;
         // The hit is retargeted to the element's tree; composed ancestors also cover a hit inside
         // the element's own shadow tree.
-        let reaches = false;
-        const hit = (el.getRootNode() as Document | ShadowRoot).elementFromPoint(x, y);
-        for (let n: Node | null = hit; n && !reaches; n = n.parentNode ?? (n as ShadowRoot).host)
-          reaches = n === el;
+        let reaches = !requireHit;
+        if (requireHit) {
+          const hit = (el.getRootNode() as Document | ShadowRoot).elementFromPoint(x, y);
+          for (let n: Node | null = hit; n && !reaches; n = n.parentNode ?? (n as ShadowRoot).host)
+            reaches = n === el;
+        }
+        const enabled =
+          !requireEnabled ||
+          (!el.matches(':disabled') && el.getAttribute('aria-disabled') !== 'true');
         return {
           valid:
             rect.width > 0 &&
@@ -657,17 +705,15 @@ export class Element {
             y >= 0 &&
             x < innerWidth &&
             y < innerHeight &&
-            style.visibility !== 'hidden' &&
-            style.display !== 'none' &&
-            !el.matches(':disabled') &&
-            el.getAttribute('aria-disabled') !== 'true' &&
+            visible &&
+            enabled &&
             reaches,
           // The same point as a fraction of the whole element, which the quad below spans.
           u: (x - rect.left) / rect.width,
           v: (y - rect.top) / rect.height,
         };
       },
-      { u, v },
+      { u, v, requireEnabled, requireHit },
     );
     if (!state.valid) return undefined;
     let quads: Protocol.DOM.Quad[];
@@ -677,6 +723,7 @@ export class Element {
       }));
     } catch (error) {
       if (isNoLayoutObject(error)) return undefined;
+      if (isNodeGone(error)) throw new StaleElementError('Node no longer exists', { cause: error });
       throw error;
     }
     const quad = quads[0];
@@ -696,11 +743,20 @@ export class Element {
       if (!root?.parent || seen.has(root.id)) return undefined;
       seen.add(root.id);
       const parent = root.parent;
-      const { backendNodeId } = await this.send(parent.session, 'DOM.getFrameOwner', {
-        frameId: root.id,
-      });
-      const { model } = await this.send(parent.session, 'DOM.getBoxModel', { backendNodeId });
-      const ownerQuad = model.content;
+      let backendNodeId: Protocol.DOM.BackendNodeId;
+      let ownerQuad: number[];
+      try {
+        ({ backendNodeId } = await this.send(parent.session, 'DOM.getFrameOwner', {
+          frameId: root.id,
+        }));
+        const { model } = await this.send(parent.session, 'DOM.getBoxModel', { backendNodeId });
+        ownerQuad = model.content;
+      } catch (error) {
+        if (isNoLayoutObject(error)) return undefined;
+        if (isNodeGone(error))
+          throw new StaleElementError('Frame owner no longer exists', { cause: error });
+        throw error;
+      }
       const size = await root.evaluate<{ width: number; height: number }>(
         '({width: innerWidth,height: innerHeight})',
         undefined,
@@ -712,8 +768,10 @@ export class Element {
       edgeX = project(edgeX, size.width, size.height, ownerQuad);
       edgeY = project(edgeY, size.width, size.height, ownerQuad);
       corner = project(corner, size.width, size.height, ownerQuad);
-      const hit = await this.hitTest(parent.session, point);
-      if (hit?.backendNodeId !== backendNodeId && hit?.frameId !== root.id) return undefined;
+      if (requireHit) {
+        const hit = await this.hitTest(parent.session, point);
+        if (hit?.backendNodeId !== backendNodeId && hit?.frameId !== root.id) return undefined;
+      }
       layers.push({ root, parent, backendNodeId, ownerQuad, size });
       session = parent.session;
     }
@@ -780,7 +838,7 @@ export class Element {
         includeUserAgentShadowDOM: false,
       });
     } catch (error) {
-      if (error instanceof ProtocolError && /No node found/i.test(error.message)) return undefined;
+      if (isNodeGone(error)) return undefined;
       throw error;
     }
   }
@@ -821,12 +879,8 @@ export class Element {
         // Queued synchronously right after `remove` so CDP executes them in FIFO order and both
         // `InputAction.cleanup` and `Connection.drain()` wait for listener removal + group release.
         const release = action
-          ? action.releaseObjects(session, { objectGroup: stateGroup })
-          : session.sendWith(
-              'Runtime.releaseObjectGroup',
-              { timeout: 1000 },
-              { objectGroup: stateGroup },
-            );
+          ? action.releaseReadObjects(session, { objectGroup: stateGroup })
+          : releaseObjectGroup(session, stateGroup);
         return Promise.all([remove.catch(() => {}), release.catch(() => {})]).then(() => {});
       };
       const arm = async () => {
@@ -917,11 +971,17 @@ export class Element {
       }));
     }
     return this.withIsolatedObject(async (objectId, group) => {
-      const { object } = await this.send(session, 'DOM.resolveNode', {
-        backendNodeId: node,
-        executionContextId: await this.frame.context('isolated', this.step()),
-        objectGroup: group,
-      });
+      let object: Protocol.Runtime.RemoteObject;
+      try {
+        ({ object } = await this.send(session, 'DOM.resolveNode', {
+          backendNodeId: node,
+          executionContextId: await this.frame.context('isolated', this.step()),
+          objectGroup: group,
+        }));
+      } catch (error) {
+        if (isNodeGone(error)) return false;
+        throw error;
+      }
       if (!object.objectId) return false;
       const result = await this.send(session, 'Runtime.callFunctionOn', {
         objectId,
@@ -941,6 +1001,7 @@ export class Element {
         backendNodeId: this.backendNodeId,
       });
     } catch (error) {
+      if (isNodeGone(error)) throw new StaleElementError('Node no longer exists', { cause: error });
       if (isNoLayoutObject(error))
         throw new ActionabilityError('Element does not have a layout object', { cause: error });
       throw error;
@@ -1125,7 +1186,7 @@ export class Element {
             }
             scrolled = true;
           }
-          const local = await this.localPoint(u, v);
+          const local = await this.localPoint(u, v, { requireEnabled: false, requireHit: true });
           return local && (await this.unobscured(local, step)) ? local : undefined;
         },
         pollBudget,
@@ -1165,10 +1226,14 @@ export class Element {
   }
   async fill(text: string, options: InputOptions = {}): Promise<void> {
     await this.input('fill', options, async () => {
-      if (options.signal?.aborted) throw options.signal.reason;
-      await this.evaluateIsolated((el) => {
-        if (el.matches(':disabled') || (el as HTMLInputElement).readOnly)
-          throw new Error('Element is disabled or read-only');
+      if (options.signal?.aborted) throw abortReason(options.signal);
+      const problem = await this.evaluateIsolated((el) => {
+        if (
+          el.matches(':disabled') ||
+          el.getAttribute('aria-disabled') === 'true' ||
+          (el as HTMLInputElement).readOnly
+        )
+          return 'Element is disabled or read-only';
         el.focus();
         if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) el.select();
         else if (el.isContentEditable) {
@@ -1177,10 +1242,12 @@ export class Element {
           const sel = getSelection()!;
           sel.removeAllRanges();
           sel.addRange(range);
-        } else throw new Error('fill() requires an input, textarea or contenteditable element');
+        } else return 'fill() requires an input, textarea or contenteditable element';
+        return undefined;
       });
+      if (typeof problem === 'string') throw new ActionabilityError(problem);
       this.assertValid();
-      options.signal?.throwIfAborted();
+      if (options.signal?.aborted) throw abortReason(options.signal);
       if (
         !(await this.evaluateIsolated(
           (el) => (el.getRootNode() as Document | ShadowRoot).activeElement === el,
@@ -1191,7 +1258,7 @@ export class Element {
         ...options,
         guard: () => this.assertValid(),
       });
-      options.signal?.throwIfAborted();
+      if (options.signal?.aborted) throw abortReason(options.signal);
     });
   }
   /**
@@ -1202,17 +1269,18 @@ export class Element {
   async type(text: string | string[], options: TypeOptions = {}): Promise<InputReport> {
     const { replace, ...input } = options;
     return this.input('type', input, async () => {
-      input.signal?.throwIfAborted();
+      if (input.signal?.aborted) throw abortReason(input.signal);
       this.assertValid();
-      const selected = await this.evaluateIsolated((el, replace) => {
+      const outcome = await this.evaluateIsolated((el, replace) => {
         if (
           el.matches(':disabled') ||
+          el.getAttribute('aria-disabled') === 'true' ||
           (el as HTMLInputElement).readOnly ||
           (!(el instanceof HTMLInputElement) &&
             !(el instanceof HTMLTextAreaElement) &&
             !el.isContentEditable)
         )
-          throw new Error('type() requires an enabled editable element');
+          return { error: 'type() requires an enabled editable element' };
         el.focus();
         if (!replace) return false;
         if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
@@ -1226,6 +1294,9 @@ export class Element {
         sel.addRange(range);
         return !range.collapsed;
       }, replace === true);
+      if (typeof outcome === 'object' && outcome !== null && 'error' in outcome)
+        throw new ActionabilityError(outcome.error);
+      const selected = outcome === true;
       const guarded = {
         ...input,
         // Focus matters where text goes in: before each key, between a key and its character,
@@ -1246,16 +1317,23 @@ export class Element {
     });
   }
   async select(values: string | string[]): Promise<string[]> {
-    return this.frame.tab.withInput(() =>
-      this.evaluateIsolated((el, values) => {
+    return this.frame.tab.withInput(async () => {
+      const outcome = await this.evaluateIsolated((el, values) => {
         if (!(el instanceof HTMLSelectElement))
-          throw new Error('select() requires a select element');
+          return { ok: false as const, error: 'select() requires a select element' };
+        if (el.matches(':disabled') || el.getAttribute('aria-disabled') === 'true')
+          return { ok: false as const, error: 'select() target is disabled' };
         const wanted = new Set(Array.isArray(values) ? values : [values]);
         for (const option of el.options) option.selected = wanted.has(option.value);
         el.dispatchEvent(new Event('input', { bubbles: true }));
         el.dispatchEvent(new Event('change', { bubbles: true }));
-        return Array.from(el.selectedOptions, (option) => option.value);
-      }, values),
-    );
+        return {
+          ok: true as const,
+          values: Array.from(el.selectedOptions, (option) => option.value),
+        };
+      }, values);
+      if (!outcome.ok) throw new ActionabilityError(outcome.error);
+      return outcome.values;
+    });
   }
 }

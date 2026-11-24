@@ -1,12 +1,18 @@
-import { bounded, delay, MAX_TIMEOUT, timeoutValue, type WaitOptions } from '../utils.ts';
+import {
+  abortReason,
+  bounded,
+  delay,
+  MAX_TIMEOUT,
+  timeoutValue,
+  type WaitOptions,
+} from '../utils.ts';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { ProtocolError, StaleElementError, TimeoutError } from '../errors.ts';
-import { isContextGone } from '../page/execution-context.ts';
+import { SessionEndedError, StaleElementError, TimeoutError } from '../errors.ts';
+import { isObjectGone } from '../protocol/errors.ts';
 import {
   Connection,
   ON_LATE_REPLY,
   REQUEST_LEDGER,
-  SessionEndedError,
   type RequestRecorder,
   type Command,
   type LedgerOptions,
@@ -42,12 +48,6 @@ interface CleanupFailure {
   sessionEnded: boolean;
   /** The page closed and took its input state with it. */
   dropped?: boolean;
-}
-function isObjectGone(error: unknown): boolean {
-  return (
-    isContextGone(error) ||
-    (error instanceof ProtocolError && /Could not find object with given id/.test(error.message))
-  );
 }
 /**
  * What is known about the session's pages and dialogs. It comes from the session's own connection,
@@ -327,8 +327,8 @@ export class InputAction {
     if (this.controller.signal.aborted) throw this.reason;
     if (this.failures.length)
       throw new InputBlockedError('Input cleanup failed', { cause: this.cleanupError });
-    this.options.signal?.throwIfAborted();
-    this.stepOptions?.signal?.throwIfAborted();
+    if (this.options.signal?.aborted) throw abortReason(this.options.signal);
+    if (this.stepOptions?.signal?.aborted) throw abortReason(this.stepOptions.signal);
     const timeout = Math.min(this.end, this.stepEnd) - performance.now();
     if (timeout <= 0) throw new TimeoutError('Input deadline exceeded');
     const signals = [this.controller.signal, this.options.signal, this.stepOptions?.signal].filter(
@@ -537,6 +537,21 @@ export class InputAction {
     } catch (error) {
       if (!session.closed && !isObjectGone(error)) this.cleanupFailed(error, session);
     }
+  }
+  /**
+   * @internal Best-effort release for read-only probe handles (such as element/pointer probes):
+   * still tracked by `InputAction.cleanup` and `Connection.drain()`, but a release failure never
+   * permanently blocks the CDP connection since no physical key/button hold is affected.
+   */
+  async releaseReadObjects(
+    session: Session,
+    objects: { objectId: string } | { objectGroup: string },
+  ): Promise<void> {
+    if (session.closed) return;
+    try {
+      if ('objectId' in objects) await this.sendCleanup(session, 'Runtime.releaseObject', objects);
+      else await this.sendCleanup(session, 'Runtime.releaseObjectGroup', objects);
+    } catch {}
   }
   /** Records the request ID so that cleanup can wait for this action's own late replies. */
   private ledger(
@@ -822,13 +837,17 @@ export class InputAction {
     this.disposeWith(
       session.on('Page.frameNavigated', ({ frame }) => {
         if (frameId === undefined || frame.id === frameId)
-          this.interrupt(new StaleElementError('Document changed during input'));
+          this.interrupt(
+            new StaleElementError('Document changed during input', { reason: 'context-gone' }),
+          );
       }),
     );
     this.disposeWith(
       session.on('Page.frameDetached', (event) => {
         if (frameId === undefined || event.frameId === frameId)
-          this.interrupt(new StaleElementError('Frame detached during input'));
+          this.interrupt(
+            new StaleElementError('Frame detached during input', { reason: 'frame-detached' }),
+          );
       }),
     );
   }
@@ -910,7 +929,7 @@ export class InputAction {
    * Never waits past `limit`, a performance.now() time.
    */
   async pace(ms: number, limit = Infinity): Promise<void> {
-    timeoutValue(ms, 'wait');
+    timeoutValue(ms, 'pace');
     await this.waitUntil(Math.min((this.paced ?? performance.now()) + ms, limit), ms);
   }
   /**

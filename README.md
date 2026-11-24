@@ -32,7 +32,7 @@ Pages can observe input events, browser settings and network characteristics. Se
 ## Requirements
 
 - Node.js 24.22.0 or newer.
-- A local Chrome, Chromium or Edge. It is found automatically on Windows, macOS and Linux, including on `PATH`; otherwise set `CHROME_PATH` or `executablePath`.
+- A local Chrome, Chromium or Edge. It is found automatically on Windows, macOS and Linux, including on `PATH`; otherwise set `CHROME_PATH` or `executablePath` (pass `respectEnv: true` with `channel` / `prefer` if you want `CHROME_PATH` to take precedence over the channel preference).
 - A display for the default headful mode. On servers and in CI, pass `headless: true` (`--headless` for the MCP server); on Linux, `virtualDisplay: true` (`--virtual-display`) runs headful Chrome on its own Xvfb server instead. On Linux, run as a normal user with Chrome's shared libraries installed: the library never adds `--no-sandbox`. Headful mode on WSL needs WSLg or another display server.
 
 Supported platforms are listed in [docs/support.md](docs/support.md).
@@ -57,7 +57,7 @@ await tab.screenshot({ path: 'page.png', fullPage: true });
 - **Evaluation.** `tab.evaluate()` runs in the page's main world, or in an isolated world with `{ world: 'isolated' }`. Functions are serialized into the page.
 - **Frames.** `tab.frames` lists every frame, OOPIFs included. Queries never cross frames silently.
 - **Contexts and proxies.** `browser.newContext({ proxy })` isolates cookies and storage, and supports authenticated HTTP(S) and SOCKS upstream proxies.
-- **Network.** `tab.network.route()` intercepts and fulfils requests, `authenticate()` answers auth challenges and `responses` subscribes to responses. `Network.enable` is sent only when you subscribe to responses, call `enable()` or set headers, cache or offline mode.
+- **Network.** `tab.network.route()` intercepts and fulfills requests, `authenticate()` answers auth challenges and `responses` subscribes to responses. `Network.enable` is sent only when you subscribe to responses, call `enable()` or set headers, cache or offline mode.
 - **Human input.** `Browser.launch({ inputPolicy: { mode: 'human' } })` applies to every tab and popup, and `tab.setInputPolicy()` changes one tab. It turns on reproducible pointer paths, key events for US-layout characters and wheel scrolling; other text, such as CJK or emoji, is inserted with `insertText`. `fill()` replaces a value with one insertion, `type(text, { replace: true })` types over it key by key. See [input](docs/input.md).
 - **Existing browsers.** `Browser.connect({ endpoint })` attaches to every tab, or, with `attach: 'created'`, only to the tabs this client opens and their popups. `close()` then only disconnects. A remote debugging endpoint gives full control of the browser, so restrict access to it.
 - **Handoff.** Launched with `detached: true` over WebSocket, Chrome can outlive this process: `browser.release()` returns an endpoint to reconnect to later. Add `supervised: true` to have a helper end Chrome if the host dies before releasing it. See [browser handoff](docs/browser-handoff.md) and [supervised launch](docs/lifecycle-ownership-design.md).
@@ -135,7 +135,7 @@ sequenceDiagram
   Ctx-->>App: deleted cookies, cleared origins, handled tabs
 ```
 
-`clearSiteData()` refuses by default while a tab still shows the site, or still holds its sessionStorage after navigating away, because the page could keep or write the data back; `openTabs: 'close'` or `'blank'` handles those tabs first. Origins match exactly, port included; cookies match by host. `prepareProfile` works with temporary and persistent profiles, and `updateProfileSettings()` merges settings into `Local State` and `Preferences`, keeping other keys, and reads them back. That check covers the files, not whether a given browser version honours a setting. A persistent profile serves one browser at a time; see [Profiles](docs/api.md#profiles) for what a fixed profile does and does not change about Chrome's Windows password check.
+`clearSiteData()` refuses by default while a tab still shows the site, or still holds its sessionStorage after navigating away, because the page could keep or write the data back; `openTabs: 'close'` or `'blank'` handles those tabs first. Origins match exactly, port included; cookies match by host. `prepareProfile` works with temporary and persistent profiles, and `updateProfileSettings()` merges settings into `Local State` and `Preferences`, keeping other keys, and reads them back. That check covers the files, not whether a given browser version honors a setting. A persistent profile serves one browser at a time; see [Profiles](docs/api.md#profiles) for what a fixed profile does and does not change about Chrome's Windows password check.
 
 ## Browser lifecycle
 
@@ -247,7 +247,7 @@ Simplified Chinese translations are in [docs/zh-CN](docs/zh-CN/).
 | [Browser behavior](docs/automation-audit.md)               | Default protocol behavior, execution worlds and observable events            |
 | [Browser comparison benchmark](docs/differential-audit.md) | Native, masked and configured launches, pages and workers                    |
 | [MCP](docs/mcp.md)                                         | CLI, tools, refs, page JavaScript, embedding                                 |
-| [MCP over HTTP](docs/mcp-http.md)                          | Leases, authentication, limits, resources, hand-off                          |
+| [MCP over HTTP](docs/mcp-http.md)                          | Leases, authentication, limits, resources, handoff                           |
 | [MCP over socket](docs/mcp-socket.md)                      | Unix socket / named pipe service and client                                  |
 | [Agent compatibility](docs/agent-compatibility.md)         | MCP 2025-11-25 / 2025-06-18 clients                                          |
 | [Support](docs/support.md)                                 | Platforms, capabilities, limitations                                         |

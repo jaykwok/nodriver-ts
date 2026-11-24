@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Frame } from './frames.ts';
 import { FetchCancelledError } from '../errors.ts';
-import { bounded, MAX_TIMEOUT, timeoutValue, type WaitOptions } from '../utils.ts';
+import { abortReason, bounded, MAX_TIMEOUT, timeoutValue, type WaitOptions } from '../utils.ts';
 export interface FetchOptions extends WaitOptions {
   method?: string;
   headers?: Record<string, string>;
@@ -110,7 +110,7 @@ export async function frameFetch<T>(
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 0)
     throw new RangeError('maxBytes must be a non-negative integer');
   timeoutValue(timeout);
-  signal?.throwIfAborted();
+  if (signal?.aborted) throw abortReason(signal);
   const id = randomUUID();
   const { generation, session } = frame;
   // The page request must outlive the caller's wait, so it is stopped explicitly below.

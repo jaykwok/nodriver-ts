@@ -2,7 +2,6 @@ import { randomUUID } from 'node:crypto';
 import type { Protocol } from 'devtools-protocol';
 import {
   ON_LATE_REPLY,
-  SessionEndedError,
   TargetSession,
   type Connection,
   type LedgerOptions,
@@ -12,11 +11,36 @@ import {
   DisconnectedError,
   EvaluationError,
   ProtocolError,
+  SessionEndedError,
   StaleElementError,
   TimeoutError,
 } from '../errors.ts';
-import { abortReason, bounded, budget, timeoutValue, type WaitOptions } from '../utils.ts';
-import { CONTEXT_GONE, isContextGone, parseRemoteObjectId } from './execution-context.ts';
+import {
+  CONTEXT_GONE,
+  isContextGone,
+  isFrameGone,
+  isNodeGone,
+  isObjectGone,
+  isWorldMismatch,
+} from '../protocol/errors.ts';
+import {
+  abortReason,
+  bounded,
+  budget,
+  MAX_TIMEOUT,
+  positiveInt,
+  timeoutValue,
+  withSignal,
+  type WaitOptions,
+} from '../utils.ts';
+import { parseRemoteObjectId } from './execution-context.ts';
+import {
+  decodeRemoteValue,
+  encodeCallArgument,
+  formatExceptionDetails,
+  releaseObjectGroup,
+  releaseRemoteObjects as releaseObjects,
+} from './runtime.ts';
 
 export type IsolatedWorldScope = 'session' | 'target';
 export type IsolatedWorldVerification = 'strict' | 'guard' | 'none';
@@ -182,17 +206,6 @@ export interface EvaluateAcrossFramesOptions
   concurrency?: number;
 }
 
-const FRAME_GONE = /No frame (?:for|with) given id/i;
-const NODE_GONE = /No node (?:with given id )?found|Could not find node/i;
-
-function isFrameGone(error: unknown): boolean {
-  return error instanceof ProtocolError && FRAME_GONE.test(error.message);
-}
-
-function isNodeGone(error: unknown): boolean {
-  return error instanceof ProtocolError && NODE_GONE.test(error.message);
-}
-
 /**
  * Managed CDP `Runtime` object-group lease implementing `AsyncDisposable`.
  * Releases all handles in the group via `Runtime.releaseObjectGroup` and tracks confirmation
@@ -215,7 +228,7 @@ export class ObjectGroupScope implements AsyncDisposable {
 
   /** True once `Runtime.releaseObjectGroup` has been confirmed or the session/connection has closed. */
   get released(): boolean {
-    return this.confirmed || this.session.closed || this.session.connection.closed;
+    return this.confirmed || this.session.closed;
   }
 
   /** @internal True once a `Runtime.releaseObjectGroup` attempt has been dispatched or confirmed. */
@@ -239,7 +252,7 @@ export class ObjectGroupScope implements AsyncDisposable {
    * caller's `timeout` and `signal` settle only its own wait without aborting sibling waiters.
    */
   release(options: WaitOptions = {}): Promise<void> {
-    if (this.confirmed || this.session.closed || this.session.connection.closed) {
+    if (this.confirmed || this.session.closed) {
       this.markConfirmed();
       return Promise.resolve();
     }
@@ -263,7 +276,9 @@ export class ObjectGroupScope implements AsyncDisposable {
         resolveAttempt();
       };
       (this.confirmWaiters ??= new Set()).add(onConfirmed);
+      const wireTimeout = Math.min(this.session.connection.timeout, Math.max(waitTimeout, 5000));
       const wireOptions: LedgerOptions = {
+        timeout: wireTimeout,
         [ON_LATE_REPLY]: () => {
           this.markConfirmed();
         },
@@ -290,7 +305,7 @@ export class ObjectGroupScope implements AsyncDisposable {
         (error) => {
           this.confirmWaiters?.delete(onConfirmed);
           if (this.inFlight === attempt) this.inFlight = undefined;
-          if (this.confirmed || this.session.closed || this.session.connection.closed) {
+          if (this.confirmed || this.session.closed) {
             this.markConfirmed();
             resolveAttempt();
             return;
@@ -361,10 +376,18 @@ const GUARD_KEY = '__nodriver_isolated_world_guard__';
 const STAMP_GUARD_FN =
   'function(k,t){var d=Object.getOwnPropertyDescriptor(this,k);if(d&&typeof d.value==="string"&&d.value.startsWith("ndg:")&&!d.configurable&&!d.writable)return d.value;Object.defineProperty(this,k,{value:t,enumerable:false,configurable:false,writable:false});return t}';
 
-/** Internal signal that a numeric executionContextId resolved into the wrong world or frame. */
-class WorldMismatchError extends StaleElementError {
-  override name = 'WorldMismatchError';
-  readonly [CONTEXT_GONE] = true;
+const FAILED_BEFORE_CALL = Symbol('nodriver.failedBeforeCall');
+
+/** Marks a `StaleElementError` as a context-mismatch error (retriable before user code runs). */
+function worldMismatchError(message: string): StaleElementError {
+  const error = new StaleElementError(message, { reason: 'world-mismatch' });
+  Object.defineProperty(error, CONTEXT_GONE, { value: true });
+  Object.defineProperty(error, FAILED_BEFORE_CALL, { value: true });
+  return error;
+}
+
+function isWorldMismatchError(error: unknown): boolean {
+  return !!error && typeof error === 'object' && FAILED_BEFORE_CALL in error;
 }
 
 function notifyObservers(
@@ -382,13 +405,6 @@ function notifyObservers(
   }
 }
 
-function callArgument(value: unknown): Protocol.Runtime.CallArgument {
-  if (typeof value === 'bigint') return { unserializableValue: `${value}n` };
-  if (typeof value === 'number' && (!Number.isFinite(value) || Object.is(value, -0)))
-    return { unserializableValue: Object.is(value, -0) ? '-0' : String(value) };
-  return { value };
-}
-
 function serializeEvaluateValue(value: unknown): string {
   if (value === undefined) return 'undefined';
   if (typeof value === 'bigint') return `${value}n`;
@@ -402,18 +418,6 @@ function serializeEvaluateValue(value: unknown): string {
     .replace(/\u2029/g, '\\u2029');
 }
 
-function remoteValue(object: Protocol.Runtime.RemoteObject): unknown {
-  const value = object.unserializableValue;
-  if (value) {
-    if (/^-?\d+n$/.test(value)) return BigInt(value.slice(0, -1));
-    if (value === 'NaN') return NaN;
-    if (value === 'Infinity') return Infinity;
-    if (value === '-Infinity') return -Infinity;
-    if (value === '-0') return -0;
-  }
-  return object.value;
-}
-
 function releaseRemoteObjects(
   response: {
     result?: Protocol.Runtime.RemoteObject;
@@ -421,14 +425,10 @@ function releaseRemoteObjects(
   },
   session: Session,
 ): void {
-  if (session.closed) return;
-  const ids = new Set<string>();
-  if (response.result?.objectId) ids.add(response.result.objectId);
-  if (response.exceptionDetails?.exception?.objectId)
-    ids.add(response.exceptionDetails.exception.objectId);
-  for (const objectId of ids) {
-    void session.sendWith('Runtime.releaseObject', { timeout: 1000 }, { objectId }).catch(() => {});
-  }
+  releaseObjects(session, [
+    response.result?.objectId,
+    response.exceptionDetails?.exception?.objectId,
+  ]);
 }
 
 function throwEvaluationException(
@@ -441,15 +441,10 @@ function throwEvaluationException(
 ): void {
   const details = result.exceptionDetails;
   if (!details) return;
-  const exception = details.exception;
   releaseRemoteObjects(result, session);
-  const description =
-    exception?.description ??
-    (exception && 'value' in exception
-      ? `${details.text} ${String(exception.value)}`
-      : details.text);
+  const description = formatExceptionDetails(details);
   if (mismatchSentinel && description.includes(mismatchSentinel))
-    throw new WorldMismatchError('Isolated world execution context no longer matches');
+    throw worldMismatchError('Isolated world execution context no longer matches');
   throw new EvaluationError(description);
 }
 
@@ -670,13 +665,6 @@ function buildGuardedCodeExpression(
   return `${check}?(0,eval)(${JSON.stringify(code)}):(()=>{throw ${m}})()`;
 }
 
-function withSignal(wait: WaitOptions, signal: AbortSignal): WaitOptions {
-  return {
-    ...wait,
-    signal: wait.signal ? AbortSignal.any([wait.signal, signal]) : signal,
-  };
-}
-
 function withLateExceptionCleanup(
   wait: WaitOptions,
   session: Session,
@@ -704,7 +692,7 @@ async function boundedOnSession<T>(
   disposedError: () => Error,
   label: string,
 ): Promise<T> {
-  if (session.closed) throw session.closeReason ?? new DisconnectedError('Session closed');
+  if (session.closed) throw session.closedError();
   if (disposeSignal.aborted) throw disposedError();
   const endCtrl = new AbortController();
   const off = session.disconnected.on((err) => endCtrl.abort(err));
@@ -724,13 +712,7 @@ async function boundedOnSession<T>(
 
 /** Whether Chrome rejected our own isolated-world `globalThis` handle or context as gone/mismatched. */
 function isWorldGone(error: unknown): boolean {
-  return (
-    error instanceof WorldMismatchError ||
-    isContextGone(error) ||
-    (error instanceof ProtocolError &&
-      error.code === -32000 &&
-      /Could not find object with given id/.test(error.message))
-  );
+  return isWorldMismatchError(error) || isObjectGone(error);
 }
 
 /**
@@ -741,11 +723,11 @@ function isWorldGone(error: unknown): boolean {
  */
 function isFailedBeforeCall(error: unknown): boolean {
   return (
-    error instanceof WorldMismatchError ||
+    isWorldMismatchError(error) ||
     (error instanceof ProtocolError &&
       error.code === -32000 &&
-      /Cannot find context with specified id|Could not find object with given id/.test(
-        error.message,
+      /Cannot find context with specified id|Could not find object with given id/i.test(
+        error.protocolMessage,
       ))
   );
 }
@@ -947,21 +929,30 @@ export class IsolatedWorld {
   }
 
   private releaseGroup(objectGroup: string): void {
-    if (this.session.closed) return;
-    void this.session
-      .sendWith('Runtime.releaseObjectGroup', { timeout: 1000 }, { objectGroup })
-      .catch(() => {});
+    void releaseObjectGroup(this.session, objectGroup);
   }
 
   private disposedError(): Error {
-    if (this.session.closed)
-      return this.session.closeReason ?? new DisconnectedError('Session closed');
-    return new StaleElementError('IsolatedWorld was disposed');
+    if (this.session.closed) return this.session.closedError();
+    return new StaleElementError('IsolatedWorld was disposed', { reason: 'disposed' });
+  }
+
+  private initWait(disposeSignal: AbortSignal, callerTimeout?: number): () => WaitOptions {
+    const cap = Math.min(this.session.connection.timeout, Math.max(callerTimeout ?? 0, 10_000));
+    return budget(
+      {
+        timeout: cap,
+        ...(this.scope === 'session' ? { signal: disposeSignal } : {}),
+      },
+      'isolated world creation',
+    );
   }
 
   private createStrictEntry(
     slot: WorldSlot,
     epoch: number,
+    disposeSignal: AbortSignal,
+    callerTimeout?: number,
     callObserver?: IsolatedWorldObserver,
   ): Promise<StrictWorldEntry> {
     if (this.disposeEpoch !== epoch) return Promise.reject(this.disposedError());
@@ -973,6 +964,7 @@ export class IsolatedWorld {
       const generation = slot.generation;
       const wasRecovering = slot.recovering;
       const batchObservers = observers;
+      const initStep = this.initWait(disposeSignal, callerTimeout);
       const objectGroup = `nodriver-isolated-${randomUUID()}`;
       let groupAllocated = false;
       let groupReleased = false;
@@ -991,105 +983,163 @@ export class IsolatedWorld {
             ...(this.grantUniversalAccess ? { grantUniveralAccess: true } : {}),
           };
           const { executionContextId } = await this.session
-            .send('Page.createIsolatedWorld', createParams)
+            .sendWith('Page.createIsolatedWorld', initStep(), createParams)
             .catch((error: unknown) => {
               if (isFrameGone(error))
-                throw new StaleElementError('Frame is detached', { cause: error });
+                throw new StaleElementError('Frame is detached', {
+                  cause: error,
+                  reason: 'frame-detached',
+                });
               throw error;
             });
           if (this.disposeEpoch !== epoch) throw this.disposedError();
-          groupAllocated = true;
-          const { result: global } = await this.session.send('Runtime.evaluate', {
-            expression: 'globalThis',
-            contextId: executionContextId,
-            objectGroup,
-            generatePreview: false,
-          });
-          if (this.disposeEpoch !== epoch) throw this.disposedError();
+          const globalRes = await this.session.sendWith(
+            'Runtime.evaluate',
+            {
+              ...initStep(),
+              [ON_LATE_REPLY]: (reply: Protocol.Runtime.EvaluateResponse) => {
+                if (reply.exceptionDetails) releaseRemoteObjects(reply, this.session);
+                if (reply.result?.objectId) {
+                  groupAllocated = true;
+                  releaseOnce();
+                }
+              },
+            } as LedgerOptions,
+            {
+              expression: 'globalThis',
+              contextId: executionContextId,
+              objectGroup,
+              generatePreview: false,
+              silent: true,
+              disableBreaks: true,
+            },
+          );
+          if (globalRes.result.objectId) groupAllocated = true;
+          if (this.disposeEpoch !== epoch) {
+            if (globalRes.exceptionDetails) releaseRemoteObjects(globalRes, this.session);
+            throw this.disposedError();
+          }
+          throwEvaluationException(globalRes, this.session);
+          const global = globalRes.result;
           if (!global.objectId)
             throw new EvaluationError('Isolated world global object is unavailable');
           const isolated = parseRemoteObjectId(global.objectId);
           if (isolated.context !== executionContextId)
-            throw new WorldMismatchError('Isolated world handle context does not match creation');
+            throw worldMismatchError('Isolated world handle context does not match creation');
           const verifyGroup = `nodriver-isolated-verify-${randomUUID()}`;
+          let verifyAllocated = false;
           try {
-            const doc = await this.session.send('Runtime.callFunctionOn', {
-              objectId: global.objectId,
-              functionDeclaration: 'function(){return this.document}',
-              objectGroup: verifyGroup,
-              generatePreview: false,
-            });
-            if (this.disposeEpoch !== epoch) throw this.disposedError();
+            const doc = await this.session.sendWith(
+              'Runtime.callFunctionOn',
+              {
+                ...initStep(),
+                [ON_LATE_REPLY]: (reply: Protocol.Runtime.CallFunctionOnResponse) => {
+                  if (reply.exceptionDetails) releaseRemoteObjects(reply, this.session);
+                  if (reply.result?.objectId) this.releaseGroup(verifyGroup);
+                },
+              } as LedgerOptions,
+              {
+                objectId: global.objectId,
+                functionDeclaration: 'function(){return this.document}',
+                objectGroup: verifyGroup,
+                generatePreview: false,
+                silent: true,
+              },
+            );
+            if (doc.result.objectId) verifyAllocated = true;
+            if (this.disposeEpoch !== epoch) {
+              if (doc.exceptionDetails) releaseRemoteObjects(doc, this.session);
+              throw this.disposedError();
+            }
+            throwEvaluationException(doc, this.session);
             if (!doc.result.objectId)
-              throw new WorldMismatchError('Isolated world document is unavailable');
-            const { node } = await this.session.send('DOM.describeNode', {
+              throw worldMismatchError('Isolated world document is unavailable');
+            const { node } = await this.session.sendWith('DOM.describeNode', initStep(), {
               objectId: doc.result.objectId,
             });
             if (this.disposeEpoch !== epoch) throw this.disposedError();
             if (node.frameId && node.frameId !== this.frameId)
-              throw new WorldMismatchError('Isolated world resolved to a different frame');
-            const { object: mainDoc } = await this.session.send('DOM.resolveNode', {
-              backendNodeId: node.backendNodeId,
-              objectGroup: verifyGroup,
-            });
+              throw worldMismatchError('Isolated world resolved to a different frame');
+            const { object: mainDoc } = await this.session.sendWith(
+              'DOM.resolveNode',
+              {
+                ...initStep(),
+                [ON_LATE_REPLY]: (reply: Protocol.DOM.ResolveNodeResponse) => {
+                  if (reply.object?.objectId) this.releaseGroup(verifyGroup);
+                },
+              } as LedgerOptions,
+              {
+                backendNodeId: node.backendNodeId,
+                objectGroup: verifyGroup,
+              },
+            );
+            if (mainDoc.objectId) verifyAllocated = true;
             if (this.disposeEpoch !== epoch) throw this.disposedError();
             if (!mainDoc.objectId)
-              throw new WorldMismatchError(
-                'Main-world document is unavailable during verification',
-              );
+              throw worldMismatchError('Main-world document is unavailable during verification');
             const main = parseRemoteObjectId(mainDoc.objectId);
             if (main.isolate !== isolated.isolate || main.context === isolated.context)
-              throw new WorldMismatchError(
+              throw worldMismatchError(
                 'Isolated world handle collided with the main-world execution context',
               );
             const { executionContextId: confirmedId } = await this.session
-              .send('Page.createIsolatedWorld', createParams)
+              .sendWith('Page.createIsolatedWorld', initStep(), createParams)
               .catch((error: unknown) => {
                 if (isFrameGone(error))
-                  throw new StaleElementError('Frame is detached', { cause: error });
+                  throw new StaleElementError('Frame is detached', {
+                    cause: error,
+                    reason: 'frame-detached',
+                  });
                 throw error;
               });
             if (this.disposeEpoch !== epoch) throw this.disposedError();
             if (confirmedId !== executionContextId)
-              throw new WorldMismatchError(
+              throw worldMismatchError(
                 'Isolated world handle does not match the requested worldName',
               );
-            const { object: confirmedDoc } = await this.session.send('DOM.resolveNode', {
-              backendNodeId: node.backendNodeId,
-              executionContextId: confirmedId,
-              objectGroup: verifyGroup,
-            });
+            const { object: confirmedDoc } = await this.session.sendWith(
+              'DOM.resolveNode',
+              {
+                ...initStep(),
+                [ON_LATE_REPLY]: (reply: Protocol.DOM.ResolveNodeResponse) => {
+                  if (reply.object?.objectId) this.releaseGroup(verifyGroup);
+                },
+              } as LedgerOptions,
+              {
+                backendNodeId: node.backendNodeId,
+                executionContextId: confirmedId,
+                objectGroup: verifyGroup,
+              },
+            );
+            if (confirmedDoc.objectId) verifyAllocated = true;
             if (this.disposeEpoch !== epoch) throw this.disposedError();
             if (!confirmedDoc.objectId)
-              throw new WorldMismatchError('Isolated world document confirmation is unavailable');
+              throw worldMismatchError('Isolated world document confirmation is unavailable');
             const confirmed = parseRemoteObjectId(confirmedDoc.objectId);
             if (confirmed.isolate !== isolated.isolate || confirmed.context !== isolated.context)
-              throw new WorldMismatchError(
+              throw worldMismatchError(
                 'Isolated world confirmation resolved to a different context',
               );
-            const sameWorld = await this.session.send('Runtime.callFunctionOn', {
+            const sameWorld = await this.session.sendWith('Runtime.callFunctionOn', initStep(), {
               objectId: doc.result.objectId,
               functionDeclaration: 'function(other){return this === other}',
               arguments: [{ objectId: confirmedDoc.objectId }],
               returnByValue: true,
+              silent: true,
             });
             releaseRemoteObjects(sameWorld, this.session);
             if (this.disposeEpoch !== epoch) throw this.disposedError();
             if (sameWorld.exceptionDetails || sameWorld.result.value !== true)
-              throw new WorldMismatchError('Isolated world handle does not match the named world');
+              throw worldMismatchError('Isolated world handle does not match the named world');
           } catch (error) {
             if (this.disposeEpoch !== epoch) throw this.disposedError();
-            if (
-              error instanceof ProtocolError &&
-              error.code === -32000 &&
-              /No node with given id found|same JavaScript world/.test(error.message)
-            )
-              throw new WorldMismatchError(
+            if (isNodeGone(error) || isWorldMismatch(error))
+              throw worldMismatchError(
                 'Isolated world document or world changed during verification',
               );
             throw error;
           } finally {
-            this.releaseGroup(verifyGroup);
+            if (verifyAllocated) this.releaseGroup(verifyGroup);
           }
           const entry: StrictWorldEntry = {
             kind: 'strict',
@@ -1112,7 +1162,7 @@ export class IsolatedWorld {
             });
             return entry;
           }
-          throw new WorldMismatchError('Isolated world was invalidated during creation');
+          throw worldMismatchError('Isolated world was invalidated during creation');
         } catch (error) {
           settled = true;
           if (slot.pending === task) {
@@ -1141,6 +1191,8 @@ export class IsolatedWorld {
   private createGuardEntry(
     slot: WorldSlot,
     epoch: number,
+    disposeSignal: AbortSignal,
+    callerTimeout?: number,
     callObserver?: IsolatedWorldObserver,
   ): Promise<GuardWorldEntry> {
     if (this.disposeEpoch !== epoch) return Promise.reject(this.disposedError());
@@ -1155,15 +1207,14 @@ export class IsolatedWorld {
       const wasRecovering = slot.recovering;
       const batchObservers = observers;
       const session = this.session;
+      const initStep = this.initWait(disposeSignal, callerTimeout);
       const objectGroup = `nodriver-isolated-guard-${randomUUID()}`;
       let groupAllocated = false;
       let groupReleased = false;
       const releaseOnce = () => {
-        if (!groupAllocated || groupReleased || session.closed) return;
+        if (!groupAllocated || groupReleased) return;
         groupReleased = true;
-        void session
-          .sendWith('Runtime.releaseObjectGroup', { timeout: 1000 }, { objectGroup })
-          .catch(() => {});
+        void releaseObjectGroup(session, objectGroup);
       };
       let settled = false;
       let task!: Promise<GuardWorldEntry>;
@@ -1175,22 +1226,38 @@ export class IsolatedWorld {
             ...(this.grantUniversalAccess ? { grantUniveralAccess: true } : {}),
           };
           const { executionContextId } = await session
-            .send('Page.createIsolatedWorld', createParams)
+            .sendWith('Page.createIsolatedWorld', initStep(), createParams)
             .catch((error: unknown) => {
               if (isFrameGone(error))
-                throw new StaleElementError('Frame is detached', { cause: error });
+                throw new StaleElementError('Frame is detached', {
+                  cause: error,
+                  reason: 'frame-detached',
+                });
               throw error;
             });
           if (this.scope === 'session' && this.disposeEpoch !== epoch) throw this.disposedError();
-          groupAllocated = true;
-          const globalRes = await session.send('Runtime.evaluate', {
-            expression: 'globalThis',
-            contextId: executionContextId,
-            objectGroup,
-            generatePreview: false,
-            silent: true,
-            disableBreaks: true,
-          });
+          const globalRes = await session.sendWith(
+            'Runtime.evaluate',
+            {
+              ...initStep(),
+              [ON_LATE_REPLY]: (reply: Protocol.Runtime.EvaluateResponse) => {
+                if (reply.exceptionDetails) releaseRemoteObjects(reply, session);
+                if (reply.result?.objectId) {
+                  groupAllocated = true;
+                  releaseOnce();
+                }
+              },
+            } as LedgerOptions,
+            {
+              expression: 'globalThis',
+              contextId: executionContextId,
+              objectGroup,
+              generatePreview: false,
+              silent: true,
+              disableBreaks: true,
+            },
+          );
+          if (globalRes.result.objectId) groupAllocated = true;
           if (this.scope === 'session' && this.disposeEpoch !== epoch) {
             if (globalRes.exceptionDetails) releaseRemoteObjects(globalRes, session);
             throw this.disposedError();
@@ -1201,21 +1268,24 @@ export class IsolatedWorld {
             throw new EvaluationError('Isolated world global object is unavailable');
           const isolated = parseRemoteObjectId(global.objectId);
           if (isolated.context !== executionContextId)
-            throw new WorldMismatchError('Isolated world handle context does not match creation');
+            throw worldMismatchError('Isolated world handle context does not match creation');
           const { executionContextId: confirmedId } = await session
-            .send('Page.createIsolatedWorld', createParams)
+            .sendWith('Page.createIsolatedWorld', initStep(), createParams)
             .catch((error: unknown) => {
               if (isFrameGone(error))
-                throw new StaleElementError('Frame is detached', { cause: error });
+                throw new StaleElementError('Frame is detached', {
+                  cause: error,
+                  reason: 'frame-detached',
+                });
               throw error;
             });
           if (this.scope === 'session' && this.disposeEpoch !== epoch) throw this.disposedError();
           if (confirmedId !== executionContextId)
-            throw new WorldMismatchError(
+            throw worldMismatchError(
               'Isolated world handle does not match the requested worldName',
             );
           const proposedToken = `ndg:${randomUUID()}`;
-          const stamp = await session.send('Runtime.callFunctionOn', {
+          const stamp = await session.sendWith('Runtime.callFunctionOn', initStep(), {
             objectId: global.objectId,
             functionDeclaration: STAMP_GUARD_FN,
             arguments: [{ value: GUARD_KEY }, { value: proposedToken }],
@@ -1229,7 +1299,7 @@ export class IsolatedWorld {
           throwEvaluationException(stamp, session);
           const token = stamp.result.value;
           if (typeof token !== 'string' || !token.startsWith('ndg:'))
-            throw new WorldMismatchError('Isolated world guard token could not be initialized');
+            throw worldMismatchError('Isolated world guard token could not be initialized');
           const entry: GuardWorldEntry = {
             kind: 'guard',
             contextId: executionContextId,
@@ -1250,7 +1320,7 @@ export class IsolatedWorld {
             });
             return entry;
           }
-          throw new WorldMismatchError('Isolated world was invalidated during creation');
+          throw worldMismatchError('Isolated world was invalidated during creation');
         } catch (error) {
           settled = true;
           if (slot.pending === task) {
@@ -1280,6 +1350,8 @@ export class IsolatedWorld {
   private createNoneEntry(
     slot: WorldSlot,
     epoch: number,
+    disposeSignal: AbortSignal,
+    callerTimeout?: number,
     callObserver?: IsolatedWorldObserver,
   ): Promise<NoneWorldEntry> {
     if (this.disposeEpoch !== epoch) return Promise.reject(this.disposedError());
@@ -1294,19 +1366,23 @@ export class IsolatedWorld {
       const wasRecovering = slot.recovering;
       const batchObservers = observers;
       const session = this.session;
+      const initStep = this.initWait(disposeSignal, callerTimeout);
       let settled = false;
       let task!: Promise<NoneWorldEntry>;
       task = (async (): Promise<NoneWorldEntry> => {
         try {
           const { executionContextId } = await session
-            .send('Page.createIsolatedWorld', {
+            .sendWith('Page.createIsolatedWorld', initStep(), {
               frameId: this.frameId,
               worldName: this.worldName,
               ...(this.grantUniversalAccess ? { grantUniveralAccess: true } : {}),
             })
             .catch((error: unknown) => {
               if (isFrameGone(error))
-                throw new StaleElementError('Frame is detached', { cause: error });
+                throw new StaleElementError('Frame is detached', {
+                  cause: error,
+                  reason: 'frame-detached',
+                });
               throw error;
             });
           if (this.scope === 'session' && this.disposeEpoch !== epoch) throw this.disposedError();
@@ -1328,7 +1404,7 @@ export class IsolatedWorld {
             });
             return entry;
           }
-          throw new WorldMismatchError('Isolated world was invalidated during creation');
+          throw worldMismatchError('Isolated world was invalidated during creation');
         } catch (error) {
           settled = true;
           if (slot.pending === task) {
@@ -1363,6 +1439,7 @@ export class IsolatedWorld {
         objectId: entry.objectId,
         functionDeclaration: 'function(){return 1}',
         returnByValue: true,
+        silent: true,
       });
       releaseRemoteObjects(res, this.session);
       return true;
@@ -1420,20 +1497,22 @@ export class IsolatedWorld {
     if (!entry.guardPending) {
       const proposedToken = `ndg:${randomUUID()}`;
       const mismatch = `__nodriver_iso_mismatch_${randomUUID()}__`;
+      const initStep = this.initWait(disposeSignal, wait.timeout);
       let settled = false;
       let task!: Promise<WorldGuard>;
       task = (async () => {
         try {
-          const res = await this.session.send('Runtime.callFunctionOn', {
+          const res = await this.session.sendWith('Runtime.callFunctionOn', initStep(), {
             objectId: entry.objectId,
             functionDeclaration: STAMP_GUARD_FN,
             arguments: [{ value: GUARD_KEY }, { value: proposedToken }],
             returnByValue: true,
+            silent: true,
           });
           throwEvaluationException(res, this.session);
           const token = res.result.value;
           if (typeof token !== 'string' || !token.startsWith('ndg:'))
-            throw new EvaluationError('Isolated world guard token is unavailable');
+            throw worldMismatchError('Isolated world guard token is unavailable');
           const guard: WorldGuard = { key: GUARD_KEY, token, mismatch };
           entry.guard = guard;
           settled = true;
@@ -1474,8 +1553,7 @@ export class IsolatedWorld {
     disposeSignal: AbortSignal,
     callObserver?: IsolatedWorldObserver,
   ): Promise<WorldEntry> {
-    if (this.session.closed)
-      throw this.session.closeReason ?? new DisconnectedError('Session closed');
+    if (this.session.closed) throw this.session.closedError();
     if (this.disposeEpoch !== epoch) throw this.disposedError();
     const wait = step();
     const cached = slot.cached;
@@ -1503,10 +1581,10 @@ export class IsolatedWorld {
     const createWait = step();
     const creating: Promise<WorldEntry> =
       this.verification === 'strict'
-        ? this.createStrictEntry(slot, epoch, callObserver)
+        ? this.createStrictEntry(slot, epoch, disposeSignal, createWait.timeout, callObserver)
         : this.verification === 'guard'
-          ? this.createGuardEntry(slot, epoch, callObserver)
-          : this.createNoneEntry(slot, epoch, callObserver);
+          ? this.createGuardEntry(slot, epoch, disposeSignal, createWait.timeout, callObserver)
+          : this.createNoneEntry(slot, epoch, disposeSignal, createWait.timeout, callObserver);
     const entry = await boundedOnSession(
       creating,
       createWait,
@@ -1543,8 +1621,7 @@ export class IsolatedWorld {
    * execution without exposing a numeric ID.
    */
   async context(options: IsolatedRunOptions = {}): Promise<number> {
-    if (this.session.closed)
-      throw this.session.closeReason ?? new DisconnectedError('Session closed');
+    if (this.session.closed) throw this.session.closedError();
     if (options.signal?.aborted) throw abortReason(options.signal);
     const epoch = this.disposeEpoch;
     const disposeSignal = this.disposeController.signal;
@@ -1560,7 +1637,10 @@ export class IsolatedWorld {
       } catch (error) {
         if (this.disposeEpoch !== epoch) throw this.disposedError();
         const siblingDetached =
-          this.scope === 'target' && !this.session.closed && error instanceof SessionEndedError;
+          !entry &&
+          this.scope === 'target' &&
+          !this.session.closed &&
+          error instanceof SessionEndedError;
         if (!isWorldGone(error) && !siblingDetached) throw error;
         if (entry) this.markEntryLost(slot, entry);
         else if (isWorldGone(error)) slot.recovering = true;
@@ -1660,7 +1740,7 @@ export class IsolatedWorld {
           !this.session.closed &&
           error instanceof SessionEndedError;
         const gone = entry
-          ? isContextGone(error) || error instanceof WorldMismatchError
+          ? isContextGone(error) || isWorldMismatchError(error)
           : isWorldGone(error) || siblingDetached;
         if (!gone) throw error;
         if (entry) this.markEntryLost(slot, entry);
@@ -1727,21 +1807,15 @@ export class IsolatedWorld {
       throw new TypeError(
         'callOnNodes requires a synchronous function (async functions are not supported)',
       );
-    for (const id of backendNodeIds) {
-      if (!Number.isInteger(id) || id <= 0)
-        throw new RangeError('backendNodeId must be a positive integer');
-    }
-    const chunkSize = options.chunkSize ?? 128;
-    if (!Number.isInteger(chunkSize) || chunkSize < 1)
-      throw new RangeError('chunkSize must be a positive integer');
-    if (this.session.closed)
-      throw this.session.closeReason ?? new DisconnectedError('Session closed');
+    for (const id of backendNodeIds) positiveInt(id, 'backendNodeId');
+    const chunkSize = positiveInt(options.chunkSize ?? 128, 'chunkSize');
+    const step = budget(options, 'isolated world callOnNodes');
+    if (this.session.closed) throw this.session.closedError();
     if (options.signal?.aborted) throw abortReason(options.signal);
     if (!backendNodeIds.length) return [];
 
     const epoch = this.disposeEpoch;
     const disposeSignal = this.disposeController.signal;
-    const step = budget(options, 'isolated world callOnNodes');
     const retry = options.retryOnContextGone ?? true;
     const requireConnected = options.requireConnected ?? true;
     const skipMissingNodes = options.skipMissingNodes ?? true;
@@ -1752,7 +1826,7 @@ export class IsolatedWorld {
         : {}),
       ...(options.userGesture !== undefined ? { userGesture: options.userGesture } : {}),
     };
-    const encodedArg = callArgument(arg);
+    const encodedArg = encodeCallArgument(arg);
     const fnSource = fn.toString();
 
     for (let attempt = 0; ; attempt++) {
@@ -1824,13 +1898,18 @@ export class IsolatedWorld {
                   }
                   if (!object.objectId) {
                     if (skipMissingNodes) return undefined;
-                    throw new StaleElementError('Node no longer exists');
+                    throw new StaleElementError('Node no longer exists', {
+                      reason: 'node-detached',
+                    });
                   }
                   return object.objectId;
                 } catch (error) {
                   if (isNodeGone(error)) {
                     if (skipMissingNodes) return undefined;
-                    throw new StaleElementError('Node no longer exists', { cause: error });
+                    throw new StaleElementError('Node no longer exists', {
+                      cause: error,
+                      reason: 'node-detached',
+                    });
                   }
                   throw error;
                 }
@@ -1881,11 +1960,7 @@ export class IsolatedWorld {
                 throw this.disposedError();
               }
               if (res.exceptionDetails) {
-                const details = res.exceptionDetails;
-                const ex = details.exception;
-                const desc =
-                  ex?.description ??
-                  (ex && 'value' in ex ? `${details.text} ${String(ex.value)}` : details.text);
+                const desc = formatExceptionDetails(res.exceptionDetails);
                 if (desc.includes(asyncSentinel)) {
                   releaseRemoteObjects(res, this.session);
                   throw new TypeError(
@@ -1899,7 +1974,7 @@ export class IsolatedWorld {
                 if (!prevInvoked && isFailedBeforeCall(error)) callbackInvokedOrUncertain = false;
                 throw error;
               }
-              const payload = remoteValue(res.result) as Array<
+              const payload = decodeRemoteValue(res.result) as Array<
                 { ok: true; value: T } | { ok: false; stale: true }
               >;
               let chunkInvoked = false;
@@ -1932,7 +2007,10 @@ export class IsolatedWorld {
       } catch (error) {
         if (this.disposeEpoch !== epoch) throw this.disposedError();
         const siblingDetached =
-          this.scope === 'target' && !this.session.closed && error instanceof SessionEndedError;
+          !entry &&
+          this.scope === 'target' &&
+          !this.session.closed &&
+          error instanceof SessionEndedError;
         if (!isWorldGone(error) && !siblingDetached) throw error;
         if (entry) this.markEntryLost(slot, entry);
         else if (isWorldGone(error)) slot.recovering = true;
@@ -1953,8 +2031,14 @@ export class IsolatedWorld {
     options: IsolatedEvaluateOptions = {},
   ): Promise<T> {
     if (options.executionTimeout !== undefined) {
-      if (!Number.isFinite(options.executionTimeout) || options.executionTimeout <= 0)
-        throw new RangeError('executionTimeout must be a positive finite number');
+      if (
+        !Number.isFinite(options.executionTimeout) ||
+        options.executionTimeout <= 0 ||
+        options.executionTimeout > MAX_TIMEOUT
+      )
+        throw new RangeError(
+          `executionTimeout must be a positive finite number up to ${MAX_TIMEOUT} ms`,
+        );
     }
     const epoch = this.disposeEpoch;
     const disposeSignal = this.disposeController.signal;
@@ -1963,7 +2047,7 @@ export class IsolatedWorld {
     const needsEvaluate =
       options.executionTimeout !== undefined ||
       options.disableBreaks !== undefined ||
-      options.throwOnSideEffect !== undefined;
+      (options.throwOnSideEffect !== undefined && typeof fn === 'string');
     const noEval = Boolean(options.throwOnSideEffect);
     // Serialize function arguments up front so invalid/circular values fail before any CDP work.
     const serializedArg =
@@ -1981,6 +2065,9 @@ export class IsolatedWorld {
     };
     const callFnExtras = {
       ...(options.silent !== undefined ? { silent: options.silent } : {}),
+      ...(options.throwOnSideEffect !== undefined
+        ? { throwOnSideEffect: options.throwOnSideEffect }
+        : {}),
       ...(options.userGesture !== undefined ? { userGesture: options.userGesture } : {}),
     };
 
@@ -2028,7 +2115,7 @@ export class IsolatedWorld {
               throw this.disposedError();
             }
             throwEvaluationException(result, this.session, guard.mismatch);
-            return remoteValue(result.result) as T;
+            return decodeRemoteValue(result.result) as T;
           }
           const result =
             typeof fn === 'string'
@@ -2050,7 +2137,7 @@ export class IsolatedWorld {
                   {
                     objectId: acquired.objectId,
                     functionDeclaration: `function(arg){return (${fn.toString()})(arg)}`,
-                    arguments: [callArgument(arg)],
+                    arguments: [encodeCallArgument(arg)],
                     awaitPromise: true,
                     returnByValue: true,
                     ...callFnExtras,
@@ -2061,7 +2148,7 @@ export class IsolatedWorld {
             throw this.disposedError();
           }
           throwEvaluationException(result, this.session);
-          return remoteValue(result.result) as T;
+          return decodeRemoteValue(result.result) as T;
         }
 
         if (acquired.kind === 'none') {
@@ -2084,7 +2171,7 @@ export class IsolatedWorld {
               throw this.disposedError();
             }
             throwEvaluationException(result, this.session);
-            return remoteValue(result.result) as T;
+            return decodeRemoteValue(result.result) as T;
           }
           const result = await this.session.sendWith(
             'Runtime.callFunctionOn',
@@ -2092,7 +2179,7 @@ export class IsolatedWorld {
             {
               executionContextId: acquired.contextId,
               functionDeclaration: `function(arg){return (${fn.toString()})(arg)}`,
-              arguments: [callArgument(arg)],
+              arguments: [encodeCallArgument(arg)],
               awaitPromise: true,
               returnByValue: true,
               ...callFnExtras,
@@ -2103,7 +2190,7 @@ export class IsolatedWorld {
             throw this.disposedError();
           }
           throwEvaluationException(result, this.session);
-          return remoteValue(result.result) as T;
+          return decodeRemoteValue(result.result) as T;
         }
 
         const mismatch = `__nodriver_iso_mismatch_${randomUUID()}__`;
@@ -2132,11 +2219,14 @@ export class IsolatedWorld {
           throw this.disposedError();
         }
         throwEvaluationException(result, this.session, mismatch);
-        return remoteValue(result.result) as T;
+        return decodeRemoteValue(result.result) as T;
       } catch (error) {
         if (this.disposeEpoch !== epoch) throw this.disposedError();
         const siblingDetached =
-          this.scope === 'target' && !this.session.closed && error instanceof SessionEndedError;
+          !entry &&
+          this.scope === 'target' &&
+          !this.session.closed &&
+          error instanceof SessionEndedError;
         if (!isWorldGone(error) && !siblingDetached) throw error;
         if (entry) this.markEntryLost(slot, entry);
         else if (isWorldGone(error)) slot.recovering = true;
@@ -2169,10 +2259,26 @@ export class IsolatedWorldPool {
 
   constructor(session: Session, options: IsolatedWorldPoolOptions = {}) {
     if (!session.id) throw new TypeError('IsolatedWorldPool requires a target session');
+    const scope = options.scope ?? 'session';
+    if (scope !== 'session' && scope !== 'target')
+      throw new TypeError('IsolatedWorld scope must be "session" or "target"');
+    const verification = options.verification ?? (scope === 'target' ? 'guard' : 'strict');
+    if (verification !== 'strict' && verification !== 'guard' && verification !== 'none')
+      throw new TypeError('IsolatedWorld verification must be "strict", "guard" or "none"');
+    if (scope === 'target' && verification === 'strict')
+      throw new TypeError(
+        'IsolatedWorld verification "strict" requires scope "session" because RemoteObjectId handles are session-scoped',
+      );
+    if (session instanceof TargetSession) {
+      if (options.targetId !== undefined && options.targetId !== session.targetId)
+        throw new TypeError('IsolatedWorld targetId does not match TargetSession.targetId');
+    } else if (scope === 'target' && !options.targetId) {
+      throw new TypeError(
+        'IsolatedWorld scope "target" requires a TargetSession or explicit targetId',
+      );
+    }
     if (options.worldName !== undefined && !options.worldName)
       throw new TypeError('IsolatedWorld worldName must be a non-empty string');
-    const scope = options.scope ?? 'session';
-    const verification = options.verification ?? (scope === 'target' ? 'guard' : 'strict');
     this.session = session;
     this.scope = scope;
     this.verification = verification;
@@ -2183,7 +2289,8 @@ export class IsolatedWorldPool {
   /** Returns (creating if needed) the `IsolatedWorld` for `frameId`. */
   world(frameId: string): IsolatedWorld {
     if (!frameId) throw new TypeError('frameId must be a non-empty string');
-    if (this.disposed) throw new StaleElementError('IsolatedWorldPool was disposed');
+    if (this.disposed)
+      throw new StaleElementError('IsolatedWorldPool was disposed', { reason: 'disposed' });
     let world = this.worlds.get(frameId);
     if (!world) {
       world = new IsolatedWorld(this.session, { ...this.options, frameId });
@@ -2218,16 +2325,25 @@ export class IsolatedWorldPool {
       if (!frameId) throw new TypeError('frameId must be a non-empty string');
     }
     const concurrency = options.concurrency ?? Infinity;
-    if (concurrency !== Infinity && (!Number.isInteger(concurrency) || concurrency < 1))
-      throw new RangeError('concurrency must be a positive integer');
-    if (this.disposed) throw new StaleElementError('IsolatedWorldPool was disposed');
-    if (this.session.closed)
-      throw this.session.closeReason ?? new DisconnectedError('Session closed');
+    if (concurrency !== Infinity) positiveInt(concurrency, 'concurrency');
+    if (options.executionTimeout !== undefined) {
+      if (
+        !Number.isFinite(options.executionTimeout) ||
+        options.executionTimeout <= 0 ||
+        options.executionTimeout > MAX_TIMEOUT
+      )
+        throw new RangeError(
+          `executionTimeout must be a positive finite number up to ${MAX_TIMEOUT} ms`,
+        );
+    }
+    const step = budget(options, 'IsolatedWorldPool.evaluateAll');
+    if (this.disposed)
+      throw new StaleElementError('IsolatedWorldPool was disposed', { reason: 'disposed' });
+    if (this.session.closed) throw this.session.closedError();
     if (options.signal?.aborted) throw abortReason(options.signal);
     if (!frameIds.length) return [];
 
     const { concurrency: _unused, ...evalOptions } = options;
-    const step = budget(options, 'evaluateAcrossFrames');
     const outcomes = new Array<FrameEvaluationOutcome<T>>(frameIds.length);
     const fatalController = new AbortController();
     let cursor = 0;
@@ -2249,9 +2365,9 @@ export class IsolatedWorldPool {
         const frameId = frameIds[idx]!;
         let remaining: WaitOptions;
         try {
-          if (this.disposed) throw new StaleElementError('IsolatedWorldPool was disposed');
-          if (this.session.closed)
-            throw this.session.closeReason ?? new DisconnectedError('Session closed');
+          if (this.disposed)
+            throw new StaleElementError('IsolatedWorldPool was disposed', { reason: 'disposed' });
+          if (this.session.closed) throw this.session.closedError();
           remaining = step();
         } catch (error) {
           recordFatal(error);
@@ -2282,13 +2398,14 @@ export class IsolatedWorldPool {
             recordFatal(budgetError);
             return;
           }
-          const frameDetached =
-            isFrameGone(error) || (error instanceof StaleElementError && isFrameGone(error.cause));
-          if (frameDetached) {
+          if (isFrameGone(error)) {
             const stale =
-              error instanceof StaleElementError
+              error instanceof StaleElementError && error.reason === 'frame-detached'
                 ? error
-                : new StaleElementError('Frame is detached', { cause: error });
+                : new StaleElementError('Frame is detached', {
+                    cause: error,
+                    reason: 'frame-detached',
+                  });
             outcomes[idx] = { status: 'detached', frameId, error: stale };
           } else {
             outcomes[idx] = { status: 'error', frameId, error };
@@ -2365,6 +2482,12 @@ const sessionDefaultWorldNames = new WeakMap<Session, string>();
 
 function cachedSessionWorld(session: Session, options: IsolatedWorldOptions): IsolatedWorld {
   if (!session.id) throw new TypeError('evaluateIsolated requires a target session');
+  if (
+    session instanceof TargetSession &&
+    options.targetId !== undefined &&
+    options.targetId !== session.targetId
+  )
+    throw new TypeError('IsolatedWorld targetId does not match TargetSession.targetId');
   const frameId =
     options.frameId ?? (session instanceof TargetSession ? session.targetId : options.targetId);
   if (!frameId) throw new TypeError('evaluateIsolated requires frameId for a plain Session');
@@ -2377,6 +2500,8 @@ function cachedSessionWorld(session: Session, options: IsolatedWorldOptions): Is
   }
   const grantUniversalAccess = options.grantUniversalAccess ?? false;
   const verification = options.verification ?? 'strict';
+  if (verification !== 'strict' && verification !== 'guard' && verification !== 'none')
+    throw new TypeError('IsolatedWorld verification must be "strict", "guard" or "none"');
   const key = `${frameId}\0${worldName}\0${grantUniversalAccess ? 1 : 0}\0${verification}`;
   let worlds = sessionWorlds.get(session);
   if (!worlds) {
@@ -2416,7 +2541,10 @@ export function evaluateIsolated<T = unknown, A = unknown>(
   arg?: A,
   options: EvaluateIsolatedOptions = {},
 ): Promise<T> {
-  if ((options.scope ?? 'session') === 'target') {
+  const scope = options.scope ?? 'session';
+  if (scope !== 'session' && scope !== 'target')
+    throw new TypeError('IsolatedWorld scope must be "session" or "target"');
+  if (scope === 'target') {
     let worldName = options.worldName;
     if (worldName === undefined) {
       worldName = connectionDefaultWorldNames.get(session.connection);

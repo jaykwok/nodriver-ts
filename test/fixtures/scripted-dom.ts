@@ -142,13 +142,14 @@ export function scriptDom(chrome: ScriptedChrome, frameId: () => string): Script
       }
       return value({ valid: true, u: 0.5, v: 0.5 });
     }
-    if (code.includes('setChecked requires checkbox or radio')) return value(dom.control);
+    if (code.includes('setChecked requires checkbox or radio'))
+      return value({ ok: true, ...dom.control });
     if (code.includes('getBoundingClientRect') && code.includes('checkVisibility'))
       return value(dom.control.rendered);
     if (code.includes('aria-disabled') && !code.includes('valid:'))
       return value(!dom.control.disabled);
     if (code.includes('aria-checked')) return value({ ok: true, checked: dom.control.checked });
-    if (code.includes('checkVisibility')) return value(dom.control);
+    if (code.includes('checkVisibility')) return value({ ok: true, ...dom.control });
     if (code.includes('.checked')) return value(dom.control.checked);
     return value(true);
   });

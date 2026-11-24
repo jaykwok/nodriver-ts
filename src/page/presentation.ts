@@ -1,5 +1,5 @@
-import { abortReason, bounded, timeoutValue, type WaitOptions } from '../utils.ts';
-import { DisconnectedError, NodriverError, TimeoutError } from '../errors.ts';
+import { abortReason, bounded, positiveInt, timeoutValue, type WaitOptions } from '../utils.ts';
+import { NodriverError, TimeoutError } from '../errors.ts';
 import type { Connection, EventParams, Session } from '../protocol/connection.ts';
 
 export type PresentationLeaseLifecycle =
@@ -47,8 +47,9 @@ export interface PresentationLeaseOptions {
    */
   maxFrames?: number | null;
   /**
-   * Maximum base64-decoded frame bytes acknowledged by this lease. Pass `Infinity` or `null` for
-   * no byte limit. Defaults to 4 MiB (or unbounded when `untilClosed` is true).
+   * Maximum base64-decoded frame bytes offered by this lease (counted when each frame is accepted
+   * for acknowledgement). Pass `Infinity` or `null` for no byte limit. Defaults to 4 MiB (or
+   * unbounded when `untilClosed` is true).
    */
   maxBytes?: number | null;
   /** Maximum concurrent Page.screencastFrameAck requests. Defaults to 4. */
@@ -147,9 +148,7 @@ function countLimit(name: string, value: number | null | undefined, fallback: nu
 }
 
 function positiveLimit(name: string, value: number): number {
-  limit(name, value);
-  if (value < 1) throw new RangeError(`${name} must be at least 1`);
-  return value;
+  return positiveInt(value, name);
 }
 
 function screencastOptions(
@@ -160,7 +159,7 @@ function screencastOptions(
   const unknown = Object.keys(rest);
   if (unknown.length) throw new TypeError(`Unknown screencast option ${unknown[0]}`);
   if (format !== undefined && format !== 'jpeg' && format !== 'png')
-    throw new RangeError('screencast.format must be jpeg or png');
+    throw new TypeError('screencast.format must be jpeg or png');
   if (quality !== undefined && limit('screencast.quality', quality) > 100)
     throw new RangeError('screencast.quality must be at most 100');
   if (maxWidth !== undefined) positiveLimit('screencast.maxWidth', maxWidth);
@@ -285,8 +284,7 @@ export class PresentationLease {
       throw error;
     }
     if (this.session.closed) {
-      const error =
-        this.session.closeReason ?? new DisconnectedError('Presentation session is closed');
+      const error = this.session.closedError();
       this.report.error = String(error);
       this.requestedReason = 'disconnected';
       await this.finish('disconnected');
@@ -444,11 +442,12 @@ export class PresentationLease {
     // close races with the start response, while the start deadline keeps the wait bounded.
     await this.startTask?.catch(() => {});
     const deadline = performance.now() + this.options.stopTimeout;
+    const stopRemaining = () => Math.max(0, Math.ceil(deadline - performance.now()));
     let stopFailed = false;
     if (this.startAttempted && !this.session.closed && !this.disconnected) {
       try {
         await this.session.sendWith('Page.stopScreencast', {
-          timeout: Math.max(0, deadline - performance.now()),
+          timeout: stopRemaining(),
         });
       } catch (error) {
         this.report.cleanupErrors.push(String(error));
@@ -462,7 +461,7 @@ export class PresentationLease {
         await bounded(
           Promise.allSettled(pending),
           {
-            timeout: Math.max(0, deadline - performance.now()),
+            timeout: stopRemaining(),
           },
           'Presentation ACK cleanup',
         );

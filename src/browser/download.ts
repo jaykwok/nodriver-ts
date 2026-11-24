@@ -6,7 +6,7 @@ import type { BrowserContext } from './context.ts';
 export class Download {
   private state: 'inProgress' | 'completed' | 'canceled' = 'inProgress';
   /** Emits on every state report from the browser; read `status` for the new state. */
-  readonly updates = new EventHub<void>();
+  readonly updates: EventHub<void>;
   readonly context: BrowserContext;
   readonly guid: string;
   readonly url: string;
@@ -20,6 +20,7 @@ export class Download {
     directory: string,
   ) {
     this.context = context;
+    this.updates = new EventHub<void>((error) => context.browser.reportError(error));
     this.guid = guid;
     this.url = url;
     this.suggestedFilename = suggestedFilename;

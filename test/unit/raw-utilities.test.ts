@@ -1083,9 +1083,9 @@ test('3. parseDOMSnapshot decodes strings, multi-documents, rare fields, sparse 
           // Node 2 laid out at layoutIdx 0; node 5 (inline span) split across layoutIdx 1 & 2; node 3 unlaid out.
           nodeIndex: [2, 5, 5],
           styles: [
-            [20, 21, 22],
-            [20, 21, -1],
-            [20, 21, -1],
+            [20, 21, 22, 0],
+            [20, 21, -1, 0],
+            [20, 21, -1, 0],
           ],
           bounds: [
             [20, 40, 200, 80],
@@ -1141,9 +1141,10 @@ test('3. parseDOMSnapshot decodes strings, multi-documents, rare fields, sparse 
   assert.throws(() => parseDOMSnapshot(raw, { cssScale: Number.NaN }), RangeError);
 
   const snap = parseDOMSnapshot(raw, {
-    computedStyles: ['display', 'visibility', 'cursor'],
+    computedStyles: ['display', 'visibility', 'cursor', 'opacity'],
     cssScale: 2,
   });
+  assert.equal(snap.omitEmptyStyles, false);
   assert.equal(snap.documents.length, 2);
   assert.equal(snap.string(-1), '');
   assert.equal(snap.string(999), '');
@@ -1189,10 +1190,11 @@ test('3. parseDOMSnapshot decodes strings, multi-documents, rare fields, sparse 
   assert.equal(btn.textColorOpacity, 0.9);
   assert.equal(btn.style('display'), 'block');
   assert.equal(btn.style('cursor'), 'pointer');
+  assert.equal(btn.style('opacity'), '');
   assert.equal(btn.style('color'), undefined);
   assert.deepEqual(
     { ...btn.styles },
-    { display: 'block', visibility: 'visible', cursor: 'pointer' },
+    { display: 'block', visibility: 'visible', cursor: 'pointer', opacity: '' },
   );
 
   // Unlaid-out input node with rare fields.
@@ -1208,7 +1210,7 @@ test('3. parseDOMSnapshot decodes strings, multi-documents, rare fields, sparse 
   assert.deepEqual({ ...input.styles }, {});
   assert.equal(input.style('display'), undefined);
 
-  // Multi-layout inline span.
+  // Multi-layout inline span: default omitEmptyStyles: false preserves `-1` and `''` as `''`.
   const span = main.node(5)!;
   assert.equal(span.pseudoType, 'before');
   assert.equal(span.textValue, 'textarea-val');
@@ -1217,6 +1219,32 @@ test('3. parseDOMSnapshot decodes strings, multi-documents, rare fields, sparse 
     { x: 5, y: 50, width: 50, height: 10 },
     { x: 5, y: 60, width: 30, height: 10 },
   ]);
+  assert.equal(span.style('cursor'), '');
+  assert.equal(span.style('opacity'), '');
+  assert.deepEqual(
+    { ...span.styles },
+    { display: 'block', visibility: 'visible', cursor: '', opacity: '' },
+  );
+
+  // omitEmptyStyles: true omits both `-1` and empty string-table entries from styles/style().
+  const cleanSnap = parseDOMSnapshot(raw, {
+    computedStyles: ['display', 'visibility', 'cursor', 'opacity'],
+    cssScale: 2,
+    omitEmptyStyles: true,
+  });
+  assert.equal(cleanSnap.omitEmptyStyles, true);
+  const cleanBtn = cleanSnap.rootDocument!.nodeByBackendId(12)!;
+  assert.deepEqual(
+    { ...cleanBtn.styles },
+    { display: 'block', visibility: 'visible', cursor: 'pointer' },
+  );
+  assert.equal('opacity' in cleanBtn.styles, false);
+  assert.equal(cleanBtn.style('opacity'), undefined);
+  assert.equal(Number(cleanBtn.styles.opacity ?? '1'), 1);
+  const cleanSpan = cleanSnap.rootDocument!.node(5)!;
+  assert.deepEqual({ ...cleanSpan.styles }, { display: 'block', visibility: 'visible' });
+  assert.equal(cleanSpan.style('cursor'), undefined);
+  assert.equal(cleanSpan.style('opacity'), undefined);
 
   // Frame owner -> childDocument + cross-document backend lookup.
   const iframe = main.node(4)!;
@@ -1589,7 +1617,7 @@ test('5. getNodeEventListeners works with zero *.enable, releases all handler ha
   await browser.drain();
   assert.deepEqual(releasedObjects.slice(relBeforeLate1).sort(), ['h-click-1', 'h-click-orig-1']);
 
-  // 6) Late reply after abort for DOM.resolveNode also releases the late objectId before drain().
+  // 6) Late reply after abort for DOM.resolveNode releases via the internal objectGroup (zero Runtime.releaseObject) before drain().
   let releaseResolve!: () => void;
   resolveGate = new Promise<void>((r) => {
     releaseResolve = r;
@@ -1607,10 +1635,12 @@ test('5. getNodeEventListeners works with zero *.enable, releases all handler ha
   ac2.abort(new Error('abort resolve'));
   assert.match(String(await pending2), /abort resolve/);
   const relBeforeLate2 = releasedObjects.length;
+  const groupsBeforeLate2 = releasedGroups.length;
   releaseResolve();
   resolveGate = undefined;
   await browser.drain();
-  assert.ok(releasedObjects.slice(relBeforeLate2).includes('node-obj-55'));
+  assert.deepEqual(releasedObjects.slice(relBeforeLate2), []);
+  assert.ok(releasedGroups.length > groupsBeforeLate2);
 
   // 7) Regression (P2): default backendNodeId path with timeout: 50 and stalled
   // DOMDebugger.getEventListeners + Runtime.releaseObjectGroup rejects near 50ms (NOT ~1050ms),

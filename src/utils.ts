@@ -18,7 +18,53 @@ export function timeoutValue(value: number, name = 'timeout'): number {
     throw new RangeError(`${name} must be a finite number from 0 to ${MAX_TIMEOUT} ms`);
   return value;
 }
+/** Validates a positive safe integer, optionally bounded by `max`. */
+export function positiveInt(value: number, name: string, max = Number.MAX_SAFE_INTEGER): number {
+  if (!Number.isSafeInteger(value) || value < 1 || value > max)
+    throw new RangeError(
+      max === Number.MAX_SAFE_INTEGER
+        ? `${name} must be a positive integer`
+        : `${name} must be an integer from 1 to ${max}`,
+    );
+  return value;
+}
+/** Extracts the normalized HTTP(S) origin of `url`, or undefined for other/invalid URLs. */
+export function httpOrigin(url: string): string | undefined {
+  if (!URL.canParse(url)) return undefined;
+  const parsed = new URL(url);
+  return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.origin : undefined;
+}
+/** Collapses internal whitespace runs and trims leading/trailing whitespace. */
+export function normalizeText(value: string): string {
+  return value.replace(/\s+/g, ' ').trim();
+}
+/** Combines `options` with an optional extra `AbortSignal`. */
+export function withSignal(options: WaitOptions, signal?: AbortSignal): WaitOptions {
+  if (!signal) return options;
+  return {
+    ...options,
+    signal: options.signal ? AbortSignal.any([options.signal, signal]) : signal,
+  };
+}
+/** The earlier deadline and both signals: a nested budget can only shorten the outer one. */
+export function narrower(outer: WaitOptions, inner: WaitOptions): WaitOptions {
+  const timeouts = [outer.timeout, inner.timeout].filter((t): t is number => t !== undefined);
+  const signals = [outer.signal, inner.signal].filter((s): s is AbortSignal => !!s);
+  return {
+    ...(timeouts.length ? { timeout: Math.min(...timeouts) } : {}),
+    ...(signals.length
+      ? { signal: signals.length > 1 ? AbortSignal.any(signals) : signals[0] }
+      : {}),
+  };
+}
+/** Awaits every task to settlement, then rethrows the first rejection if any failed. */
+export async function settleAll(tasks: readonly Promise<unknown>[]): Promise<void> {
+  const results = await Promise.allSettled(tasks);
+  const failed = results.find((r): r is PromiseRejectedResult => r.status === 'rejected');
+  if (failed) throw failed.reason;
+}
 export function delay(ms: number, signal?: AbortSignal): Promise<void> {
+  const duration = timeoutValue(ms, 'delay');
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
       reject(abortReason(signal));
@@ -28,7 +74,7 @@ export function delay(ms: number, signal?: AbortSignal): Promise<void> {
       signal?.removeEventListener('abort', abort);
       resolve();
     };
-    const timer = setTimeout(done, ms);
+    const timer = setTimeout(done, duration);
     const abort = () => {
       clearTimeout(timer);
       signal?.removeEventListener('abort', abort);
@@ -61,6 +107,15 @@ export function bounded<T>(
 ): Promise<T> {
   const { signal } = options;
   if (options.timeout === undefined && !signal) return promise;
+  let timeout: number | undefined;
+  if (options.timeout !== undefined) {
+    try {
+      timeout = timeoutValue(options.timeout);
+    } catch (error) {
+      void promise.catch(() => {});
+      return Promise.reject(error);
+    }
+  }
   if (signal?.aborted) {
     // Starting the operation may synchronously abort its signal (e.g. a send observer).
     // Its eventual rejection must still be consumed.
@@ -69,12 +124,9 @@ export function bounded<T>(
   }
   return new Promise((resolve, reject) => {
     const timer =
-      options.timeout === undefined
+      timeout === undefined
         ? undefined
-        : setTimeout(
-            () => settle(() => reject(new TimeoutError(`${label} timed out`))),
-            timeoutValue(options.timeout),
-          );
+        : setTimeout(() => settle(() => reject(new TimeoutError(`${label} timed out`))), timeout);
     const abort = () => settle(() => reject(abortReason(signal!)));
     const settle = (fn: () => void) => {
       clearTimeout(timer);
@@ -120,11 +172,16 @@ export async function poll<T>(
 ): Promise<T> {
   const timeout = timeoutValue(options.timeout ?? 10_000);
   const end = performance.now() + timeout;
-  const step = budget({ ...options, timeout }, label);
+  const remaining = (): WaitOptions => {
+    if (options.signal?.aborted) throw abortReason(options.signal);
+    const left = end - performance.now();
+    if (left <= 0) throw new TimeoutError(`Timed out waiting for ${label}`);
+    return { timeout: Math.ceil(left), signal: options.signal };
+  };
   do {
     let value: T | undefined;
     try {
-      value = await fn(step());
+      value = await fn(remaining());
     } catch (error) {
       // A step that ran out of the shared budget is this wait timing out.
       if (error instanceof TimeoutError && performance.now() >= end)
@@ -132,8 +189,9 @@ export async function poll<T>(
       throw error;
     }
     if (value !== undefined) return value;
-    if (performance.now() >= end) throw new TimeoutError(`Timed out waiting for ${label}`);
-    await delay(Math.min(50, Math.max(0, end - performance.now())), options.signal);
+    const left = end - performance.now();
+    if (left <= 0) throw new TimeoutError(`Timed out waiting for ${label}`);
+    await delay(Math.min(50, left), options.signal);
   } while (true);
 }
 export type Listener<T> = (event: T) => void | Promise<void>;
@@ -178,7 +236,7 @@ const BUSY = new Set(['EBUSY', 'EPERM', 'EACCES', 'ENOTEMPTY', 'EMFILE', 'ENFILE
  * helper processes can outlive the browser process briefly).
  */
 export async function removeTree(path: string, timeout = 10_000): Promise<void> {
-  const end = performance.now() + timeout;
+  const end = performance.now() + timeoutValue(timeout);
   for (let wait = 50; ; wait = Math.min(wait * 2, 500)) {
     try {
       await rm(path, { recursive: true, force: true });

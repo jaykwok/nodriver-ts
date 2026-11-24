@@ -5,7 +5,8 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Readable } from 'node:stream';
-import { TimeoutError, NodriverError } from '../errors.ts';
+import { TimeoutError, NodriverError, UnsupportedError } from '../errors.ts';
+import { abortReason, timeoutValue, type WaitOptions } from '../utils.ts';
 
 export interface XvfbOptions {
   /** `WIDTHxHEIGHTxDEPTH`; 1920x1080x24 by default. */
@@ -15,8 +16,7 @@ export interface XvfbOptions {
   /** Path or name of the Xvfb program; `Xvfb` on PATH by default. */
   executable?: string;
 }
-export interface XvfbStartOptions extends XvfbOptions {
-  signal?: AbortSignal;
+export interface XvfbStartOptions extends XvfbOptions, WaitOptions {
   /** Ends the server when this process exits. On by default. */
   bound?: boolean;
 }
@@ -28,11 +28,10 @@ const STOP_GRACE = 2_000;
 /** Throws when these options cannot start a server on this platform. */
 export function checkXvfbOptions(options: XvfbOptions): void {
   if (process.platform !== 'linux')
-    throw new TypeError('virtualDisplay is only supported on Linux');
+    throw new UnsupportedError('virtualDisplay is only supported on Linux');
   if (options.screen !== undefined && !/^\d{2,5}x\d{2,5}x(8|16|24)$/.test(options.screen))
     throw new RangeError('screen must look like 1920x1080x24');
-  if (options.timeout !== undefined && (!Number.isFinite(options.timeout) || options.timeout <= 0))
-    throw new RangeError('timeout must be a positive number');
+  if (options.timeout !== undefined) timeoutValue(options.timeout);
 }
 
 /** One record of an Xauthority file, for any host. An empty `display` matches every display. */
@@ -83,7 +82,7 @@ export class XvfbSession {
   }
   static async start(options: XvfbStartOptions = {}): Promise<XvfbSession> {
     checkXvfbOptions(options);
-    options.signal?.throwIfAborted();
+    if (options.signal?.aborted) throw abortReason(options.signal);
     const directory = await mkdtemp(join(tmpdir(), 'nodriver-xvfb-'));
     const log = join(directory, 'log');
     let child: ChildProcess | undefined;
@@ -131,7 +130,7 @@ export class XvfbSession {
         killGroup(failed, 'SIGKILL');
         await gone;
       }
-      await rm(directory, { recursive: true, force: true });
+      await rm(directory, { recursive: true, force: true }).catch(() => {});
       throw error;
     }
   }
@@ -166,6 +165,9 @@ export class XvfbSession {
       await rm(this.directory, { recursive: true, force: true });
     })());
   }
+  async [Symbol.asyncDispose](): Promise<void> {
+    await this.stop();
+  }
 }
 
 function killGroup(child: ChildProcess, signal: NodeJS.Signals): void {
@@ -182,7 +184,7 @@ function readDisplay(child: ChildProcess, options: XvfbStartOptions, log: string
   return new Promise<string>((resolve, reject) => {
     const pipe = child.stdio[3] as Readable;
     let text = '';
-    const timeout = options.timeout ?? 10_000;
+    const timeout = timeoutValue(options.timeout ?? 10_000);
     const finish = (settle: () => void) => {
       clearTimeout(timer);
       options.signal?.removeEventListener('abort', aborted);
@@ -205,7 +207,7 @@ function readDisplay(child: ChildProcess, options: XvfbStartOptions, log: string
           ),
         );
     };
-    const aborted = () => failed(options.signal!.reason as Error);
+    const aborted = () => failed(abortReason(options.signal!));
     const data = (chunk: Buffer) => {
       text += chunk.toString('latin1');
       const end = text.indexOf('\n');

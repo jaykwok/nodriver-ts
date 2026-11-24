@@ -256,8 +256,7 @@ export class Mouse {
       await action.pace(point.delay);
       if (beforeFinalMove && i === finalIndex) {
         if (this.at(target)) {
-          const grid = policy.pointerGrid;
-          await this.dispatch(x + (grid ? 1 / grid.scale : 0.25), y, action);
+          await this.dispatch(this.nudgeX(x), y, action);
         }
         await action.waitFor(beforeFinalMove());
         await this.dispatch(point.x, point.y, action);
@@ -268,6 +267,10 @@ export class Mouse {
       else await this.sample(point.x, point.y, action);
     }
     await action.pace(this.behavior.range('pause'));
+  }
+  private nudgeX(x: number): number {
+    const grid = this.behavior.policy.pointerGrid;
+    return x + (grid ? 1 / grid.scale : 0.25);
   }
   /**
    * Presses a button at the pointer. The release is registered first, so a failed press or a
@@ -370,9 +373,8 @@ export class Mouse {
     } = {},
   ): Promise<InputReport> {
     return this.action('move', options, async (action) => {
-      if (this.at(this.snap(x, y))) {
-        const grid = this.behavior.policy.pointerGrid;
-        await this.path(x + (grid ? 1 / grid.scale : 0.25), y, action);
+      if (this.pointer.placed && this.at(this.snap(x, y))) {
+        await this.path(this.nudgeX(x), y, action);
       }
       await this.path(x, y, action, options.targetWidth, options.beforeFinalMove);
     });
@@ -1024,7 +1026,7 @@ export class Keyboard {
           ) {
             await this.rollover(segment, next, action);
             i++;
-            await pause(next, segments[i + 1] ?? '', i);
+            if (segments[i + 1] !== undefined) await pause(next, segments[i + 1]!, i);
             continue;
           }
           const character = characters.get(segment);
@@ -1079,9 +1081,9 @@ export class Keyboard {
               active = false;
             }
             if (proceed === false) break;
-            if (!autoConsumed) await pause(segment, next ?? '', i);
-          } else {
-            await pause(segment, next ?? '', i);
+            if (!autoConsumed && next !== undefined) await pause(segment, next, i);
+          } else if (next !== undefined) {
+            await pause(segment, next, i);
           }
         }
       } catch (error) {

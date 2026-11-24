@@ -1,17 +1,23 @@
-import { timingSafeEqual } from 'node:crypto';
 import {
   createMcpHandler,
   readRequestBody,
   type McpHttpHandler,
 } from '@modelcontextprotocol/server';
 import { createBrowserMcpServer } from './server.ts';
-import { BrowserSessionManager, type BrowserSessionManagerOptions } from './manager.ts';
+import { BrowserSessionManager, LeaseError, type BrowserSessionManagerOptions } from './manager.ts';
 import { cancellableBody } from './body.ts';
 import { MCP_PROTOCOL_VERSION } from './protocol.ts';
 import { requestPort, serveFetch } from './serve.ts';
-import { LeaseError } from './manager.ts';
 import { createCompatibleBrowserMcpHttpEndpoint } from './compat.ts';
 import { handoffResponse } from './handoff.ts';
+import {
+  isJsonContentType,
+  jsonError,
+  matchCredential,
+  positiveMs,
+  validateCredentials,
+} from './auth.ts';
+import { positiveInt } from '../utils.ts';
 
 export interface BrowserMcpHttpOptions {
   /** Enable a separate stateful 2025-era /mcp/compat endpoint. /mcp stays modern-only. */
@@ -57,11 +63,6 @@ interface Endpoint {
   /** Origin of the latest request, used in handoff links. */
   origin?: string;
 }
-function integer(value: number, label: string): number {
-  if (!Number.isSafeInteger(value) || value < 1) throw new RangeError(`Invalid ${label}`);
-  return value;
-}
-
 /** Loopback service. Lease REST endpoints are an application API, not MCP sessions. */
 export function createBrowserMcpHttpService(options: BrowserMcpHttpOptions): BrowserMcpHttpService {
   return httpService(options).service;
@@ -71,34 +72,31 @@ function httpService(options: BrowserMcpHttpOptions): {
   service: BrowserMcpHttpService;
   stop(): Promise<void>;
 } {
-  const credentials = Object.entries(options.tokens).map(([token, principal]) => {
-    if (token.length < 32 || !principal || principal.length > 200)
-      throw new TypeError('Provision tokens of at least 32 characters and a principal');
-    return [Buffer.from(token), principal] as const;
-  });
-  if (!credentials.length) throw new TypeError('At least one local bearer credential is required');
+  const credentials = validateCredentials(options.tokens);
   if (options.manager && options.browser) throw new TypeError('Choose manager or browser options');
+  const maxBody = positiveInt(options.maxRequestBodySize ?? 256 * 1024, 'body size');
+  const maxRequests = positiveInt(options.maxRequestsPerLease ?? 16, 'requests per lease');
+  const maxCompatibilitySessions = positiveInt(
+    options.maxCompatibilitySessionsPerLease ?? 4,
+    'compatibility sessions per lease',
+  );
+  const compatibilityIdleMs = positiveMs(
+    options.compatibilitySessionIdleMs ?? 300000,
+    'compatibility session idle time',
+  );
+  if (options.requestTimeout !== undefined) positiveMs(options.requestTimeout, 'request timeout');
+  if (options.streamTimeout !== undefined) positiveMs(options.streamTimeout, 'stream timeout');
   const manager = options.manager ?? new BrowserSessionManager(options.browser);
   const endpoints = new Map<string, Endpoint>();
   const lifetime = new AbortController();
   let closed = false,
     closing: Promise<void> | undefined;
-  const maxBody = integer(options.maxRequestBodySize ?? 256 * 1024, 'body size');
-  const maxRequests = integer(options.maxRequestsPerLease ?? 16, 'requests per lease');
-  const maxCompatibilitySessions = integer(
-    options.maxCompatibilitySessionsPerLease ?? 4,
-    'compatibility sessions per lease',
-  );
-  const compatibilityIdleMs = integer(
-    options.compatibilitySessionIdleMs ?? 300000,
-    'compatibility session idle time',
-  );
   const operation = manager.limits.operationTimeout;
-  const timeout = integer(
+  const timeout = positiveMs(
     options.requestTimeout ?? Math.max(35000, operation + 5000),
     'request timeout',
   );
-  const streamTimeout = integer(
+  const streamTimeout = positiveMs(
     options.streamTimeout ?? Math.max(60000, operation + 10000),
     'stream timeout',
   );
@@ -170,7 +168,7 @@ function httpService(options: BrowserMcpHttpOptions): {
     endpoints.set(id, endpoint);
     return endpoint;
   }
-  const error = (status: number, message: string) => Response.json({ error: message }, { status });
+  const error = jsonError;
   // Consume promptly with a bounded output queue. A slow subscription is closed,
   // never buffered indefinitely or resumed with a side-effecting request replay.
   function monitored(
@@ -272,26 +270,17 @@ function httpService(options: BrowserMcpHttpOptions): {
         return error(500, 'Handoff request failed');
       }
       const authorization = original.headers.get('authorization');
-      const token = Buffer.from(authorization?.startsWith('Bearer ') ? authorization.slice(7) : '');
-      let principal: string | undefined;
-      for (const [expected, identity] of credentials)
-        if (token.length === expected.length && timingSafeEqual(token, expected))
-          principal = identity;
+      const token = authorization?.startsWith('Bearer ') ? authorization.slice(7) : undefined;
+      const principal = matchCredential(credentials, token);
       if (!principal)
-        return new Response('Bearer authentication required', {
-          status: 401,
-          headers: { 'www-authenticate': 'Bearer realm="nodriver-local"' },
+        return jsonError(401, 'Bearer authentication required', {
+          'www-authenticate': 'Bearer realm="nodriver-local"',
         });
       if (original.headers.has('last-event-id'))
         return error(400, 'Stream resumption is unsupported; do not replay actions');
       let body: unknown;
       if (original.method === 'POST') {
-        const contentType = original.headers
-          .get('content-type')
-          ?.split(';')[0]
-          ?.trim()
-          .toLowerCase();
-        if (contentType !== 'application/json') return error(415, 'Use application/json');
+        if (!isJsonContentType(original)) return error(415, 'Use application/json');
         try {
           const readController = new AbortController();
           const timer = setTimeout(
@@ -499,8 +488,7 @@ export async function startBrowserMcpHttpServer(
       hostname,
       port: options.port ?? 3100,
       fetch: (request, port) => {
-        if (requestPort(request) !== String(port))
-          return new Response('Host port rejected', { status: 403 });
+        if (requestPort(request) !== String(port)) return jsonError(403, 'Host port rejected');
         return service.fetch(request);
       },
     });

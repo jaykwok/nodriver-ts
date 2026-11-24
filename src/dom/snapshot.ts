@@ -8,6 +8,9 @@ export interface DOMSnapshotRect {
   readonly height: number;
 }
 
+/** Uniform or per-axis positive scale divisor applied to decoded `DOMSnapshot` rectangles. */
+export type DOMSnapshotScale = number | { readonly x: number; readonly y: number };
+
 export interface ParseDOMSnapshotOptions {
   /**
    * CSS property names in the exact order passed to
@@ -16,26 +19,23 @@ export interface ParseDOMSnapshotOptions {
    */
   computedStyles?: readonly string[];
   /**
-   * Positive scale divisor applied to decoded rectangles (`bounds`, `offsetRect`, `scrollRect`,
-   * `clientRect`) — for example `devicePixelRatio` when converting physical coordinates to CSS
-   * pixels. Defaults to `1`.
+   * Positive scale divisor (uniform number or `{ x, y }` per-axis divisor) applied to decoded
+   * rectangles (`bounds`, `offsetRect`, `scrollRect`, `clientRect`) — for example
+   * `devicePixelRatio` when converting physical coordinates to CSS pixels. Defaults to `1`.
    */
-  cssScale?: number;
+  cssScale?: DOMSnapshotScale;
+  /**
+   * Omit empty/unpopulated computed style entries (`-1` or `''` in Chrome's `DOMSnapshot` string
+   * table) from `node.styles` and return `undefined` from `node.style(name)`.
+   *
+   * Defaults to `false` (unpopulated style slots decode to `''`, matching CDP string-table lookup).
+   * Setting `true` makes nullish fallbacks such as `Number(node.styles.opacity ?? '1')` safe
+   * against Chrome leaving unused computed styles empty.
+   */
+  omitEmptyStyles?: boolean;
 }
 
-function indexRareString(
-  data: Protocol.DOMSnapshot.RareStringData | undefined,
-): Map<number, number> {
-  const map = new Map<number, number>();
-  if (!data) return map;
-  const len = Math.min(data.index.length, data.value.length);
-  for (let i = 0; i < len; i++) map.set(data.index[i]!, data.value[i]!);
-  return map;
-}
-
-function indexRareInteger(
-  data: Protocol.DOMSnapshot.RareIntegerData | undefined,
-): Map<number, number> {
+function indexRare(data: { index: number[]; value: number[] } | undefined): Map<number, number> {
   const map = new Map<number, number>();
   if (!data) return map;
   const len = Math.min(data.index.length, data.value.length);
@@ -49,7 +49,8 @@ function indexRareBoolean(data: Protocol.DOMSnapshot.RareBooleanData | undefined
 
 function decodeRect(
   tuple: Protocol.DOMSnapshot.Rectangle | undefined,
-  scale: number,
+  scaleX: number,
+  scaleY: number,
 ): DOMSnapshotRect | undefined {
   if (!tuple || tuple.length < 4) return undefined;
   const [x, y, width, height] = tuple;
@@ -60,9 +61,9 @@ function decodeRect(
     typeof height !== 'number'
   )
     return undefined;
-  return scale === 1
+  return scaleX === 1 && scaleY === 1
     ? { x, y, width, height }
-    : { x: x / scale, y: y / scale, width: width / scale, height: height / scale };
+    : { x: x / scaleX, y: y / scaleY, width: width / scaleX, height: height / scaleY };
 }
 
 /** Lazy, zero-side-effect read-only view of one node in a `DOMSnapshot.DocumentSnapshot`. */
@@ -143,6 +144,11 @@ export class DOMSnapshotNodeView {
     return this.document.rareString('inputValue', this.nodeIndex);
   }
 
+  /** Unified form control value (`inputValue ?? textValue`), covering `<input>` and `<textarea>`. */
+  get formValue(): string | undefined {
+    return this.inputValue ?? this.textValue;
+  }
+
   get inputChecked(): boolean {
     return this.document.rareBoolean('inputChecked', this.nodeIndex);
   }
@@ -213,19 +219,20 @@ export class DOMSnapshotNodeView {
 
   get bounds(): DOMSnapshotRect | undefined {
     const idx = this.layoutIndex;
+    const snap = this.document.snapshot;
     return idx === undefined
       ? undefined
-      : decodeRect(this.document.raw.layout.bounds?.[idx], this.document.snapshot.cssScale);
+      : decodeRect(this.document.raw.layout.bounds?.[idx], snap.cssScaleX, snap.cssScaleY);
   }
 
   /** All decoded layout bounding boxes for this node (e.g. inline spans split across lines). */
   get allBounds(): readonly DOMSnapshotRect[] {
     const rects: DOMSnapshotRect[] = [];
-    const scale = this.document.snapshot.cssScale;
+    const snap = this.document.snapshot;
     const rawBounds = this.document.raw.layout.bounds;
     if (!rawBounds) return rects;
     for (const idx of this.layoutIndexes) {
-      const rect = decodeRect(rawBounds[idx], scale);
+      const rect = decodeRect(rawBounds[idx], snap.cssScaleX, snap.cssScaleY);
       if (rect) rects.push(rect);
     }
     return rects;
@@ -233,23 +240,26 @@ export class DOMSnapshotNodeView {
 
   get offsetRect(): DOMSnapshotRect | undefined {
     const idx = this.layoutIndex;
+    const snap = this.document.snapshot;
     return idx === undefined
       ? undefined
-      : decodeRect(this.document.raw.layout.offsetRects?.[idx], this.document.snapshot.cssScale);
+      : decodeRect(this.document.raw.layout.offsetRects?.[idx], snap.cssScaleX, snap.cssScaleY);
   }
 
   get scrollRect(): DOMSnapshotRect | undefined {
     const idx = this.layoutIndex;
+    const snap = this.document.snapshot;
     return idx === undefined
       ? undefined
-      : decodeRect(this.document.raw.layout.scrollRects?.[idx], this.document.snapshot.cssScale);
+      : decodeRect(this.document.raw.layout.scrollRects?.[idx], snap.cssScaleX, snap.cssScaleY);
   }
 
   get clientRect(): DOMSnapshotRect | undefined {
     const idx = this.layoutIndex;
+    const snap = this.document.snapshot;
     return idx === undefined
       ? undefined
-      : decodeRect(this.document.raw.layout.clientRects?.[idx], this.document.snapshot.cssScale);
+      : decodeRect(this.document.raw.layout.clientRects?.[idx], snap.cssScaleX, snap.cssScaleY);
   }
 
   get layoutText(): string | undefined {
@@ -284,6 +294,10 @@ export class DOMSnapshotNodeView {
   /**
    * Decoded computed styles keyed by `ParseDOMSnapshotOptions.computedStyles`. Returns an empty
    * object when the node has no layout entry or `computedStyles` was not supplied.
+   *
+   * By default (`omitEmptyStyles: false`), Chrome's unpopulated style slots (`-1` or `''`) are
+   * preserved as empty strings (`''`). Pass `{ omitEmptyStyles: true }` to `parseDOMSnapshot()` to
+   * omit empty entries so `styles.opacity ?? '1'` falls back cleanly.
    */
   get styles(): Readonly<Record<string, string>> {
     if (this.cachedStyles) return this.cachedStyles;
@@ -293,14 +307,22 @@ export class DOMSnapshotNodeView {
     const indices = idx !== undefined ? this.document.raw.layout.styles?.[idx] : undefined;
     if (indices && names.length) {
       const snap = this.document.snapshot;
+      const omitEmpty = snap.omitEmptyStyles;
       const len = Math.min(names.length, indices.length);
-      for (let i = 0; i < len; i++) out[names[i]!] = snap.string(indices[i]);
+      for (let i = 0; i < len; i++) {
+        const value = snap.string(indices[i]);
+        if (!omitEmpty || value !== '') out[names[i]!] = value;
+      }
     }
     this.cachedStyles = Object.freeze(out);
     return this.cachedStyles;
   }
 
-  /** O(1) lookup for a single computed style property without decoding all style entries. */
+  /**
+   * O(1) lookup for a single computed style property without decoding all style entries.
+   * Returns `undefined` when the node has no layout entry, the property was not requested, or
+   * `omitEmptyStyles: true` and the slot decoded to `''`.
+   */
   style(propertyName: string): string | undefined {
     const idx = this.layoutIndex;
     if (idx === undefined) return undefined;
@@ -308,7 +330,8 @@ export class DOMSnapshotNodeView {
     if (slot === undefined) return undefined;
     const indices = this.document.raw.layout.styles?.[idx];
     if (!indices || slot >= indices.length) return undefined;
-    return this.document.snapshot.string(indices[slot]);
+    const value = this.document.snapshot.string(indices[slot]);
+    return this.document.snapshot.omitEmptyStyles && value === '' ? undefined : value;
   }
 }
 
@@ -443,7 +466,7 @@ export class DOMSnapshotDocumentView {
   rareString(field: RareStringField, nodeIndex: number): string | undefined {
     let map = this.rareStrings.get(field);
     if (!map) {
-      map = indexRareString(this.raw.nodes[field]);
+      map = indexRare(this.raw.nodes[field]);
       this.rareStrings.set(field, map);
     }
     const strIdx = map.get(nodeIndex);
@@ -462,8 +485,7 @@ export class DOMSnapshotDocumentView {
 
   /** @internal */
   contentDocumentIndexOf(nodeIndex: number): number | undefined {
-    if (!this.contentDocMap)
-      this.contentDocMap = indexRareInteger(this.raw.nodes.contentDocumentIndex);
+    if (!this.contentDocMap) this.contentDocMap = indexRare(this.raw.nodes.contentDocumentIndex);
     return this.contentDocMap.get(nodeIndex);
   }
 
@@ -510,23 +532,58 @@ export class DOMSnapshotView {
   readonly raw: Protocol.DOMSnapshot.CaptureSnapshotResponse;
   readonly strings: readonly string[];
   readonly computedStyles: readonly string[];
+  /** Uniform (or horizontal) scale divisor; see `cssScaleX` and `cssScaleY` for per-axis scales. */
   readonly cssScale: number;
+  readonly cssScaleX: number;
+  readonly cssScaleY: number;
+  readonly omitEmptyStyles: boolean;
   readonly documents: readonly DOMSnapshotDocumentView[];
   private readonly styleSlots: Map<string, number>;
   private frameDocMap?: Map<string, DOMSnapshotDocumentView>;
+  private backendDocMap?: Map<
+    Protocol.DOM.BackendNodeId,
+    { doc: DOMSnapshotDocumentView; nodeIndex: number }
+  >;
 
   /** @internal */
   constructor(
     raw: Protocol.DOMSnapshot.CaptureSnapshotResponse,
     options: ParseDOMSnapshotOptions = {},
   ) {
-    const cssScale = options.cssScale ?? 1;
-    if (!Number.isFinite(cssScale) || cssScale <= 0)
-      throw new RangeError('cssScale must be a positive finite number');
+    const rawScale = options.cssScale ?? 1;
+    let cssScaleX: number;
+    let cssScaleY: number;
+    if (typeof rawScale === 'number') {
+      if (!Number.isFinite(rawScale) || rawScale <= 0)
+        throw new RangeError('cssScale must be a positive finite number');
+      cssScaleX = rawScale;
+      cssScaleY = rawScale;
+    } else if (rawScale && typeof rawScale === 'object') {
+      cssScaleX = rawScale.x;
+      cssScaleY = rawScale.y;
+      if (
+        typeof cssScaleX !== 'number' ||
+        typeof cssScaleY !== 'number' ||
+        !Number.isFinite(cssScaleX) ||
+        !Number.isFinite(cssScaleY) ||
+        cssScaleX <= 0 ||
+        cssScaleY <= 0
+      )
+        throw new RangeError(
+          'cssScale must be a positive finite number or { x, y } with positive finite numbers',
+        );
+    } else {
+      throw new RangeError(
+        'cssScale must be a positive finite number or { x, y } with positive finite numbers',
+      );
+    }
     this.raw = raw;
     this.strings = raw.strings ?? [];
     this.computedStyles = [...(options.computedStyles ?? [])];
-    this.cssScale = cssScale;
+    this.cssScale = cssScaleX;
+    this.cssScaleX = cssScaleX;
+    this.cssScaleY = cssScaleY;
+    this.omitEmptyStyles = options.omitEmptyStyles ?? false;
     this.styleSlots = new Map();
     for (let i = 0; i < this.computedStyles.length; i++)
       if (!this.styleSlots.has(this.computedStyles[i]!))
@@ -562,11 +619,19 @@ export class DOMSnapshotView {
   }
 
   findNodeByBackendId(backendNodeId: Protocol.DOM.BackendNodeId): DOMSnapshotNodeView | undefined {
-    for (const doc of this.documents) {
-      const found = doc.nodeByBackendId(backendNodeId);
-      if (found) return found;
+    if (!this.backendDocMap) {
+      this.backendDocMap = new Map();
+      for (const doc of this.documents) {
+        const ids = doc.raw.nodes.backendNodeId ?? [];
+        for (let i = 0; i < ids.length; i++) {
+          const id = ids[i];
+          if (id !== undefined && id > 0 && !this.backendDocMap.has(id))
+            this.backendDocMap.set(id, { doc, nodeIndex: i });
+        }
+      }
     }
-    return undefined;
+    const hit = this.backendDocMap.get(backendNodeId);
+    return hit ? hit.doc.node(hit.nodeIndex) : undefined;
   }
 }
 

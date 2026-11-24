@@ -34,7 +34,7 @@ POSIX 监管只覆盖仍留在受管进程组中的进程，不覆盖主动脱�
 
 Windows 以关闭 kill-on-close 作为 release 的提交点，POSIX 以切换辅助进程内的所有权状态作为提交点，提交之后辅助进程才回复确认。收到确认后，宿主关闭控制流并移除 profile 锁。重复调用 `release()` 共用同一个 Promise，并发的 `close()` 会等待 release 完成。
 
-如果辅助进程拒绝请求，或请求没有送达，`release()` 以该错误拒绝，所有权保持不变：`owned` 仍为 true，`close()` 仍会结束浏览器。两种情况下 CDP 连接都会关闭。辅助进程没有回复确认、而是报告 Chrome 已退出时，同样视为拒绝，因为辅助进程只在仍持有 Chrome 时才报告退出。
+如果辅助进程拒绝请求，或请求没有送达，`release()` 以该错误拒绝，所有权保持不变（`owned` 仍为 true，`close()` 仍会结束浏览器），且 CDP 连接保持打开，方便调用方继续使用或正常关闭浏览器。只有在交接提交后，或抛出 `ReleaseUncertainError` 时，CDP 连接才会断开。辅助进程没有回复确认、而是报告 Chrome 已退出时，同样视为拒绝，因为辅助进程只在仍持有 Chrome 时才报告退出。
 
 如果确认丢失，或 5 秒内没有收到确认，`release()` 以 `ReleaseUncertainError` 拒绝。辅助进程可能已经提交，因此原宿主不会发送终止命令，也不会重试，而是关闭控制通道：未提交的浏览器会因此退出，已提交的浏览器继续运行。即便如此，本地也已放弃所有权（`owned` 为 false），并移除 profile 锁。请通过保存的 `browser.endpoint` 检查或重连；端点不可达时，需另行确认操作系统进程是否已退出。
 
@@ -44,4 +44,4 @@ Windows 以关闭 kill-on-close 作为 release 的提交点，POSIX 以切换辅
 
 release 时，辅助进程清空已保留的日志，之后在浏览器剩余的生命周期内持续读取并丢弃 stderr。独立的辅助进程会继续运行，但不再需要原宿主的 stderr 管道或控制连接。
 
-正常的 owned close 会删除临时 profile 和 Windows 辅助程序可执行文件。release 会保留 profile，在 Windows 上还会保留系统临时目录中运行中辅助进程的 `nodriver-guardian-*` 目录。之后在 Windows 上的监管启动会删除辅助进程已退出且超过一小时的此类目录，包括宿主硬退出留下的目录。宿主硬退出还可能留下临时 profile 和陈旧的控制器锁；持久 profile 的锁会在同一主机上记录的所有者退出后被回收。删除遗留文件之前，请先确认 Chrome 已退出。
+正常的 owned close 会删除临时 profile 和 Windows 辅助进程可执行文件。release 会保留 profile，在 Windows 上还会保留系统临时目录中运行中辅助进程的 `nodriver-guardian-*` 目录。之后在 Windows 上的监管启动会删除辅助进程已退出且超过一小时的此类目录，包括宿主硬退出留下的目录。宿主硬退出还可能留下临时 profile 和陈旧的控制器锁；持久 profile 的锁会在同一宿主上记录的所有者退出后被回收。删除遗留文件之前，请先确认 Chrome 已退出。

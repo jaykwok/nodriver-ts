@@ -39,7 +39,7 @@ import { Browser } from 'nodriver-ts';
 
 With `detached: true` and without `supervised`, Chrome is spawned detached on every platform, with stdin/stdout/stderr not tied to host pipes, so its stderr does not reach launch diagnostics. Supervised mode instead captures bounded stderr through an independent helper. CDP uses WebSocket, and the debugging port must stay available for as long as the browser lives.
 
-`release()` is idempotent and returns the browser's WebSocket endpoint. It does not send `Browser.close`, kill the process, close tabs or delete the profile; it removes signal cleanup, unrefs the child process from Node's event loop and disconnects CDP. Afterwards `browser.owned === false` and `browser.closed === true` (for this connection), and neither `close()`, `Symbol.asyncDispose` nor the original `browser.process.close()` terminates Chrome. Old Tab/Session objects can no longer be used; reconnect to get new ones.
+`release()` is idempotent and returns the browser's WebSocket endpoint. It does not send `Browser.close`, kill the process, close tabs or delete the profile; it removes signal cleanup, unrefs the child process from Node's event loop and disconnects CDP (in `supervised` mode, if the helper refuses before committing, ownership and the CDP connection remain open). Afterwards `browser.owned === false` and `browser.closed === true` (for this connection), and neither `close()`, `Symbol.asyncDispose` nor the original `browser.process.close()` terminates Chrome. Old Tab/Session objects can no longer be used; reconnect to get new ones.
 
 Once `close()` has been called, even if it failed, `release()` rejects. It also rejects when Chrome has already exited, since there is nothing to hand off; `close()` still confirms the exit. A `close()` called while `release()` is in progress waits for the handoff and then only disconnects.
 
@@ -93,7 +93,7 @@ const offDestroyed = browser.cdp.on('Target.targetDestroyed', ({ targetId }) => 
 // When done, call offCreated(), offChanged() and offDestroyed().
 ```
 
-`browser.tabCreated.on(...)` fires once a Tab has been attached and initialized; the raw `Target.targetCreated` fires earlier, possibly before a usable Tab exists. `pageTargets` includes pages that the attach policy did not attach automatically; attach them with `attachTarget(id)`.
+`browser.tabCreated.on(...)` fires once a Tab has been attached and initialized, `browser.tabClosed.on(...)` fires once when an initialized Tab closes or detaches, and `browser.tabNavigated.on(...)` (plus `scope.navigated` on a `TabScope`) fires on frame navigations across initialized tabs so you do not need to parse raw `Target.targetInfoChanged` events for navigation tracking. The raw `Target.targetCreated` fires earlier, possibly before a usable Tab exists. `pageTargets` includes pages that the attach policy did not attach automatically; attach them with `attachTarget(id)`.
 
 ## Focus limits
 

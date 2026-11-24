@@ -9,6 +9,8 @@ import { serveStdio, type StdioServerHandle } from '@modelcontextprotocol/server
 import { createBrowserMcpServer, type BrowserMcpBinding } from './server.ts';
 import { MCP_COMPATIBLE_VERSIONS } from './protocol.ts';
 import type { BrowserSessionManagerOptions } from './manager.ts';
+import { jsonError, positiveMs } from './auth.ts';
+import { positiveInt, settleAll } from '../utils.ts';
 
 /** Same tools and queues, SDK-owned era negotiation, one instance per stdio connection. */
 export function serveCompatibleBrowserMcpStdio(
@@ -41,13 +43,9 @@ export function createCompatibleBrowserMcpHttpEndpoint(
     onerror: (error: Error) => void;
   },
 ) {
-  for (const [name, value] of Object.entries({
-    maxSessions: options.maxSessions,
-    maxBody: options.maxBody,
-    idleMs: options.idleMs,
-  }))
-    if (!Number.isSafeInteger(value) || value <= 0)
-      throw new RangeError(`${name} must be a positive safe integer`);
+  positiveInt(options.maxSessions, 'maxSessions');
+  positiveInt(options.maxBody, 'maxBody');
+  positiveMs(options.idleMs, 'idleMs');
   const sessions = new Map<string, LegacySession>();
   const records = new Set<LegacySession>();
   const closing = new Set<Promise<void>>();
@@ -111,11 +109,8 @@ export function createCompatibleBrowserMcpHttpEndpoint(
           }
         },
         async cancel(reason) {
-          try {
-            await reader.cancel(reason);
-          } finally {
-            finish();
-          }
+          finish();
+          await reader.cancel(reason).catch(() => {});
         },
       }),
       { status: response.status, statusText: response.statusText, headers: response.headers },
@@ -123,19 +118,16 @@ export function createCompatibleBrowserMcpHttpEndpoint(
   }
   return {
     async fetch(request: Request, body: unknown, authInfo: AuthInfo): Promise<Response> {
-      if (closed) return new Response('Compatibility endpoint stopping', { status: 503 });
+      if (closed) return jsonError(503, 'Compatibility endpoint stopping');
       const id = request.headers.get('mcp-session-id');
       const message = body as { method?: string } | undefined;
       let record = id ? sessions.get(id) : undefined;
       if (id && !record)
-        return new Response('Unknown MCP session for this authenticated browser lease', {
-          status: 404,
-        });
+        return jsonError(404, 'Unknown MCP session for this authenticated browser lease');
       if (!record) {
         if (request.method !== 'POST' || message?.method !== 'initialize')
-          return new Response('Initialize a compatibility MCP session first', { status: 400 });
-        if (records.size >= options.maxSessions)
-          return new Response('MCP session limit reached', { status: 429 });
+          return jsonError(400, 'Initialize a compatibility MCP session first');
+        if (records.size >= options.maxSessions) return jsonError(429, 'MCP session limit reached');
         const transport = new WebStandardStreamableHTTPServerTransport({
           sessionIdGenerator: randomUUID,
           maxRequestBodySize: options.maxBody,
@@ -190,8 +182,8 @@ export function createCompatibleBrowserMcpHttpEndpoint(
     async close(): Promise<void> {
       closed = true;
       clearInterval(timer);
-      await Promise.all([...records].map(close));
-      await Promise.all([...closing]);
+      await settleAll([...records].map(close));
+      await settleAll([...closing]);
     },
   };
 }

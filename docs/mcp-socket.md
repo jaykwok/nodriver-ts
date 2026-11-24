@@ -48,7 +48,7 @@ try {
 }
 ```
 
-See `examples/mcp-socket.ts` for a full example. A lease is bound to the principal that the provisioned token maps to; clientInfo is not trusted, and one principal cannot use another's leases. Closing the client cancels that connection's in-flight requests, while the browser and refs remain until an explicit `browser_close`, lease release or idle expiry. To reconnect, authenticate again and pass `leaseId`; there is no automatic reconnect or action replay.
+See `examples/mcp-socket.ts` for a full example. A lease is bound to the principal that the provisioned token maps to; clientInfo is not trusted, and one principal cannot use another's leases. While an authenticated socket connection stays open, it retains the lease so `leaseIdleMs` does not evict it; closing the client releases that hold and cancels that connection's in-flight requests, while the browser and refs remain until an explicit `browser_close`, lease release or idle expiry. To reconnect, authenticate again and pass `leaseId`; there is no automatic reconnect or action replay.
 
 A trusted host can inject an existing `BrowserSessionManager` and call `manager.release(principal, leaseId)` to release a lease immediately; that closes the lease's connections. Closing the service also closes an injected manager, so hosts that share a manager should coordinate shutdown. Lifecycle rules for leases, the pool and owned or external browsers are described in [MCP over HTTP](mcp-http.md#browser-allocation).
 
@@ -68,15 +68,15 @@ On success the service replies with one line, `{"type":"nodriver-auth","leaseId"
 
 ## Limits
 
-| Default                | Scope                                                    |
-| ---------------------- | -------------------------------------------------------- |
-| 32                     | Connections, including unauthenticated ones              |
-| 4 KiB / 5 s            | Authentication preamble size and deadline                |
-| 16 / 4                 | Outstanding requests / subscriptions per connection      |
-| 256 KiB / 128 messages | Input message buffer / messages waiting to be dispatched |
-| 8 MiB / 60 s           | Output buffer / write deadline                           |
-| 8 MiB                  | Maximum response size accepted by the client             |
-| 30 s / 30 min          | Browser operation deadline / lease idle expiry           |
+| Default                | Scope                                                           |
+| ---------------------- | --------------------------------------------------------------- |
+| 32                     | Connections, including unauthenticated ones                     |
+| 4 KiB / 5 s            | Authentication preamble size and deadline                       |
+| 16 / 4                 | Outstanding requests / subscriptions per connection             |
+| 256 KiB / 128 messages | Input message buffer / messages waiting to be dispatched        |
+| 8 MiB / ≥ 60 s         | Output buffer / write deadline (scales with `operationTimeout`) |
+| 8 MiB                  | Maximum response size accepted by the client                    |
+| 30 s / 30 min          | Browser operation deadline / lease idle expiry                  |
 
 A duplicate in-flight request ID, exceeding a limit, a JSON line that is not a JSON-RPC message and writes that are too slow all close the connection; a line that is not valid JSON is skipped. Apart from protocol notifications, no CDP events are written to the stream.
 

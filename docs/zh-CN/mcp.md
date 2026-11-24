@@ -53,7 +53,7 @@ HTTP 与 socket 服务只接受本机连接，并要求 `NODRIVER_MCP_TOKEN`（�
 | `--virtual-display`                                        | 在没有显示器的 Linux 机器上，让有界面的 Chrome 运行在专属的 Xvfb 服务器上。需要安装 Xvfb，不能和 `--headless` 同时使用                                                                                                                                  |
 | `--browser-transport pipe\|websocket`                      | CDP 传输，默认 pipe；`--transport` 是别名                                                                                                                                                                                                               |
 | `--executable`、`--user-data-dir`                          | Chrome 路径；持久 profile（单浏览器，不按租约分上下文）                                                                                                                                                                                                 |
-| `--endpoint URL`、`--expose-existing-tabs`                 | 连接已有 Chrome 而不是启动新的；默认只附加本服务打开的标签页。`--endpoint` 不能与启动参数（窗口模式、浏览器传输、可执行文件、profile、代理、UA、语言、窗口尺寸、预设）合用                                                                              |
+| `--endpoint URL`、`--expose-existing-tabs`                 | 连接已有 Chrome 而不是启动新的；默认只附加本服务打开的标签页。`--endpoint` 不能与启动参数（窗口模式、`--virtual-display`、浏览器传输、可执行文件、profile、代理、UA、语言、窗口尺寸、预设）合用                                                         |
 | `--proxy URL`                                              | 上游代理；带凭证时需要按租约分上下文，因此不能与 `--user-data-dir` 合用                                                                                                                                                                                 |
 | `--user-agent`、`--lang`、`--window-size WxH`              | 启动时设置                                                                                                                                                                                                                                              |
 | `--preset agent\|default`                                  | 默认 agent：隐藏搜索引擎选择页和崩溃恢复气泡，关闭后台节流，并设置 `--password-store=basic`。在 Linux 上，Chrome 因此用内置密钥而不是系统密钥环加密已保存的密码和 cookie，不会弹出密钥环提示；而数据曾经通过密钥环加密的持久 profile 将无法读取这些数据 |
@@ -97,13 +97,13 @@ HTTP 与 socket 服务只接受本机连接，并要求 `NODRIVER_MCP_TOKEN`（�
 | `browser_input_policy` | 设置标签页的 instant/human 策略、种子、时间与步数范围、滚轮类型与 `wheelNotch`、`pointerGrid`、`lateMoves`、`targetInset`、打字与滚动方式，以及 `presentationRecovery`（见[参数](input.md#参数)） |
 | `browser_environment`  | 结构化诊断或显式对齐；网络探针和 GeoIP 解析器由宿主配置                                                                                                                                           |
 | `browser_close`        | 关闭自有浏览器或断开外部浏览器；之后可再次 open                                                                                                                                                   |
-| `browser_handoff`      | 请用户在浏览器中完成手工操作并确认；需要可访问的 UI 和 elicitation.form                                                                                                                           |
+| `browser_handoff`      | 请用户在可见浏览器窗口或（mode remote，HTTP）通过私密查看链接完成手工操作                                                                                                                         |
 
 宿主配置目录后出现的可选工具：
 
-- **`browser_upload`**（`--upload-dir`）：文件名必须解析到该目录内。离开该目录的文件名在访问文件系统之前就被拒绝，解析后离开该目录的链接同样被拒绝。错误信息只提及调用者给出的文件名，不包含宿主路径。
+- **`browser_upload`**（`--upload-dir`）：文件名必须解析到该目录内。离开该目录的文件名在访问文件系统之前就被拒绝，解析后离开该目录的链接同样被拒绝。错误信息只提及调用方给出的文件名，不包含宿主路径。
 - **`browser_downloads`**（`--download-dir`）：列出或等待最近 100 条下载记录，文件以 GUID 命名保存在该目录。每条记录带递增的 `sequence`，list 返回 `latestSequence`。wait 不占用操作队列，因此可在触发下载的点击之前或之后调用；它等待序号大于 `after` 的第一条记录完成或取消，`after` 默认为该标签页上次 wait 返回的序号（初始为 0）。超时会报错且不推进游标，再次 wait 继续等待同一个下载。
-- **`browser_storage_state`**（`--state-dir`）：按名称保存或加载 Cookie 与第一方 localStorage，范围是该上下文中任一 frame 用过的 HTTP(S) 源，包括已关闭的标签页。空存储不导出，跨站 iframe 的分区 localStorage 也不导出。读写在拦截文档请求的临时空白页中进行，因此不会访问站点，也不跟随重定向。状态文件拒绝已有的符号链接与硬链接，经临时文件原子替换保存，POSIX 权限为 0600。文件内容不进入对话，只返回计数。文件位于 `<state-dir>/<principal>/<name>.json`，因此名称归已认证的主体私有。保存时用 `include` 可加入 `sessionStorage` 或 `indexedDB`，含义同 [`storageState`](api.md#状态与存储)；加载带 sessionStorage 的状态需要 `tabId`，该标签页最后停在 about:blank。使用 `--state-key-env NAME`（嵌入时为 `stateKey`：32 字节密钥或口令）后，文件用 AES-256-GCM 加密，并拒绝读取明文文件，因此把文件换成明文也无法降级。密钥只由主机配置，工具参数里没有密钥。认证主体符合 `[a-z0-9_-]{1,64}` 时目录名就是它本身，否则为 `p-` 加上认证主体的 SHA-256 十六进制值；未传 binding 的服务使用 `private`，CLI 的 HTTP 和 socket 服务使用 `local-operator`。认证主体目录位置上的链接会被拒绝。加载未知名称时报告 `No saved state named <name>`，与其他认证主体是否保存过该名称无关。
+- **`browser_storage_state`**（`--state-dir`）：按名称保存或加载 Cookie 与第一方 localStorage，范围是该上下文中任一 frame 用过的 HTTP(S) 源，包括已关闭的标签页。空存储不导出，跨站 iframe 的分区 localStorage 也不导出。读写在拦截文档请求的临时空白页中进行，因此不会访问站点，也不跟随重定向。状态文件拒绝已有的符号链接与硬链接，经临时文件原子替换保存，POSIX 权限为 0600。文件内容不进入对话，只返回计数。文件位于 `<state-dir>/<principal>/<name>.json`，因此名称归认证主体私有。保存时用 `include` 可加入 `sessionStorage` 或 `indexedDB`，含义同 [`storageState`](api.md#状态与存储)；加载带 sessionStorage 的状态需要 `tabId`，该标签页最后停在 about:blank。使用 `--state-key-env NAME`（嵌入时为 `stateKey`：32 字节密钥或口令）后，文件用 AES-256-GCM 加密，并拒绝读取明文文件，因此把文件换成明文也无法降级。密钥只由宿主配置，工具参数里没有密钥。认证主体符合 `[a-z0-9_-]{1,64}` 时目录名就是它本身，否则为 `p-` 加上认证主体的 SHA-256 十六进制值；未传 binding 的服务使用 `private`，CLI 的 HTTP 和 socket 服务使用 `local-operator`。认证主体目录位置上的链接会被拒绝。加载未知名称时报告 `No saved state named <name>`，与其他认证主体是否保存过该名称无关。
 
 开启 `--remote-handoff`（仅限 HTTP）时还会出现 `browser_handoff_wait`，用于等待远程人工接管结束，或将其取消，见[远程人工接管](mcp-http.md#远程人工接管)。
 
@@ -151,7 +151,7 @@ HTTP 与 socket 服务只接受本机连接，并要求 `NODRIVER_MCP_TOKEN`（�
 
 ### 输入策略与环境
 
-默认策略为 instant；human 模式见[输入](input.md)。输入动作提前结束时，工具错误带有 `partialInput`，即该动作的报告（`action`、`status`、`completedSegments`、`events`、`dispatched`、`sent`、`skippedMoves`、`lateReplies`、`presentationRecoveries`、`plannedMs`、`actualMs`、`phase`、`cleanup`、`cleanupErrors`、`trace`、`seed` 和 `randomState`，见[输入](input.md)）。由于不会重放任何动作，它用来表明输入进行到了哪一步。`browser_tabs` 以 `lastInput` 显示每个标签页的最后一个动作，只含 `action`、`status`、`events`、`completedSegments` 和 `cleanup`。
+默认策略为 instant；human 模式见[输入](input.md)。输入动作提前结束时，工具错误带有 `partialInput`，即该动作的报告（`action`、`status`、`completedSegments`、`events`、`dispatched`、`sent`、`skippedMoves`、`lateReplies`、`presentationRecoveries`、`plannedMs`、`actualMs`、`finalPosition`、`phase`、`cleanup`、`cleanupErrors`、`trace`、`seed` 和 `randomState`，见[输入](input.md)）。由于不会重放任何动作，它用来表明输入进行到了哪一步。`browser_tabs` 以 `lastInput` 显示每个标签页的最后一个动作，只含 `action`、`status`、`events`、`completedSegments` 和 `cleanup`。
 
 环境字段、覆盖核验和网络限制见[环境](environment.md)；宿主未配置探针时不会探测外网。诊断与对齐会创建临时资源或发送显式 Emulation 配置，因此 `browser_environment` 没有标为 readOnly。
 
@@ -175,7 +175,7 @@ HTTP 与 socket 服务只接受本机连接，并要求 `NODRIVER_MCP_TOKEN`（�
 - **结果**：`{ "type": "json", "value": ... }`；无 return 或返回 undefined 时为 `{ "type": "undefined" }`。对象遵循 `JSON.stringify` 语义（Date 变成字符串，嵌套 undefined 被省略，NaN 变成 null）；BigInt、循环引用、顶层 function/symbol 报错。DOM 节点须映射成所需字段，不返回远端句柄。
 - **大小**：脚本与参数（JSON 序列化后）各最多 32,768 个字符，结果 JSON 最多 262,144 个字符。超限报错，不截断。
 - **范围**：`frameId` 可选，省略时为主 frame。它必须属于当前租约的标签页，支持同进程 iframe 与 OOPIF。`world` 默认 main，可访问页面全局变量；isolated 与页面 JS 全局对象隔离，但共享 DOM，不是安全沙箱。脚本只在 Chrome 中运行，无法访问宿主的 Node、文件系统或进程；请求、Cookie、存储和同源限制遵循页面自身权限。该工具能读写页面敏感状态，因此标为会修改状态。
-- **期限**：超时时间默认 10 秒，最大为操作期限（默认 30 秒）。CDP 执行期限限制初始同步计算，宿主等待期限与取消同时生效。已安排的定时器、网络请求或异步任务可能在到期后继续运行，已产生的副作用会保留。 超时或取消后不重放，后续操作可能与遗留的页面任务交错；要停止页面上的全部任务，请关闭该标签页。
+- **期限**：超时时间默认 10 秒，最大为操作期限（默认 30 秒）。CDP 执行期限限制初始同步计算，宿主等待期限与取消同时生效。已安排的定时器、网络请求或异步任务可能在到期后继续运行，已产生的副作用会保留。超时或取消后不重放，后续操作可能与遗留的页面任务交错；要停止页面上的全部任务，请关闭该标签页。
 - **输入行为**：`element.click()`、直接赋值 value 或 `dispatchEvent()` 不经过输入策略，也不产生可信输入事件。需要真实输入时使用 `browser_click`、`browser_fill`、`browser_type` 和 `browser_scroll`。跨页面导航请用 `browser_navigate`，以免执行期间文档被销毁。
 
 ## 嵌入
@@ -194,7 +194,7 @@ const handle = serveStdio(() => createBrowserMcpServer({ launch: { transport: 'p
 
 `launch` 与 `connect: { endpoint }` 互斥。每次工厂调用创建独立的实例与引用注册表，不要让无关的 agent 共用一个实例。返回值是标准 `McpServer`，可以注册应用自己的工具。关闭服务或 stdin EOF 会清理其拥有的 Chrome 与临时 profile，并保留持久 profile；CLI 收到 SIGINT/SIGTERM 时同样如此。进程被强杀或断电可能留下浏览器进程或临时文件。
 
-第二个参数 `BrowserMcpBinding` 传入已有的 `BrowserSessionManager`、已验证的主体和 leaseId。此时 `server.close()` 只关闭适配器，租约归管理器管理，见 [HTTP 接入](mcp-http.md#嵌入与所有权)。
+第二个参数 `BrowserMcpBinding` 传入已有的 `BrowserSessionManager`、认证主体和 leaseId。此时 `server.close()` 只关闭适配器，租约归管理器管理，见 [HTTP 接入](mcp-http.md#嵌入与所有权)。
 
 服务依赖固定版本的官方 SDK `@modelcontextprotocol/server` 2.3.1 与 Zod 4.6.7。默认 HTTP 与字节流入口使用 SDK 的 `legacy: 'reject'`，`server.connect(InMemory)` 同样走现代路由，前面另有一层薄薄的检查，拒绝 initialize、其他版本和缺少版本元数据的请求。解析、envelope 校验、MRTR、订阅和取消由 SDK 处理。参见[协议规范](https://modelcontextprotocol.io/specification/2026-07-28)。
 
@@ -202,7 +202,7 @@ const handle = serveStdio(() => createBrowserMcpServer({ launch: { transport: 'p
 
 - **串行**：同一租约的浏览器操作串行执行，输入、导航和引用观察互不干扰。`browser_tabs`、`browser_dialog`、`browser_downloads` 与 `browser_handoff_wait` 不进入操作队列：前两者用于发现并回答阻塞动作的 JS 对话框，下载等待可与触发它的点击同时进行，`browser_handoff_wait` 只等待远程人工接管，不操作页面。`browser_handoff` 的应答轮次同样不进入队列；其第一轮在队列中排队，以便移动焦点。
 - **取消**：取消信号传递到导航、等待、查询、快照和支持取消的动作。已发出的 CDP 命令和输入不能撤销；队列不会因为客户端停止等待就提前放行下一个写操作。
-- **错误**：工具错误返回 `isError: true` 及错误名称与信息，不自动重放点击、提交或其他动作。输入 schema 拒绝多余字段；对于参数本会被忽略的组合，工具以 `TypeError` 拒绝：`browser_environment` 的 inspect 模式搭配 `environment` 或 `geoip`；`browser_drag` 的 `to` 搭配 `toX` 或 `toY`（须给出 `to`，或同时给出两个坐标）；`browser_scroll` 的 `ref` 搭配非零增量或坐标；`browser_screenshot` 的 `ref` 搭配 `fullPage`，或 PNG 搭配 `quality`；`marks` 搭配 `ref`、`fullPage`、非 PNG 格式或 `quality`。导航只接受 HTTP(S) 与 about:blank；这不是网络隔离，页面重定向、链接和浏览器自身请求仍按 Chrome 的行为进行。
+- **错误**：工具错误返回 `isError: true` 及错误名称与信息，不自动重放点击、提交或其他动作。输入 schema 拒绝多余字段；对于参数本会被忽略的组合，工具以 `TypeError` 拒绝：`browser_environment` 的 inspect 模式搭配 `environment` 或 `geoip`；`browser_drag` 的 `to` 搭配 `toX` 或 `toY`（须给出 `to`，或同时给出两个坐标）；`browser_scroll` 的 `ref` 搭配非零增量或坐标；`browser_storage_state` 的 load 模式搭配 `include`；`browser_downloads` 的 `wait` 模式缺少 `tabId`；`browser_handoff` 的 `elicit` 模式搭配 `resumeCondition`；`browser_screenshot` 的 `ref` 搭配 `fullPage`，或 PNG 搭配 `quality`；`marks` 搭配 `ref`、`fullPage`、非 PNG 格式或 `quality`。导航只接受 HTTP(S) 与 about:blank；这不是网络隔离，页面重定向、链接和浏览器自身请求仍按 Chrome 的行为进行。
 - **范围**：不提供远程多租户、任意 CDP 或宿主脚本执行。文件工具只在宿主配置目录后出现，并限定在该目录内。工具描述与 annotations 供客户端展示，不是访问控制。
 - **痕迹**：AX 快照不启用 Runtime。`browser_network` 的 `start` 会在标签页剩余生命周期内启用 CDP Network 域；`stop` 只结束记录。其他可观测的信号见[浏览器行为](automation-audit.md)。
 

@@ -8,7 +8,8 @@ import type { Frame } from '../page/frames.ts';
 import type { NavigationOptions } from '../page/navigation.ts';
 import { ProxyForwarder } from '../optional/proxy.ts';
 import { ClearSiteDataError, NodriverError } from '../errors.ts';
-import { bounded, budget, within, type WaitOptions } from '../utils.ts';
+import { isTargetGone } from '../protocol/errors.ts';
+import { bounded, budget, httpOrigin, positiveInt, within, type WaitOptions } from '../utils.ts';
 import { TabScope } from './tab-scope.ts';
 import {
   blockedDatabase,
@@ -56,6 +57,22 @@ export interface ClearSiteDataOptions extends WaitOptions {
   domains?: string[];
   /** Exact HTTP(S) origins: their pages and storage, and the cookies of their host. */
   origins?: string[];
+  /**
+   * When `true`, clears every known origin in this context (and all cookies when `types` includes
+   * `'cookies'`), minus anything matched by `excludeDomains` or `excludeOrigins`. Requires explicit
+   * opt-in so omitting `domains` and `origins` cannot wipe the context by accident.
+   */
+  allKnown?: boolean;
+  /**
+   * Hosts (and their subdomains) excluded from clearing, taking precedence over `domains`,
+   * `origins`, and `allKnown`. Cookies on excluded hosts or partitioned under them are also kept.
+   */
+  excludeDomains?: string[];
+  /**
+   * Exact HTTP(S) origins excluded from clearing, taking precedence over `domains`, `origins`, and
+   * `allKnown`. Cookies on an excluded origin's host or partitioned under it are also kept.
+   */
+  excludeOrigins?: string[];
   /** Defaults to every type. */
   types?: SiteDataType[];
   /**
@@ -90,11 +107,6 @@ const STORAGE_TYPES: Partial<Record<SiteDataType, string>> = {
   cacheStorage: 'cache_storage',
   serviceWorkers: 'service_workers',
 };
-function httpOrigin(url: string): string | undefined {
-  if (!URL.canParse(url)) return undefined;
-  const parsed = new URL(url);
-  return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.origin : undefined;
-}
 export class BrowserContext {
   downloadDirectory?: string;
   private readonly usedOrigins = new Set<string>();
@@ -117,6 +129,23 @@ export class BrowserContext {
   get closed(): boolean {
     return this.disposed || this.browser.closed;
   }
+  /**
+   * Read-only snapshot of HTTP(S) origins known to this context: origins previously committed by
+   * any frame plus origins currently loaded in open tabs' frames.
+   */
+  get origins(): readonly string[] {
+    const known = new Set(this.usedOrigins);
+    for (const tab of this.tabs)
+      for (const frame of tab.frames) {
+        const origin = httpOrigin(frame.url);
+        if (origin) known.add(origin);
+      }
+    return [...known];
+  }
+  /** @internal Throws if this context or its browser is closed. */
+  assertOpen(): void {
+    if (this.closed) throw new NodriverError('BrowserContext is closed');
+  }
   /** Input policy of tabs opened later in this context, if it has its own. */
   get defaultInputPolicy(): InputPolicy | undefined {
     return cloneInputPolicy(this.inputDefault);
@@ -130,28 +159,33 @@ export class BrowserContext {
   }
   /** A scope for the pages of one task in this context; see TabScope. */
   tabScope(): TabScope {
-    if (this.closed) throw new NodriverError('BrowserContext is closed');
+    this.assertOpen();
     return new TabScope(this);
   }
   /** Opens a tab in this context; see Browser.newTab(). */
   async newTab(url = 'about:blank', options: NavigationOptions = {}): Promise<Tab> {
-    if (this.closed) throw new NodriverError('BrowserContext is closed');
+    this.assertOpen();
     return this.browser.newTab(url, this, options);
   }
   async cookies(): Promise<Protocol.Network.Cookie[]> {
+    this.assertOpen();
     return (await this.browser.cdp.send('Storage.getCookies', { browserContextId: this.id }))
       .cookies;
   }
   async setCookies(cookies: Protocol.Network.CookieParam[]): Promise<void> {
+    this.assertOpen();
     await this.browser.cdp.send('Storage.setCookies', { cookies, browserContextId: this.id });
   }
   async clearCookies(): Promise<void> {
+    this.assertOpen();
     await this.browser.cdp.send('Storage.clearCookies', { browserContextId: this.id });
   }
   async saveCookies(path: string): Promise<void> {
+    this.assertOpen();
     await writeFile(path, JSON.stringify(await this.cookies(), null, 2));
   }
   async loadCookies(path: string): Promise<void> {
+    this.assertOpen();
     await this.setCookies(
       JSON.parse(await readFile(path, 'utf8')) as Protocol.Network.CookieParam[],
     );
@@ -160,6 +194,7 @@ export class BrowserContext {
     permissions: Protocol.Browser.PermissionType[],
     origin?: string,
   ): Promise<void> {
+    this.assertOpen();
     await this.browser.cdp.send('Browser.grantPermissions', {
       permissions,
       origin,
@@ -167,9 +202,11 @@ export class BrowserContext {
     });
   }
   async resetPermissions(): Promise<void> {
+    this.assertOpen();
     await this.browser.cdp.send('Browser.resetPermissions', { browserContextId: this.id });
   }
   async setDownloadDirectory(path: string): Promise<void> {
+    this.assertOpen();
     const directory = resolve(path);
     await mkdir(directory, { recursive: true });
     await this.browser.cdp.send('Browser.setDownloadBehavior', {
@@ -185,9 +222,9 @@ export class BrowserContext {
     const origin = httpOrigin(url);
     if (origin) this.usedOrigins.add(origin);
   }
-  /** @internal Drops an origin that only a library-owned page used. */
+  /** @internal Drops an origin that only a library-owned page used or whose storage was cleared. */
   forgetOrigin(origin: string): void {
-    this.usedOrigins.delete(origin);
+    this.usedOrigins.delete(httpOrigin(origin) ?? origin);
   }
   /**
    * Visits each origin in one owned temporary tab whose document requests are fulfilled with an
@@ -301,22 +338,29 @@ export class BrowserContext {
    * ClearSiteDataError with what it did so far.
    */
   async clearSiteData(options: ClearSiteDataOptions): Promise<ClearSiteDataResult> {
-    if (this.closed) throw new NodriverError('BrowserContext is closed');
-    const domains = (options.domains ?? []).map((domain) => {
+    this.assertOpen();
+    if (!options || typeof options !== 'object')
+      throw new TypeError('clearSiteData requires an options object');
+    const parseDomain = (domain: string) => {
       const host = domain.toLowerCase().replace(/^\./, '');
       if (!host || !URL.canParse(`http://${host}/`) || new URL(`http://${host}/`).hostname !== host)
         throw new TypeError(`Not a domain: ${domain}`);
       return host;
-    });
-    const origins = new Set(
-      (options.origins ?? []).map((origin) => {
-        const normalized = httpOrigin(origin);
-        if (!normalized) throw new TypeError(`Not an HTTP(S) origin: ${origin}`);
-        return normalized;
-      }),
-    );
-    if (!domains.length && !origins.size)
-      throw new TypeError('clearSiteData requires domains or origins');
+    };
+    const parseOrigin = (origin: string) => {
+      const normalized = httpOrigin(origin);
+      if (!normalized) throw new TypeError(`Not an HTTP(S) origin: ${origin}`);
+      return normalized;
+    };
+    const domains = (options.domains ?? []).map(parseDomain);
+    const origins = new Set((options.origins ?? []).map(parseOrigin));
+    const excludeDomains = (options.excludeDomains ?? []).map(parseDomain);
+    const excludeOrigins = new Set((options.excludeOrigins ?? []).map(parseOrigin));
+    if (options.allKnown !== undefined && typeof options.allKnown !== 'boolean')
+      throw new TypeError('allKnown must be a boolean');
+    const allKnown = options.allKnown === true;
+    if (!domains.length && !origins.size && !allKnown)
+      throw new TypeError('clearSiteData requires domains, origins, or allKnown: true');
     const types = new Set(options.types ?? (Object.keys(STORAGE_TYPES) as SiteDataType[]));
     if (!options.types) types.add('cookies').add('sessionStorage');
     for (const type of types)
@@ -326,19 +370,34 @@ export class BrowserContext {
     if (!['fail', 'close', 'blank'].includes(openTabs))
       throw new TypeError('openTabs must be fail, close or blank');
 
-    const under = (host: string) =>
-      domains.some((domain) => host === domain || host.endsWith(`.${domain}`));
+    const hostUnder = (host: string, list: string[]) =>
+      list.some((domain) => host === domain || host.endsWith(`.${domain}`));
+    const under = (host: string) => hostUnder(host, domains);
+    const underExcluded = (host: string) => hostUnder(host, excludeDomains);
+    const originExcluded = (origin: string) =>
+      excludeOrigins.has(origin) || underExcluded(new URL(origin).hostname);
     const originMatches = (url: string) => {
       const origin = httpOrigin(url);
-      return origin !== undefined && (origins.has(origin) || under(new URL(origin).hostname));
+      if (origin === undefined || originExcluded(origin)) return false;
+      return allKnown || origins.has(origin) || under(new URL(origin).hostname);
     };
     const originHosts = new Set([...origins].map((origin) => new URL(origin).hostname));
-    const hostMatches = (host: string) => originHosts.has(host) || under(host);
+    const excludeOriginHosts = new Set(
+      [...excludeOrigins].map((origin) => new URL(origin).hostname),
+    );
+    const hostIncluded = (host: string) => allKnown || originHosts.has(host) || under(host);
+    const hostExcluded = (host: string) => excludeOriginHosts.has(host) || underExcluded(host);
     const cookieMatches = (cookie: Protocol.Network.Cookie) => {
-      if (hostMatches(cookie.domain.replace(/^\./, ''))) return true;
+      const domainHost = cookie.domain.replace(/^\./, '').toLowerCase();
       const key = cookie.partitionKey as Protocol.Network.CookiePartitionKey | string | undefined;
       const site = typeof key === 'string' ? key : key?.topLevelSite;
-      return !!site && URL.canParse(site) && hostMatches(new URL(site).hostname);
+      const partitionHost =
+        site && URL.canParse(site) ? new URL(site).hostname.toLowerCase() : undefined;
+      if (hostExcluded(domainHost) || (partitionHost !== undefined && hostExcluded(partitionHost)))
+        return false;
+      return (
+        hostIncluded(domainHost) || (partitionHost !== undefined && hostIncluded(partitionHost))
+      );
     };
 
     const step = budget(options, 'clearSiteData');
@@ -428,7 +487,7 @@ export class BrowserContext {
           if (tab) await bounded(tab.close(), wait, 'clearSiteData');
           else await this.browser.cdp.sendWith('Target.closeTarget', wait, { targetId });
         } catch (error) {
-          if (this.browser.targetInfo.has(targetId)) throw error;
+          if (this.browser.targetInfo.has(targetId) && !isTargetGone(error)) throw error;
         }
         result.tabs.push(targetId);
       };
@@ -450,16 +509,34 @@ export class BrowserContext {
           }
         await tab.goto('about:blank', step());
         // A tab keeps an origin's sessionStorage after leaving it, and shows it again on return.
-        if (session) await this.visitOrigins(tab, held.get(tab.id) ?? [], clearSession, step);
+        // Suppress origin recording so visiting cleared origins does not re-add them to known origins.
+        const tabHeld = held.get(tab.id) ?? [];
+        if (session)
+          await tab.withoutRecordingOrigins(() =>
+            this.visitOrigins(tab, tabHeld, clearSession, step),
+          );
+        if (session) {
+          for (const origin of tabHeld) tab.forgetOrigin(origin);
+          for (const origin of tab.origins) if (originMatches(origin)) tab.forgetOrigin(origin);
+        }
         result.tabs.push(tab.id);
       }
 
       const storageTypes = [...types].flatMap((type) => STORAGE_TYPES[type] ?? []).join(',');
-      const cleared = new Set(origins);
+      const cleared = new Set<string>();
       if (storageTypes) {
-        for (const domain of domains) cleared.add(`https://${domain}`).add(`http://${domain}`);
-        for (const origin of known) if (under(new URL(origin).hostname)) cleared.add(origin);
+        for (const origin of origins) if (!originExcluded(origin)) cleared.add(origin);
+        for (const domain of domains)
+          for (const candidate of [`https://${domain}`, `http://${domain}`])
+            if (!originExcluded(candidate)) cleared.add(candidate);
+        for (const origin of known) if (originMatches(origin)) cleared.add(origin);
       }
+      // Only forget an origin from context.origins once every origin-scoped persistent storage
+      // type has been cleared; partial clears keep it so a later allKnown clear does not miss
+      // remaining cacheStorage or serviceWorkers.
+      const forgetsContextOrigins = (Object.keys(STORAGE_TYPES) as SiteDataType[]).every((type) =>
+        types.has(type),
+      );
       const jar = async () =>
         (
           await this.browser.cdp.sendWith('Storage.getCookies', step(), {
@@ -471,6 +548,7 @@ export class BrowserContext {
           for (const origin of cleared) {
             await session.sendWith('Storage.clearDataForOrigin', step(), { origin, storageTypes });
             result.origins.push(origin);
+            if (forgetsContextOrigins) this.forgetOrigin(origin);
           }
         if (!types.has('cookies')) return;
         for (const { name, domain, path, partitionKey } of await jar()) {
@@ -535,21 +613,15 @@ export class BrowserContext {
    * sessionStorage is exported.
    */
   async storageState(options: StorageStateOptions = {}): Promise<StorageState> {
-    if (typeof options !== 'object')
+    this.assertOpen();
+    if (!options || typeof options !== 'object')
       throw new TypeError('storageState() takes options; use { path } to write a file');
-    const maxBytes = options.maxBytes ?? DEFAULT_STATE_BYTES;
-    if (!Number.isSafeInteger(maxBytes) || maxBytes < 1)
-      throw new RangeError('maxBytes must be a positive integer');
+    const maxBytes = positiveInt(options.maxBytes ?? DEFAULT_STATE_BYTES, 'maxBytes');
     const include = new Set(options.include);
     const origins = new Map<string, Record<string, string>>();
     const databases = new Map<string, IndexedDBDatabase[]>();
     const budget = { left: maxBytes };
-    const pending = new Set(this.usedOrigins);
-    for (const tab of this.tabs)
-      for (const frame of tab.frames) {
-        const origin = httpOrigin(frame.url);
-        if (origin) pending.add(origin);
-      }
+    const pending = new Set(this.origins);
     const all = [...pending];
     const sessionStorage = new Map<string, Record<string, string>>();
     // Live top-level documents hold their origin's first-party storage; read them in place.
@@ -618,6 +690,7 @@ export class BrowserContext {
     state: SavedStorageState,
     options: RestoreStorageOptions = {},
   ): Promise<void> {
+    this.assertOpen();
     if (state.version !== undefined && state.version !== 2)
       throw new TypeError(`Unsupported storage state version: ${String(state.version)}`);
     const entries = new Map<string, Record<string, string>>();

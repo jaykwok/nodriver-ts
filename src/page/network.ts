@@ -1,15 +1,9 @@
 import type { Protocol } from 'devtools-protocol';
-import { SessionEndedError, type Session } from '../protocol/connection.ts';
+import type { Session } from '../protocol/connection.ts';
 import type { Tab } from './tab.ts';
 import { EventHub, type WaitOptions } from '../utils.ts';
-import { DisconnectedError, NodriverError, ProtocolError } from '../errors.ts';
-/**
- * Chrome no longer holds this paused request: the page cancelled it, its frame went away, or
- * Fetch.disable released it. No answer is possible or needed.
- */
-const requestGone = (error: unknown): boolean =>
-  error instanceof ProtocolError &&
-  /Invalid InterceptionId|Fetch domain is not enabled/.test(error.message);
+import { DisconnectedError, NodriverError, ProtocolError, SessionEndedError } from '../errors.ts';
+import { isRequestGone } from '../protocol/errors.ts';
 /** A session that ended during a command needs nothing further from it. */
 const sessionGone = (session: Session, error: unknown): boolean =>
   session.closed || error instanceof DisconnectedError || error instanceof SessionEndedError;
@@ -36,7 +30,7 @@ export class Route {
     try {
       await send();
     } catch (error) {
-      if (requestGone(error)) return;
+      if (isRequestGone(error)) return;
       if (error instanceof ProtocolError) this.handled = false;
       throw error;
     }
@@ -84,8 +78,8 @@ export interface Response {
 /** An event hub that runs a hook whenever a listener subscribes. */
 class LazyHub<T> extends EventHub<T> {
   private readonly subscribed: () => void;
-  constructor(subscribed: () => void) {
-    super();
+  constructor(subscribed: () => void, report?: (error: unknown) => void) {
+    super(report);
     this.subscribed = subscribed;
   }
   override on(listener: (event: T) => void | Promise<void>): () => void {
@@ -100,10 +94,13 @@ class LazyHub<T> extends EventHub<T> {
  */
 export class Network {
   /** Subscribing (directly or via waitForResponse) enables the Network domain. */
-  readonly responses: EventHub<Response> = new LazyHub(() => {
-    // Sends nothing once enabled; each subscription retries a setup that failed.
-    void this.enable().catch((e) => this.tab.reportError(e));
-  });
+  readonly responses: EventHub<Response> = new LazyHub(
+    () => {
+      // Sends nothing once enabled; each subscription retries a setup that failed.
+      void this.enable().catch((e) => this.tab.reportError(e));
+    },
+    (error) => this.tab.reportError(error),
+  );
   private wanted = false;
   // Retain the in-flight setup too: every caller must wait until CDP has enabled the domain.
   private enabled = new Map<Session, Promise<void>>();
@@ -164,7 +161,7 @@ export class Network {
         });
       } catch (e) {
         // A challenge pending while its tab closes cannot be answered; that is not an error.
-        if (!session.closed && !requestGone(e)) throw e;
+        if (!session.closed && !isRequestGone(e)) this.tab.reportError(e);
       }
     });
     // Independent steps: a refusal must not cost the session the rest of its setup, including

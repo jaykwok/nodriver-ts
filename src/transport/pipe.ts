@@ -1,6 +1,7 @@
 import type { Readable, Writable } from 'node:stream';
 import type { Transport } from './transport.ts';
 import { DisconnectedError } from '../errors.ts';
+import { positiveInt } from '../utils.ts';
 /** CDP pipe framing operates on bytes: UTF-8 characters may span arbitrary chunks. */
 export class PipeDecoder {
   private chunks: Buffer[] = [];
@@ -9,7 +10,7 @@ export class PipeDecoder {
   private readonly maxBytes: number;
   constructor(emit: (json: string) => void, maxBytes = 256 * 1024 * 1024) {
     this.emit = emit;
-    this.maxBytes = maxBytes;
+    this.maxBytes = positiveInt(maxBytes, 'maxBytes');
   }
   push(chunk: Uint8Array): void {
     const bytes = Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);

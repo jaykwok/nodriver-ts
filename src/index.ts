@@ -13,7 +13,12 @@ export type {
   StorageStateOptions,
 } from './browser/context.ts';
 export type { IndexedDBDatabase, IndexedDBIndex, IndexedDBStore } from './browser/indexeddb.ts';
-export { encryptState, decryptState, type StateKey } from './browser/state-crypto.ts';
+export {
+  encryptState,
+  decryptState,
+  isEncryptedState,
+  type StateKey,
+} from './browser/state-crypto.ts';
 export { findExecutable, acquireProfileLock, AGENT_ARGS } from './browser/launcher.ts';
 export type {
   BrowserChannel,
@@ -53,8 +58,9 @@ export type {
   InspectEnvironmentOptions,
 } from './page/environment.ts';
 export { Frame, JSHandle } from './page/frames.ts';
-export type { EvaluateOptions, World, EvaluationInput } from './page/frames.ts';
+export type { EvaluateOptions, World, EvaluationInput, LoadState } from './page/frames.ts';
 export { isContextGone } from './page/execution-context.ts';
+export { isFrameGone } from './protocol/errors.ts';
 export {
   IsolatedWorld,
   IsolatedWorldPool,
@@ -107,7 +113,7 @@ export {
   DOMSnapshotDocumentView,
   DOMSnapshotNodeView,
 } from './dom/snapshot.ts';
-export type { DOMSnapshotRect, ParseDOMSnapshotOptions } from './dom/snapshot.ts';
+export type { DOMSnapshotRect, DOMSnapshotScale, ParseDOMSnapshotOptions } from './dom/snapshot.ts';
 export { getNodeEventListeners } from './dom/listeners.ts';
 export type {
   NodeEventListener,
@@ -162,6 +168,7 @@ export type {
   EventParams,
   CdpEvent,
   ConnectionOptions,
+  DrainOptions,
   TraceEntry,
   EndReason,
   SessionEndReason,

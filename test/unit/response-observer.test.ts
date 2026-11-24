@@ -99,19 +99,22 @@ for (const ending of ['abort', 'timeout', 'detach'] as const) {
       if (ending === 'detach') c.detach('page');
       await rejected;
       assert.equal(c.pendingCount, 0);
-      assert.equal(c.unansweredCount, 1);
+      assert.equal(c.unansweredCount, ending === 'detach' ? 0 : 1);
+      assert.equal(c.detachedUnansweredCount, ending === 'detach' ? 1 : 0);
       assert.equal(settles.length, 1);
       assert.equal(responses.length, 0);
       for (let i = 0; i < 100; i++) {
         const other = c.root.send('Browser.getVersion');
         t.reply(i + 1);
         await other;
-        assert.equal(c.unansweredCount, 1);
+        assert.equal(c.unansweredCount, ending === 'detach' ? 0 : 1);
+        assert.equal(c.detachedUnansweredCount, ending === 'detach' ? 1 : 0);
       }
       t.reply(0, { result: { result: { type: 'number', value: 42 } } });
       assert.equal(responses.at(-1)!.seq, t.commands[0]!.id);
       assert.equal(responses.at(-1)!.late, true);
       assert.equal(c.unansweredCount, 0);
+      assert.equal(c.detachedUnansweredCount, 0);
       await Promise.resolve();
       assert.equal(settles.length, 101); // No second settlement for the late response.
     } finally {

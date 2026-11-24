@@ -165,7 +165,11 @@ export async function verifyNativeEnvironment(
     const values = await bounded(report.promise, step(), 'Native environment verification');
     checkNativeSamples(values, expected);
     const primary = acceptLanguage?.split(',')[0]?.split(';')[0]?.trim();
-    if (!primary || Intl.getCanonicalLocales(primary)[0] !== expected.locale)
+    let canonicalPrimary: string | undefined;
+    try {
+      canonicalPrimary = primary ? Intl.getCanonicalLocales(primary)[0] : undefined;
+    } catch {}
+    if (canonicalPrimary !== expected.locale)
       throw new UnsupportedError('Native environment verification failed for HTTP Accept-Language');
   } catch (error) {
     failure = { error };

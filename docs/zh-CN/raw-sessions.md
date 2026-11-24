@@ -64,7 +64,7 @@ try {
 
 默认值：总时长 5 秒、最多送出 16 帧待 ACK、4 MiB 解码后帧字节、4 个并发 ACK、启动期限 2 秒、每个 ACK 期限 1 秒，以及 2 秒的停止与 ACK 清理预算。传入 `untilClosed: true` 可取消默认的时长、帧数和字节上限，使租约一直持续到 `close()`（也可对 `maxDuration`、`maxFrames`、`maxBytes` 单独传入 `Infinity` 或 `null`；显式有限上限仍会生效）。达到时长、帧数、字节或 ACK 上限，或某个 ACK 超时，都会停止租约并记录原因。`close()` 幂等，会等待停止命令和该租约自己的 ACK 工作；连接上的其他命令按各自的生命周期运行。session 断开时，报告为 `disconnected`，清理随连接一起结束。
 
-`screencast` 会把 `format`、`quality`、`maxWidth`、`maxHeight` 和 `everyNthFrame` 传给 `Page.startScreencast`，未指定的字段使用 Chrome 默认值。有限时长和超时最大为 2147483647 毫秒，即 Node.js 定时器的上限。在已结束的 session 上启动租约会直接以该 session 的 `closeReason` 拒绝：单标签/单会话结束时抛出 `SessionEndedError`，浏览器连接断开时抛出 `DisconnectedError`。
+`screencast` 会把 `format`、`quality`、`maxWidth`、`maxHeight` 和 `everyNthFrame` 传给 `Page.startScreencast`，未指定的字段使用 Chrome 默认值。有限时长和超时最大为 2147483647 毫秒，即 Node.js 定时器的上限。在已结束的 session 上启动租约会直接以该 session 的 `closeReason` 拒绝：单标签/单 session 结束时抛出 `SessionEndedError`，浏览器连接断开时抛出 `DisconnectedError`。
 
 一个 session 同一时间最多只有一个活动的呈现租约；仍处于 idle 的租约可以在当前租约关闭后启动。租约处于 `starting` 时收到的帧，与 `active` 阶段一样计入帧数、字节和 ACK 上限。租约活动期间，不要在同一个 session 上直接调用 `Page.startScreencast` 或 `Page.stopScreencast`。
 
@@ -74,33 +74,33 @@ try {
 
 `createIsolatedWorld(session, options?)` 和 `evaluateIsolated(session, fn, arg?, options?)` 通过缓存 `Page.createIsolatedWorld` 在隔离世界中求值，从不发送 `Runtime.enable`、`Page.enable` 或 `DOM.enable`，也绝不回退到页面主世界。`frameId` 默认为 `targetId`（`TargetSession` 上取 `session.targetId`，或取 `options.targetId`），显式指定 `worldName` 时必须为非空字符串（默认使用随机 UUID）。
 
-可按会话复用模型选择 `scope` 与 `verification`：
+可按 session 复用模型选择 `scope` 与 `verification`：
 
-- `scope: 'session'`（默认）按单个 `Session` 缓存，默认 `verification: 'strict'`：绑定 `globalThis` 的 V8 `RemoteObjectId` 句柄，首次绑定时通过 `DOM.describeNode` + `DOM.resolveNode`（不启用 `DOM` 域）及对 `(frameId, worldName)` 的幂等复查确认严格身份；热缓存以 1 次往返调用 `Runtime.callFunctionOn`（设置 `executionTimeout`、`disableBreaks` 或 `throwOnSideEffect` 时走带守卫令牌的 `Runtime.evaluate`）。
-- `scope: 'target'` 在 `session.connection` 上按 `(targetId, frameId, worldName, grantUniversalAccess, verification)` 共享缓存，适合每次操作新建并 `detach` 临时 `TargetSession` 的宿主跨会话直接复用文档上的隔离世界：
+- `scope: 'session'`（默认）按单个 `Session` 缓存，默认 `verification: 'strict'`：绑定 `globalThis` 的 V8 `RemoteObjectId` 句柄，首次绑定时通过 `DOM.describeNode` + `DOM.resolveNode`（不启用 `DOM` 域）及对 `(frameId, worldName)` 的幂等复查确认严格身份；热缓存以 1 次往返调用 `Runtime.callFunctionOn`（设置 `executionTimeout` 或 `disableBreaks` 时走带守卫令牌的 `Runtime.evaluate`）。
+- `scope: 'target'` 在 `session.connection` 上按 `(targetId, frameId, worldName, grantUniversalAccess, verification)` 共享缓存，适合每次操作新建并 `detach` 临时 `TargetSession` 的宿主跨 session 直接复用文档上的隔离世界：
   - `verification: 'guard'`（`scope: 'target'` 默认）：零 `DOM.*` 调用、零主世界触碰；首次冷绑定（无论入口是 `evaluate()`、`context()` 还是 `run()`）先绑定临时 `globalThis` 句柄、再通过 `Page.createIsolatedWorld` 复查 `(frameId, worldName)` 匹配，随后通过 `Runtime.callFunctionOn` 向已确认句柄写入单个不可枚举随机令牌并释放临时句柄（每个文档冷绑定 4 次往返），后续新 `TargetSession` 热缓存仅需 1 次往返只读核对令牌，即使在冷绑定窗口或跨进程导航复用数字 `executionContextId` 时也能安全拒绝（`isContextGone(error) === true`），不会向错误世界写入属性或执行用户代码。
   - `verification: 'none'`：零 `DOM.*` 调用、零全局属性写入，字符串表达式原样传给 `Runtime.evaluate`（不套任何包壳）：冷启动 `evaluate()` 2 次往返，热缓存 `evaluate()` 1 次往返，热缓存 `world.context()` / `world.run()` **0 次往返**（可直接把数字 `executionContextId` 传给 `DOM.resolveNode`）。
   - 在 `scope: 'target'` 包装实例上调用 `world.dispose()` 仅终止该实例自身的挂起等待，**不会**清空连接级共享缓存；显式淘汰请调用 `world.invalidate(staleContextId?)` 或 `invalidateIsolatedWorlds(connection, { targetId?, frameId?, worldName? })`。连接级缓存被动监听 `connection.root` 上的 `Target.targetDestroyed` 与 `Target.targetCrashed`（依赖连接已开启 `Target.setDiscoverTargets`，`Browser.launch()` / `Browser.connect()` 默认已开启；若直接使用未开启 discovery 的裸 `Connection`，则由 `isContextGone` 自动恢复或 `invalidateIsolatedWorlds()` 回收）。
 
-`evaluate()` 与 `evaluateIsolated()` 按需透传 `silent`、`disableBreaks`、`throwOnSideEffect`、`userGesture` 与 `executionTimeout`（为 `undefined` 时不发送；注意 V8 在 `throwOnSideEffect: true` 下对触发 layout 的 DOM getter 同样会报错，`userGesture: true` 会触发合成用户激活）。可通过 `IsolatedWorldOptions` 或单次调用的 `onEvent(event, info)`（`'created' | 'create-failed' | 'recovered'`）观测首次创建、创建失败与上下文丢失后的恢复重建（根入口亦导出 `isContextGone(error)`；可通过 `retryOnContextGone: false` 关闭自动重试）。`context()` 与 `run()` 返回或传入的数字 `executionContextId` 仅在当前文档与渲染进程存活期间有效；`run()` 同时以 `timeout` 和 `signal` 约束准备阶段与回调等待（预先中止的信号不发任何 CDP 命令，准备阶段中止不启动回调）。
+`evaluate()` 与 `evaluateIsolated()` 按需透传 `silent`、`disableBreaks`、`throwOnSideEffect`、`userGesture` 与 `executionTimeout`（为 `undefined` 时不发送；注意 V8 在 `throwOnSideEffect: true` 下对触发 layout 的 DOM getter 同样会报错，`userGesture: true` 会触发合成用户激活）。可通过 `IsolatedWorldOptions` 或单次调用的 `onEvent(event, info)`（`'created' | 'create-failed' | 'recovered'`）观测首次创建、创建失败与上下文丢失后的恢复重建。根入口同时导出 `isContextGone(error)` 与 `isFrameGone(error)`，且 `StaleElementError` 携带可选结构化字段 `reason`（`'node-detached' | 'frame-detached' | 'context-gone' | 'world-mismatch' | 'disposed'`），便于不靠消息字符串区分 frame 分离、节点脱离、世界不匹配与实例已释放（可通过 `retryOnContextGone: false` 关闭自动重试）。内部冷启动命令带有有界超时上限（`Math.min(connection.timeout, Math.max(callerTimeout ?? 0, 10_000))`），且 `scope: 'session'` 实例在 `dispose()` 时会取消仍在途的冷启动命令。`context()` 与 `run()` 返回或传入的数字 `executionContextId` 仅在当前文档与渲染进程存活期间有效；`run()` 同时以 `timeout` 和 `signal` 约束准备阶段与回调等待（预先中止的信号不发任何 CDP 命令，准备阶段中止不启动回调）。
 
 ### 托管对象组与节点批量调用
 
-- `createObjectGroup(session, name?)` 返回实现 `AsyncDisposable` 的 `ObjectGroupScope`，`release(options?)` 发送 `Runtime.releaseObjectGroup`（默认调用方超时 1 秒），仅在 Chrome 确认释放或 session 关闭后将 `released` 置为 `true`；发送前中止不发送任何 CDP 命令；多个并发调用方共享同一条在途释放请求，但各自的 `timeout` 与 `signal` 仅结算自身等待，不会中止其他等待者。需要可观测释放成功与错误传播的场景，请直接管理 `ObjectGroupScope` 并 `await group.release(options)`。
+- `createObjectGroup(session, name?)` 返回实现 `AsyncDisposable` 的 `ObjectGroupScope`，`release(options?)` 发送 `Runtime.releaseObjectGroup`（默认调用方超时 1 秒，仅传 `signal` 时同样生效；底层 wire 请求上限为 `Math.min(connection.timeout, Math.max(waitTimeout, 5000))`，避免首轮超时后后续重试被 30 秒旧请求卡住），仅在 Chrome 确认释放或 session 关闭后将 `released` 置为 `true`；发送前中止不发送任何 CDP 命令；多个并发调用方共享同一条在途释放请求，但各自的 `timeout` 与 `signal` 仅结算自身等待，不会中止其他等待者。需要可观测释放成功与错误传播的场景，请直接管理 `ObjectGroupScope` 并 `await group.release(options)`。
 - `world.withObjectGroup(task, options?)` 将 `world.run()` 与全新的 `ObjectGroupScope` 结合，在正常返回、抛错、`contextGone` 重试、`world.dispose()`、超时或中止时立即在连接上登记后台释放请求而不突破调用方预算。由于后台清理会吞掉释放协议错误，`connection.drain()` 仅等待这些清理请求在线上结算，不保证远端释放均已成功。
 - `world.callOnNodes(backendNodeIds, fn, arg?, options?)` 按批（`chunkSize`，默认 `128`）解析 `backendNodeIds` 并在每个批次仅发一次 `Runtime.callFunctionOn` 执行同步回调 `fn(element, arg)`（零 `DOM`/`Runtime`/`Page` 域启用、将 `fn` 定义在不含任何包装器局部绑定的全局词法作用域中、兼容 `throwOnSideEffect: true`），并在连接上立即登记每批对象组及超时/中止后迟到 `DOM.resolveNode` 句柄的后台释放而不延长调用方超时（`connection.drain()` 仅确认清理请求在线上结算，不证明远端释放成功）。`async` 函数或返回 Promise/thenable 的回调会在类型与运行时均被 `TypeError` 拒绝（对返回的原生 rejected `Promise` 也会先接管拒绝，避免在目标世界遗留 `unhandledRejection`）。上下文失效自动重试仅发生在已确认用户回调执行零次时（调用前上下文/句柄查找失败、守卫不匹配，或前序分片已解析节点全部已脱离）；一旦 `Runtime.callFunctionOn` 已发出且以执行结果不确定的错误失败（如 `Execution context was destroyed`），则直接保留原错误而不重放回调。两个节点状态选项相互独立：`skipMissingNodes`（默认 `true`）控制 `DOM.resolveNode` 解析失败的节点（`true` 返回 `{ ok: false, backendNodeId, stale: true }`，`false` 抛出 `StaleElementError`）；`requireConnected`（默认 `true`）控制已成功解析但 `isConnected === false` 的节点（`true` 时即使 `skipMissingNodes: false` 仍返回 `stale: true`，`false` 时对已脱离节点同样执行 `fn`）。
 
-### 多帧隔离世界池与并发扇出
+### 多 frame 隔离世界池与并发扇出
 
-`createIsolatedWorldPool(session, options?)`（`IsolatedWorldPool`）在单个 session 上按 `frameId` 缓存 `IsolatedWorld`（`scope: 'target'` 时跨临时 `TargetSession` 复用连接级缓存）。对于持续轮询场景，请优先复用同一个 `IsolatedWorldPool`（或使用 `scope: 'target'` 并固定 `worldName`），避免在默认会话作用域下反复调用 `evaluateAcrossFrames()` 每次新建不同名称的隔离世界。`pool.evaluateAll(frameIds, fn, arg?, options?)` 与一次性调用 `evaluateAcrossFrames(session, frameIds, fn, arg?, options?)` 在同一个总 `timeout`/`signal` 和可选 `concurrency` 上限下并发扇出，按帧返回 `{ status: 'ok', frameId, value } | { status: 'detached', frameId, error: StaleElementError } | { status: 'error', frameId, error }`：仅当协议明确报告帧不存在或已卸载（`No frame for/with given id`）时返回 `status: 'detached'`，导航期间重试耗尽的上下文错误（如 `Execution context was destroyed`）与脚本异常均保留为 `status: 'error'`，避免调用方误删仍挂载的活跃帧。
+`createIsolatedWorldPool(session, options?)`（`IsolatedWorldPool`）在单个 session 上按 `frameId` 缓存 `IsolatedWorld`（`scope: 'target'` 时跨临时 `TargetSession` 复用连接级缓存）。对于持续轮询场景，请优先复用同一个 `IsolatedWorldPool`（或使用 `scope: 'target'` 并固定 `worldName`），避免在默认 session 作用域下反复调用 `evaluateAcrossFrames()` 每次新建不同名称的隔离世界。`pool.evaluateAll(frameIds, fn, arg?, options?)` 与一次性调用 `evaluateAcrossFrames(session, frameIds, fn, arg?, options?)` 在同一个总 `timeout`/`signal` 和可选 `concurrency` 上限下并发扇出，按 frame 返回 `{ status: 'ok', frameId, value } | { status: 'detached', frameId, error: StaleElementError } | { status: 'error', frameId, error }`：仅当协议明确报告 frame 不存在或已卸载（`No frame for/with given id`）时返回 `status: 'detached'`，导航期间重试耗尽的上下文错误（如 `Execution context was destroyed`）与脚本异常均保留为 `status: 'error'`，避免调用方误删仍挂载的活跃 frame。
 
 ## 惰性 `DOMSnapshot` 解码器
 
-`parseDOMSnapshot(raw, { computedStyles?, cssScale? })` 将原始 `DOMSnapshot.captureSnapshot` 响应包装为惰性、只读的 `DOMSnapshotView`（`documents`、`rootDocument`、`documentByFrameId()`、`findNodeByBackendId()`），不发送任何 CDP 命令，也不启用任何域。`DOMSnapshotDocumentView` 提供 `nodes()`、`node(index)` 与 `nodeByBackendId()`；`DOMSnapshotNodeView` 按需解码字符串表、`attributes` / `attribute()`、稀疏字段（`shadowRootType`、`pseudoType`、`inputValue`、`textValue`、`inputChecked`、`optionSelected`、`isClickable`、`currentSourceURL`、`originURL`、`childDocument`）、稀疏布局框（`bounds`、`allBounds`、`offsetRect`、`scrollRect`、`clientRect`，按 `cssScale` 缩放）以及 `computedStyles`（`styles` 与 O(1) `style(name)`）。
+`parseDOMSnapshot(raw, { computedStyles?, cssScale?, omitEmptyStyles? })` 将原始 `DOMSnapshot.captureSnapshot` 响应包装为惰性、只读的 `DOMSnapshotView`（`documents`、`rootDocument`、`documentByFrameId()`、O(1) `findNodeByBackendId()`），不发送任何 CDP 命令，也不启用任何域。`cssScale` 支持等比正数或非等比 `{ x, y }`（分别暴露为 `cssScale`、`cssScaleX`、`cssScaleY`）。`DOMSnapshotDocumentView` 提供 `nodes()`、`node(index)` 与 `nodeByBackendId()`；`DOMSnapshotNodeView` 按需解码字符串表、`attributes` / `attribute()`、稀疏字段（`shadowRootType`、`pseudoType`、`inputValue`、`textValue`、统一返回 `inputValue ?? textValue` 的 `formValue`、`inputChecked`、`optionSelected`、`isClickable`、`currentSourceURL`、`originURL`、`childDocument`）、稀疏布局框（`bounds`、`allBounds`、`offsetRect`、`scrollRect`、`clientRect`，按 `cssScale` 缩放）以及 `computedStyles`（`styles` 与 O(1) `style(name)`）。默认（`omitEmptyStyles: false`）会将 Chrome 中未填充的计算样式槽位（`-1` 或 `''`）解为空串 `''`（例如 `Number(styles.opacity ?? '1')` 会得到 `0`）；传入 `{ omitEmptyStyles: true }` 可从 `node.styles` 中省略空串键并让 `node.style(name)` 返回 `undefined`，便于直接配合 `??` 做默认值回退。
 
 ## 无 `*.enable` 的事件监听器查询
 
-`getNodeEventListeners(session, { objectId } | { backendNodeId }, { depth?, pierce?, world?, executionContextId?, timeout?, signal? })` 直接调用 `DOMDebugger.getEventListeners` 而不启用 `DOM`、`Runtime`、`Page` 或 `Debugger`，并在连接上立即登记全部 `handler.objectId`、`originalHandler.objectId`（含超时或中止后的迟到响应）与临时对象组的后台释放请求，不等待超出调用方超时预算。由于后台清理会吞掉释放协议错误，`connection.drain()` 仅等待这些请求在线上结算，不证明远端资源一定释放成功；如需显式观测目标节点句柄释放结果，请自行通过 `ObjectGroupScope` 解析 `objectId` 后调用 `getNodeEventListeners(session, { objectId })` 再 `await group.release()`。
+`getNodeEventListeners(session, { objectId } | { backendNodeId }, { depth?, pierce?, world?, executionContextId?, releaseHandles?, types?, timeout?, signal? })` 直接调用 `DOMDebugger.getEventListeners` 而不启用 `DOM`、`Runtime`、`Page` 或 `Debugger`。传入 `types`（例如 `['click', 'mousedown']`）可在映射阶段按事件类型白名单过滤。对 `{ backendNodeId }` 目标，Blink 会把返回的每个 `handler` / `originalHandler` 自动放入输入节点所在的 `objectGroup`，因此始终通过单次后台 `Runtime.releaseObjectGroup` 完成 O(1) 批量释放并保留迟到回包组清理（`releaseHandles` 在 `{ backendNodeId }` 路径上会被忽略，即使以 `depth: -1, pierce: true` 扫描数千监听器也是零条逐个 `Runtime.releaseObject`）。对直接传入的 `{ objectId }` 目标，`releaseHandles` 默认为 `'each'`（逐个释放返回句柄，含迟到响应）；若传入的 `objectId` 已归属调用方管理的临时 `ObjectGroupScope`，可传 `releaseHandles: 'none'` 由外层组统一 O(1) 释放。由于后台清理会吞掉释放协议错误，`connection.drain()` 仅等待这些请求在线上结算，不证明远端资源一定释放成功；如需显式观测释放结果，请自行通过 `ObjectGroupScope` 解析 `objectId` 后调用 `getNodeEventListeners(session, { objectId }, { releaseHandles: 'none' })` 再 `await group.release()`。
 
 Chromium 会按传入 `objectId` 所属的执行世界来限定 `DOMDebugger.getEventListeners` 的返回范围：
 
@@ -134,7 +134,7 @@ Chromium 会按传入 `objectId` 所属的执行世界来限定 `DOMDebugger.get
 
 session 结束时事件订阅随之移除。关闭 target 时，Chrome 可能先发出 `detached` 再发出 `target-destroyed`，取决于事件顺序。
 
-崩溃会结束**库**层面的生命周期，尽管 Chrome 允许原 CDP 附加实例在渲染进程崩溃后继续 reload 和 evaluate：原始 session 会被关闭，其附加实例也会被清理。要恢复，先等待根 session 的 `Target.targetCrashed` 通知（session 级的崩溃通知可能更早到达），再重新附加并发送 `Page.reload`。如果 target 再次崩溃，在收到下一次根 session 崩溃通知后重新执行恢复。高层 Tab 的 崩溃/reload 行为与此无关。
+崩溃会结束**库**层面的生命周期，尽管 Chrome 允许原 CDP 附加实例在渲染进程崩溃后继续 reload 和 evaluate：原始 session 会被关闭，其附加实例也会被清理。要恢复，先等待根 session 的 `Target.targetCrashed` 通知（session 级的崩溃通知可能更早到达），再重新附加并发送 `Page.reload`。如果 target 再次崩溃，在收到下一次根 session 崩溃通知后重新执行恢复。高层 Tab 的崩溃/reload 行为与此无关。
 
 `detach()` 同步结束本地生命周期，再等待 `Target.detachFromTarget`；重复调用共用同一个 Promise。调用前取消信号已中止时 session 保持打开；发送后再中止不会重新打开 session，而是启动独立清理。如果 session 已经结束，或 Chrome 已不再持有该附加实例，`detach()` 直接成功，不再发送命令。
 
@@ -180,15 +180,15 @@ const browser = await Browser.connect({
 
 ### 未响应计数与有期限的等待
 
-`connection.pendingCount` 统计尚未结算的调用方请求，包括排队中的发送。`connection.unansweredCount` 统计已尝试发送、尚未收到匹配响应的请求。例如已发送的命令超时后，两者可以分别为 `0` 和 `1`；迟到的响应使 `unansweredCount` 归零，但不会让调用方再次结算。取消附加的迟到回复所触发的清理分离命令也会计入。
+`connection.pendingCount` 统计尚未结算的调用方请求，包括排队中的发送。`connection.unansweredCount` 统计活跃（未分离）的、已尝试发送但尚未收到匹配响应的请求。例如已发送的命令超时后，两者可以分别为 `0` 和 `1`；迟到的响应使 `unansweredCount` 归零，但不会让调用方再次结算。取消附加的迟到回复所触发的清理分离命令也会计入。
 
-取消、超时和 session 结束**不会**移除未响应的命令。传输层写失败会统一通过 `DisconnectedError` 关闭连接，清空本地未响应记录并立即结算所有 session 与 `drain()` 等待者（因此仍应始终检查 `closed` 或断开事件）。预先中止的请求、序列化失败、`beforeSend` 拦截/中止，以及在发送尝试前就从队列中取消的请求不计入。每条记录只保存 ID、方法、session 和时间戳元数据，直到收到响应或连接关闭，与应用淘汰了多少历史记录无关。对端一直不回复时，这些元数据会持续增长；应停止发起新工作，设置自己的清理期限，无法确认响应时断开连接。
+取消和超时**不会**移除未响应的命令。当某个 target session 在有在途命令时分离、崩溃或销毁，这些命令会从 `unansweredCount` 移入有界 FIFO 保留表（`connection.detachedUnansweredCount`），避免已消失的 session 永久挂死 `drain()` 或泄漏回调闭包，同时仍可为迟到的浏览器级错误关联 `onResponse`。传输层写失败会统一通过 `DisconnectedError` 关闭连接，清空本地未响应记录并立即结算所有 session 与 `drain()` 等待者（因此仍应始终检查 `closed` 或断开事件）。预先中止的请求、序列化失败、`beforeSend` 拦截/中止，以及在发送尝试前就从队列中取消的请求不计入。每条记录只保存 ID、方法、session 和时间戳元数据，直到收到响应、session 分离或连接关闭，与应用淘汰了多少历史记录无关。存活 session 上对端一直不回复时，这些元数据仍会增长；应停止发起新工作，设置自己的清理期限，无法确认响应时断开连接。
 
 连接关闭会清空计数，但不会合成响应，因此务必检查 `closed` 或断开事件：断开后的零来自本地记录清空。连接开放时，新命令会继续改变计数；浏览器侧的工作也可能在 CDP 回复后继续运行。应用应先串行管理操作与清理的归属，再交出这份归属。
 
 ### 原生 drain
 
-`await browser.drain({ timeout: 11000, signal })` 委托给 `connection.drain()`。它不轮询，等待待响应和排队中的请求、未响应的发送尝试、被放弃的附加操作，以及库的附加实例清理（包括重试失败分离命令的后续步骤）。同步观察回调及其排队的发送在空闲检查之前运行。
+`await browser.drain({ timeout: 11000, signal, detached? })` 委托给 `connection.drain()`。它不轮询，等待待响应和排队中的请求、活跃且仍可答复的发送尝试、被放弃的附加操作，以及库的附加实例清理（包括重试失败分离命令的后续步骤）。默认（`detached: 'ignore'`）下已分离 session 的不可答复请求不会拖住 `drain()`；传入 `{ detached: 'throw' }` 可在可答复债归零后立即以 `SessionEndedError` 拒绝。多标签并发场景若只需排空单个 session 而不受同连接其他标签页拖累，可调用 `await session.drain(options)` 或 `await connection.drainSession(sessionId, options)`。同步观察回调及其排队的发送在空闲检查之前运行。
 
 | 结果                         | 行为                                                  |
 | ---------------------------- | ----------------------------------------------------- |

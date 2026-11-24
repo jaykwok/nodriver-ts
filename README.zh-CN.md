@@ -32,7 +32,7 @@ flowchart LR
 ## 运行要求
 
 - Node.js 24.22.0 或更高版本。
-- 本机安装的 Chrome、Chromium 或 Edge。在 Windows、macOS 和 Linux 上会自动查找，包括 `PATH`；否则请设置 `CHROME_PATH` 或 `executablePath`。
+- 本机安装的 Chrome、Chromium 或 Edge。在 Windows、macOS 和 Linux 上会自动查找，包括 `PATH`；否则请设置 `CHROME_PATH` 或 `executablePath`（配合 `channel` / `prefer` 使用时，若希望 `CHROME_PATH` 优先于渠道偏好，请传入 `respectEnv: true`）。
 - 默认的有界面模式需要显示环境。在服务器和 CI 上请传入 `headless: true`（MCP 服务使用 `--headless`）；在 Linux 上也可以用 `virtualDisplay: true`（`--virtual-display`）让有界面的 Chrome 运行在专属的 Xvfb 服务器上。Linux 上应以普通用户运行并安装 Chrome 所需的共享库：库从不添加 `--no-sandbox`。WSL 上的有界面模式需要 WSLg 或其他显示服务。
 
 支持的平台见 [docs/zh-CN/support.md](docs/zh-CN/support.md)。
@@ -178,7 +178,7 @@ nodriver-mcp --mcp-transport http --port 3100
 # 客户端连接 http://127.0.0.1:3100/mcp，并带上 "Authorization: Bearer $NODRIVER_MCP_TOKEN"
 ```
 
-- **租约。** HTTP 只监听回环地址。没有 `Browser-Lease-Id` 请求头的请求使用该 token 的 `default` 租约。由字母、数字和 `. _ -` 组成的其他名称在首次使用时创建独立租约，让多个 agent 各自保持浏览器状态。
+- **租约。** HTTP 只监听回环地址。没有 `Browser-Lease-Id` 请求头的请求使用该令牌的 `default` 租约。由字母、数字和 `. _ -` 组成的其他名称在首次使用时创建独立租约，让多个 agent 各自保持浏览器状态。
 - **协议版本。** 默认入口要求 MCP 2026-07-28。使用官方 TypeScript 客户端 2.3.1 时，需固定 `versionNegotiation: { mode: { pin: '2026-07-28' } }`。对于 2025-11-25 和 2025-06-18 的客户端，加上 `--mcp-compat`；HTTP 客户端随后连接 `/mcp/compat`。见[通用 Agent 兼容](docs/zh-CN/agent-compatibility.md)和 [Pi](docs/zh-CN/pi.md)。
 - **浏览器。** Chrome 在首次 `browser_open` 时启动，使用 `agent` 启动预设：不显示首次运行界面、搜索引擎选择页和崩溃恢复气泡，关闭后台节流，并设置 `--password-store=basic`。在 Linux 上，Chrome 因此用内置密钥而不是系统密钥环加密已保存的密码和 Cookie。
 
@@ -247,7 +247,7 @@ npm run format:check
 | [浏览器行为](docs/zh-CN/automation-audit.md)                       | 默认协议行为、执行世界和可观察的事件                      |
 | [浏览器对照基准](docs/zh-CN/differential-audit.md)                 | 原生、UA 掩码和显式配置的启动，页面与 Worker              |
 | [MCP](docs/zh-CN/mcp.md)                                           | CLI、工具、引用、页面 JavaScript、嵌入                    |
-| [HTTP 接入](docs/zh-CN/mcp-http.md)                                | 租约、认证、限额、资源、人工交互                          |
+| [HTTP 接入](docs/zh-CN/mcp-http.md)                                | 租约、认证、限额、资源、人工接管                          |
 | [socket 接入](docs/zh-CN/mcp-socket.md)                            | Unix socket / 命名管道服务与客户端                        |
 | [通用 Agent 兼容](docs/zh-CN/agent-compatibility.md)               | MCP 2025-11-25 / 2025-06-18 客户端                        |
 | [支持范围](docs/zh-CN/support.md)                                  | 平台、能力、限制                                          |

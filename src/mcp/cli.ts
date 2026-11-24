@@ -9,6 +9,8 @@ import type { LaunchOptions } from '../browser/launcher.ts';
 import { MCP_PROTOCOL_VERSION } from './protocol.ts';
 import { PACKAGE } from '../version.ts';
 import { serveCompatibleBrowserMcpStdio } from './compat.ts';
+import { defaultMcpLaunchOptions, ENV_NAME_RE } from './auth.ts';
+import { isProxyProtocol } from '../optional/proxy.ts';
 
 interface Parsed {
   compatibility: boolean;
@@ -53,7 +55,7 @@ const FLAGS = [
 ];
 
 function parse(args: string[]): Parsed {
-  const launch: LaunchOptions = { transport: 'pipe', preset: 'agent' };
+  const launch: LaunchOptions = defaultMcpLaunchOptions();
   const options: BrowserMcpOptions = { launch };
   const disabled: string[] = [];
   let compatibility = false;
@@ -95,12 +97,19 @@ function parse(args: string[]): Parsed {
     else if (option === '--user-data-dir') launch.userDataDir = value;
     else if (option === '--user-agent') launch.userAgent = value;
     else if (option === '--lang') launch.lang = value;
-    else if (option === '--window-size' && /^\d{2,5}[x,]\d{2,5}$/.test(value)) {
+    else if (option === '--window-size' && /^\d{1,5}[x,]\d{1,5}$/.test(value)) {
       const [width, height] = value.split(/[x,]/).map(Number) as [number, number];
+      if (width < 1 || width > 16384 || height < 1 || height > 16384)
+        throw new RangeError('Invalid windowSize');
       launch.windowSize = { width, height };
     } else if (option === '--preset' && ['agent', 'default'].includes(value))
       launch.preset = value as 'agent' | 'default';
-    else if (option === '--proxy' && URL.canParse(value)) options.proxy = value;
+    else if (
+      option === '--proxy' &&
+      URL.canParse(value) &&
+      isProxyProtocol(new URL(value).protocol)
+    )
+      options.proxy = value;
     else if (option === '--input-policy' && ['instant', 'human'].includes(value))
       options.inputPolicy = { mode: value as 'instant' | 'human' };
     else if (option === '--disable-tool')
@@ -113,7 +122,7 @@ function parse(args: string[]): Parsed {
     else if (option === '--upload-dir') options.uploadDir = value;
     else if (option === '--download-dir') options.downloadDir = value;
     else if (option === '--state-dir') options.stateDir = value;
-    else if (option === '--state-key-env' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(value)) {
+    else if (option === '--state-key-env' && ENV_NAME_RE.test(value)) {
       const key = process.env[value];
       if (!key) throw new TypeError(`Set ${value} to the passphrase of the state directory`);
       options.stateKey = key;
@@ -123,7 +132,7 @@ function parse(args: string[]): Parsed {
     else if (option === '--socket-path') socketPath = value;
     else if (option === '--port' && /^\d+$/.test(value) && Number(value) <= 65535)
       port = Number(value);
-    else if (option === '--token-env' && /^[A-Za-z_][A-Za-z0-9_]*$/.test(value)) tokenEnv = value;
+    else if (option === '--token-env' && ENV_NAME_RE.test(value)) tokenEnv = value;
     else if (Object.hasOwn(LIMITS, option) && /^\d+$/.test(value))
       Object.assign(limits, { [LIMITS[option]!]: Number(value) });
     else throw new TypeError(`Unknown option or invalid value: ${option}`);

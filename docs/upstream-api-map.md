@@ -4,7 +4,7 @@
 
 This table maps all 163 public members (overloads merged) of `core/browser.py`, `tab.py`, `element.py`, `connection.py` and `config.py` at nodriver commit `219a60d65d82fb3d137d0c2c5b1fb285a9f837d0`. Python magic methods, private implementation details and the generated CDP modules give way to Promises, standard collections and the official protocol types. Proxies are handled by proxy-chain; screen, media and interactive debugging helpers are out of scope.
 
-High-level counterparts are covered by integration tests. Where the counterpart is a `cdp` command or `evaluate`, there is no wrapper of the same name: you implement it through the protocol or a page script. Behavioural limits are described in [API](api.md) and [Support](support.md).
+High-level counterparts are covered by integration tests. Where the counterpart is a `cdp` command or `evaluate`, there is no wrapper of the same name: you implement it through the protocol or a page script. Behavioral limits are described in [API](api.md) and [Support](support.md).
 
 | Upstream member                              | TypeScript counterpart                                                                        |
 | -------------------------------------------- | --------------------------------------------------------------------------------------------- |
